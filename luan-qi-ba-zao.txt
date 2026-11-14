@@ -1,0 +1,68 @@
+docker pull node:24.22.3-bookworm-slim
+docker tag node:24.22.3-bookworm-slim swr.na-mexico-1.myhuaweicloud.com/hubs/node:24.22.3-bookworm-slim
+docker push swr.na-mexico-1.myhuaweicloud.com/hubs/node:24.22.3-bookworm-slim
+docker rmi swr.na-mexico-1.myhuaweicloud.com/hubs/node:24.22.3-bookworm-slim
+docker rmi node:24.22.3-bookworm-slim
+
+node:24.22.3-bookworm-slim
+
+node:24.22.3-alpine
+
+
+
+docker pull golang:1.26.5-bookworm
+docker tag golang:1.26.5-bookworm swr.na-mexico-1.myhuaweicloud.com/hubs/golang:1.26.5-bookworm
+docker push swr.na-mexico-1.myhuaweicloud.com/hubs/golang:1.26.5-bookworm
+docker rmi swr.na-mexico-1.myhuaweicloud.com/hubs/golang:1.26.5-bookworm
+docker rmi golang:1.26.5-bookworm
+
+
+
+
+docker pull debian:bookworm-slim
+docker tag debian:bookworm-slim swr.na-mexico-1.myhuaweicloud.com/hubs/debian:bookworm-slim
+docker push swr.na-mexico-1.myhuaweicloud.com/hubs/debian:bookworm-slim
+docker rmi swr.na-mexico-1.myhuaweicloud.com/hubs/debian:bookworm-slim
+docker rmi debian:bookworm-slim
+
+
+
+
+
+git archive \
+  --format=zip \
+  --output=web-ssh-stage2.zip \
+  7f84f5d4
+
+
+docker pull  swr.na-mexico-1.myhuaweicloud.com/hubs/node:24.22.3-bookworm-slim
+docker tag swr.na-mexico-1.myhuaweicloud.com/hubs/node:24.22.3-bookworm-slim  node:24.22.3-bookworm-slim
+docker rmi  swr.na-mexico-1.myhuaweicloud.com/hubs/node:24.22.3-bookworm-slim
+
+
+docker pull   swr.na-mexico-1.myhuaweicloud.com/hubs/debian:bookworm-slim
+docker tag   swr.na-mexico-1.myhuaweicloud.com/hubs/debian:bookworm-slim debian:bookworm-slim
+docker rmi   swr.na-mexico-1.myhuaweicloud.com/hubs/debian:bookworm-slim
+
+docker pull   swr.na-mexico-1.myhuaweicloud.com/hubs/golang:1.26.5-bookworm
+docker tag   swr.na-mexico-1.myhuaweicloud.com/hubs/golang:1.26.5-bookworm golang:1.26.5-bookworm
+docker rmi   swr.na-mexico-1.myhuaweicloud.com/hubs/golang:1.26.5-bookworm
+
+
+APP_ENCRYPTION_KEY=uOS2Fs2xor5GQKjNZaxHW1rDf4kJROeWUEknWYkz06k=
+APP_ADMIN_PASSWORD=0MoajA9CvwDJ484
+
+
+
+ docker run -d \
+  --name webssh-ssh-test \
+  --restart=no \
+  -p 22222:22 \
+  ubuntu:20.04 \
+  sleep infinity
+
+
+git branch -m main master
+git fetch origin
+git branch -u origin/master master
+git remote set-head origin -a
