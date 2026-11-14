@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"reflect"
 	"strings"
+	"unicode/utf8"
 )
 
 // DecodeJSON 在读入前施加限额。请求 DTO 使用明确的 json 标签；omitempty 字段可省略。
@@ -22,6 +23,9 @@ func DecodeJSON(w http.ResponseWriter, r *http.Request, dst any, limit int64, al
 		if errors.As(err, &max) {
 			return &Error{MessageTooLarge}
 		}
+		return &Error{InvalidRequest}
+	}
+	if !utf8.Valid(data) {
 		return &Error{InvalidRequest}
 	}
 	if len(bytes.TrimSpace(data)) == 0 {

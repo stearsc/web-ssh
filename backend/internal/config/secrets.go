@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-// 这里只校验启动密钥来源和格式；AES-GCM 与管理员初始化属于阶段 2。
+// 校验唯一密钥来源和规范格式；应用将结果交给 crypto，随后清除临时字节。
 func LoadEncryptionKey() ([]byte, error) {
 	value, direct := os.LookupEnv("APP_ENCRYPTION_KEY")
 	filename, file := os.LookupEnv("APP_ENCRYPTION_KEY_FILE")

@@ -1,21 +1,415 @@
-/* 本阶段只提供基础页面；正式终端、登录交互及主题按后续阶段实现。 */
+/* 与 v2 原型共用克制的黑白灰、细边框和窄间距。 */
 :root {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
-  color: #252525;
-  background: #fafafa;
-  --panel: #ffffff;
+  --page: #fafafa;
+  --panel: #fff;
+  --hover: #f2f2f2;
+  --text: #252525;
+  --secondary: #777;
   --line: #dedede;
-  --secondary: #777777;
-  --error: #a2544e;
+  --strong: #252525;
+  --on-strong: #fff;
+  --red: #a2544e;
+  --overlay: rgb(20 20 20 / 28%);
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+  color: var(--text);
+  background: var(--page);
+  font-size: 14px;
 }
-* { box-sizing: border-box; }
-body { margin: 0; }
-button { font: inherit; cursor: pointer; border: 1px solid var(--line); background: var(--panel); padding: 6px 12px; border-radius: 2px; }
-button:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
-.app-shell { min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: column; }
-.product-bar { height: 52px; padding: 0 16px; border-bottom: 1px solid var(--line); display: flex; align-items: center; }
-.wordmark { font-weight: 650; font-size: 16px; }
-.workspace { flex: 1; margin: 8px; border: 1px solid var(--line); background: var(--panel); min-width: 0; }
-.status-bar { padding: 7px 16px; color: var(--secondary); font-size: 12px; border-top: 1px solid var(--line); }
-.error-message { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; color: var(--error); padding: 16px; font-size: 14px; overflow-wrap: anywhere; }
-.login-placeholder { flex: 1; display: grid; place-items: center; color: var(--secondary); font-size: 14px; }
+[data-theme='dark'] {
+  --page: #191919;
+  --panel: #1d1d1d;
+  --hover: #272727;
+  --text: #e2e2df;
+  --secondary: #a0a09c;
+  --line: #373737;
+  --strong: #e2e2df;
+  --on-strong: #1b1b1b;
+  --red: #d49188;
+  --overlay: rgb(0 0 0 / 55%);
+  color-scheme: dark;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+}
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: var(--panel);
+}
+button {
+  cursor: pointer;
+  min-height: 35px;
+  padding: 7px 12px;
+}
+button:hover {
+  background: var(--hover);
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+.primary {
+  background: var(--strong);
+  color: var(--on-strong);
+  border-color: var(--strong);
+}
+.primary:hover {
+  background: var(--strong);
+  opacity: 0.86;
+}
+input,
+select,
+textarea {
+  min-height: 39px;
+  padding: 9px 10px;
+  width: 100%;
+}
+:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 3px;
+}
+.icon-button {
+  width: 34px;
+  height: 34px;
+  min-height: 34px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  font-size: 18px;
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
+.wordmark {
+  font-family: monospace;
+  font-weight: 700;
+  letter-spacing: -1px;
+  font-size: 21px;
+}
+.mono {
+  font-family: Consolas, monospace;
+}
+.muted {
+  color: var(--secondary);
+  font-size: 12px;
+}
+.danger,
+.error {
+  color: var(--red);
+}
+.error {
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.login-page {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 64px 24px;
+}
+.login-theme {
+  position: absolute;
+  top: 18px;
+  right: 20px;
+}
+.login-card {
+  width: min(340px, 100%);
+}
+.login-card h1 {
+  text-align: center;
+  font-size: 36px;
+  margin: 0 0 32px;
+}
+.login-card input {
+  height: 44px;
+}
+.login-submit {
+  width: 100%;
+  margin-top: 14px;
+  height: 42px;
+}
+.app {
+  display: grid;
+  grid-template-columns: 0 minmax(0, 1fr);
+  grid-template-rows: 52px minmax(0, 1fr);
+  height: 100dvh;
+}
+.app.sidebar-visible {
+  grid-template-columns: 228px minmax(0, 1fr);
+}
+.topbar {
+  grid-column: 1/-1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--line);
+}
+.brand,
+.top-actions,
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.sidebar {
+  grid-column: 1;
+  grid-row: 2;
+  padding: 17px 12px;
+  border-right: 1px solid var(--line);
+  overflow: auto;
+}
+.section-heading {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 16px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.sidebar input,
+.sidebar select {
+  font-size: 12px;
+  margin-bottom: 12px;
+}
+.server-group {
+  margin-top: 14px;
+}
+.group-heading {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  border: 0;
+  color: var(--secondary);
+  font-size: 11px;
+  text-align: left;
+  padding: 4px;
+  background: none;
+}
+.group-heading span {
+  margin-left: auto;
+}
+.server-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  padding: 10px 8px;
+  margin: 3px 0;
+  border-color: transparent;
+  background: none;
+}
+.server-row.selected {
+  background: var(--panel);
+  border-color: var(--line);
+}
+.server-row strong {
+  font-size: 12px;
+  font-weight: 500;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.server-row small {
+  font-size: 10px;
+  color: var(--secondary);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.main {
+  grid-column: 2;
+  grid-row: 2;
+  min-width: 0;
+  overflow: auto;
+  margin: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+}
+.empty-workspace {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+.server-detail {
+  padding: 24px;
+  max-width: 960px;
+  width: 100%;
+}
+.detail-heading {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+h1,
+h2 {
+  font-size: 17px;
+  font-weight: 600;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.details {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  gap: 16px;
+  line-height: 1.6;
+  font-size: 13px;
+}
+dt {
+  color: var(--secondary);
+}
+dd {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.notice {
+  margin: 0;
+  padding: 12px 20px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+dialog {
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 0;
+  width: min(540px, calc(100vw - 32px));
+  max-height: calc(100dvh - 48px);
+  overflow: auto;
+}
+dialog::backdrop {
+  background: var(--overlay);
+}
+.dialog-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 18px 24px;
+  border-bottom: 1px solid var(--line);
+}
+.dialog-body {
+  padding: 24px;
+}
+.dialog-body p {
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+}
+.dialog-footer {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 17px 24px;
+  border-top: 1px solid var(--line);
+}
+.form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px 17px;
+}
+.form-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12px;
+  min-width: 0;
+}
+.form-grid .full {
+  grid-column: 1/-1;
+}
+textarea {
+  min-height: 70px;
+  resize: vertical;
+}
+.drawer-backdrop {
+  display: none;
+}
+@media (max-width: 720px) {
+  .app,
+  .app.sidebar-visible {
+    grid-template-columns: 0 minmax(0, 1fr);
+  }
+  .topbar {
+    padding: 0 8px;
+  }
+  .topbar button {
+    font-size: 12px;
+    padding: 6px 8px;
+  }
+  .wordmark {
+    font-size: 18px;
+    white-space: nowrap;
+  }
+  .top-actions,
+  .brand {
+    gap: 5px;
+  }
+  .sidebar {
+    position: fixed;
+    left: 0;
+    top: 52px;
+    bottom: 0;
+    z-index: 6;
+    width: min(260px, calc(100vw - 48px));
+    background: var(--page);
+  }
+  .drawer-backdrop {
+    display: block;
+    position: fixed;
+    inset: 52px 0 0;
+    background: var(--overlay);
+    z-index: 5;
+    border: 0;
+  }
+  .main {
+    margin: 4px;
+  }
+  .server-detail,
+  .dialog-body {
+    padding: 18px;
+  }
+  .details {
+    grid-template-columns: 85px minmax(0, 1fr);
+    gap: 13px;
+  }
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
+  .actions {
+    flex-wrap: wrap;
+  }
+  .dialog-header,
+  .dialog-footer {
+    padding: 16px 18px;
+  }
+}
