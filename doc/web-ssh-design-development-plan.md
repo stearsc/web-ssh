@@ -111,7 +111,7 @@ SSH Gateway 通常更强调统一 SSH 访问入口、集中身份认证、访问
 | 构建工具 | Vite |
 | 终端组件 | xterm.js |
 | SSH 客户端 | golang.org/x/crypto/ssh |
-| WebSocket | github.com/coder/websocket |
+| WebSocket | github.com/coder/websocket `v1.8.15` |
 | 数据库 | SQLite |
 | HTTP 服务 | Go 标准库 net/http |
 | 配置文件 | YAML |
@@ -119,7 +119,7 @@ SSH Gateway 通常更强调统一 SSH 访问入口、集中身份认证、访问
 | 敏感数据加密 | AES-256-GCM |
 | 部署 | Docker |
 
-具体依赖版本由 Coding Agent 选择当前稳定版本，并在项目中固定版本。
+WebSocket 固定使用 `github.com/coder/websocket v1.8.15`，读取、心跳和强制关闭依据见[架构 §7.5](web-ssh-architecture-implementation-plan.md#ws-read-close)。其余依赖版本由 Coding Agent 选择当前稳定版本，并在项目中固定版本。
 
 ## 3.2 系统架构
 

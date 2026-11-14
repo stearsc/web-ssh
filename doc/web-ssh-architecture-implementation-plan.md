@@ -238,13 +238,35 @@ HTTP 升级前必须在全局连接表原子预占 `websocket.max_connections` �
 
 成功绑定的前缀、中间可见的 status、终止通知的精确字段及相对顺序由协议定义。应用关闭不保证排空 SSH 所有尾部输出；不能为追求尾部完整而无限延迟关闭。SSH 关闭后浏览器已收到数据的本地排空由协议规定。
 
+<a id="ws-read-close"></a>
 ### 7.5 心跳、读取和关闭预算
 
-应用 Writer 按 `websocket.ping_interval` 调用库的协议 Ping，并以 `websocket.pong_timeout` 为截止；每连接最多一个在途 Ping，期间 Reader 持续读取。库自动发送 Pong/协议控制帧不属于应用数据 Writer，不允许业务协程另开 Ping 定时写者。心跳失败只撤销该 Binding，与 SSH Keepalive 独立。
+固定使用 `github.com/coder/websocket v1.8.15`（tag 对应提交 `9c8faadccd1b679e811a79ce506f8a10237251ad`），第一阶段将此版本写入依赖锁定文件。本节不依赖后续版本行为；更换版本须重做[阶段3专项验收](web-ssh-implementation-stages.md#ws-header-acceptance)。
+
+该版本的实际行为与源码依据：
+
+| 情况 | 核实结果 |
+|---|---|
+| 只收到部分帧头后停止发送 | [`Reader(ctx)`](https://github.com/coder/websocket/blob/v1.8.15/read.go#L369-L401) 经 readLoop 进入 [`readFrameHeader`](https://github.com/coder/websocket/blob/v1.8.15/frame.go#L52-L103)，在第二个基础字节、扩展长度或掩码的 ReadByte/io.ReadFull 上等待。没有适用的取消或关闭时，消息读取器不会返回。 |
+| 此时发送服务端 Ping | [`Ping(ctx)`](https://github.com/coder/websocket/blob/v1.8.15/conn.go#L217-L261) 可以与 Reader 并发，但不读取 socket；只有同一 Reader 的 [`handleControl(opPong)`](https://github.com/coder/websocket/blob/v1.8.15/read.go#L290-L338) 才能确认 Pong。帧头未完成时不能跳过当前字节流处理后面的 Pong；正常客户端也不能把 Pong 插入一个未完成的帧内部。 |
+| Ping 已写出，但等不到 Pong | `ping` 的 ctx.Done 分支只返回错误，并移除 activePings 项；**不能据此假定连接或 Reader 已关闭**。必须由应用将失败转为终止请求。 |
+| Close 握手也被阻塞 | [`Close` / `CloseNow`](https://github.com/coder/websocket/blob/v1.8.15/close.go#L99-L151) 不接受 context；已开始 Close 时，并发 CloseNow 会等待关闭完成，不能用作强制中断器。应关闭 ConnContext 保存的真实底层 net.Conn。 |
+
+沿用单 Reader、单应用 Writer 和独立关闭监督器，具体实现如下：
+
+1. 绑定前，首条完整 bind 的 `websocket.bind_timeout` 从升级成功起覆盖 `Reader(ctx)` 返回前的等待与消息体读取；超时进入统一终止。该版本的[读取 context 取消](https://github.com/coder/websocket/blob/v1.8.15/conn.go#L187-L203) 会关闭库持有的连接，仍须完成应用侧回收。
+2. 绑定后，Writer 按 `websocket.ping_interval` 维护独立于业务流量的到期时刻，首次 Ping 不晚于绑定后一个周期的调度点。空闲时定时唤醒，持续输出时在当前完整消息结束后优先处理到期 Ping，不能用业务收发重置或推迟心跳。当前一次写最多占用 `websocket.write_timeout`。
+3. Writer 直接调用 `Conn.Ping(pingCtx)`，调用前以 `context.WithTimeout` 设置 `websocket.pong_timeout`，预算同时覆盖 Ping 写入和等待 Pong；单连接最多一个在途 Ping。Ping 准入及其 cancel 函数登记共用 §7.4 的短调度锁，终止后不再发起新 Ping。Reader 与它并发，不能由 Reader 自己调用 Ping 或等待 Reader 返回再启动心跳。Ping 返回任何错误，立即通过原终止入口 Detach 撤销 Binding 并提交终止槽，不能只记录错误、只取消 pingCtx 或等待下一条输入。库自动发送 Pong/协议控制帧不属于第二个应用 Writer，不另开业务 Ping 写者。
+4. 首次终止请求即确定关闭绝对截止时间，同时取消已登记的在途 Ping context 并唤醒 Writer；`Ping` 的等待分支不执行 Read，不能只靠原始 socket 关闭使它立即返回。独立监督器不等待 Reader、Writer、调度锁或 Close 返回，到期直接调用保存的底层 `net.Conn.Close()`。Writer 在预算内至多尝试一次终止通知和 Close；硬关闭路径尚未开始握手时，由 Writer 调用 CloseNow 完成库侧清理，已经在 Close 内则等待底层关闭使该调用返回。正常提前完成时唤醒监督器并停止计时器。
+5. 停止本连接的心跳和消息计时器，由不属于被等待工作组的连接收尾者等待 Reader、Writer（含在途 Ping/Close）及输入执行器退出，再通知并等待监督器退出，最后一次性归还全局 WS 名额。执行器已有在途 SSH 操作时仍按第 6 章的 `ssh.operation_timeout` 收尾，不能提前归还名额或让工作协程等待自身。WS 心跳失败只解除浏览器绑定，SSH Keepalive、读取和缓存独立继续运行。
 
 Reader 取得消息读取器后的完整消息读取受 `websocket.message_read_timeout` 约束，跨分片不重置。库级读取限制与流式消息类型限制同时落实，不能无界 ReadAll。该计时不覆盖 Reader 返回前等待不完整首帧头；绑定前由 bind 总等待限制，绑定后由心跳检查限制；正常无输入不触发业务空闲超时。第一版关闭 WS 压缩，仍按完整重组消息限制大小。
 
-每次应用写受 `websocket.write_timeout` 限制；从请求终止起，未完成写、最终通知和握手共用 `websocket.close_timeout` 总预算，并取应用退出剩余时间较小者。HTTP 仅支持 HTTP/1.1 Upgrade，通过 ConnContext 保存可关闭的底层 net.Conn；不假设 `coder/websocket.Close` 接受 context，也不依赖并发 CloseNow 一定中断 Close。独立截止监督器到期直接关闭底层连接，解除 Reader/Writer/关闭握手阻塞，随后回收监督器。固定依赖版本后按阶段测试验证这些实际 API 行为。
+该版本的消息 io.Reader 沿用传给 `Reader(ctx)` 的 context；按其 [API 说明](https://github.com/coder/websocket/blob/v1.8.15/read.go#L18-L36)，在取得读取器后启动消息计时器，到期取消同一 context 并请求终止，读完即停止该计时器。不要给绑定后的每次 Reader 调用预设 message_read_timeout，否则正常长时间无输入也会被关闭。
+
+每次应用写受 `websocket.write_timeout` 限制；从请求终止起，未完成写、最终通知和握手共用 `websocket.close_timeout` 总预算，并取应用退出剩余时间较小者。HTTP 仅支持 HTTP/1.1 Upgrade，通过 ConnContext 保存可关闭的底层 net.Conn；该版本的 [Accept](https://github.com/coder/websocket/blob/v1.8.15/accept.go#L159-L180) 使用 Hijack 得到的连接。底层 [net.Conn.Close](https://pkg.go.dev/net#Conn) 解除阻塞的 Read/Write，随后库 Close/CloseNow 完成内部清理，应用收尾者完成任务和名额回收。
+
+在进程正常调度下，绑定后静止半帧头至底层强关的保守预算为 `ping_interval + write_timeout + pong_timeout + close_timeout`，另计调度误差；更早的绑定、消息、登录或退出期限仍优先。此为异常回收上界，不是正常空闲时间限制。正常连接无需发送终端输入，只要能及时处理 Ping/Pong 就可持续在线；不新增帧头超时配置或第二个 Reader。
 
 每 Session 缓存至多 B 字节；每升级连接最多一份 B 字节快照、一个输出块、有限控制项和有限输入项，全部连接数受上限；被取消 Writer 释放未发送快照引用，只保留一次在途数据。不能仅以“每 Session 缓存有界”推导整个进程有界：还须计算实际活动 Session 数，遵守每服务器名额、全局连接及登录、probe、凭证容量限制。
 

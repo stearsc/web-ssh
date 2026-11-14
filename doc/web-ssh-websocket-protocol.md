@@ -193,9 +193,9 @@ Writer 在发送完整绑定前缀前不发送 status 或二进制输出。控�
 | 客户端队列与在途 write 合计字节、排空期限 | `terminal.write_queue_bytes`、`write_drain_timeout` |
 | 客户端恢复次数、间隔、成功运行后重置预算的时间 | `terminal.reconnect_max_attempts`、`reconnect_delay`、`reconnect_stable_time` |
 
-Reader 使用流式读取，在分配超过限制前拒绝；message_read_timeout 从取得读取器后开始，跨分片不重置。它不覆盖 Reader 返回前不完整首帧头的等待；绑定前受 bind_timeout 限制，绑定后的失联由 Ping/Pong 回收，正常没有输入不是超时理由。
+Reader 使用流式读取，在分配超过限制前拒绝；message_read_timeout 从取得读取器后开始，跨分片不重置。它不覆盖 Reader 返回前不完整首帧头的等待；绑定前受 bind_timeout 限制，绑定后由 Writer 独立于业务流量发起有截止的 Ping。半帧头会阻止同一 Reader 解析后续 Pong；Ping 失败必须触发终止，独立关闭监督器到期强关底层连接并完成回收，正常没有输入不是超时理由。固定版本的 API、源码依据和预算见[架构 §7.5](web-ssh-architecture-implementation-plan.md#ws-read-close)，实际验收见[阶段3专项测试](web-ssh-implementation-stages.md#ws-header-acceptance)。
 
-Writer 为应用消息唯一发送者。业务协程提交有界控制事件，输出只提交合并通知；队列已满时请求统一终止，不能再阻塞 SSH 输出读取等待队列空位。Reader 只解析消息和协议控制帧，不另行发送应用 JSON；库自动处理 Pong 等协议帧不计为第二个应用 Writer。主动 Ping/Close 必须受同一关闭协调约束，单连接最多一个在途 Ping，库版本固定后验证其 Reader/Ping 并发要求。
+Writer 为应用消息唯一发送者。业务协程提交有界控制事件，输出只提交合并通知；队列已满时请求统一终止，不能再阻塞 SSH 输出读取等待队列空位。Reader 只解析消息和协议控制帧，不另行发送应用 JSON；库自动处理 Pong 等协议帧不计为第二个应用 Writer。主动 Ping/Close 必须受同一关闭协调约束，单连接最多一个在途 Ping，Reader/Ping 并发及关闭方式遵守[架构 §7.5](web-ssh-architecture-implementation-plan.md#ws-read-close)。
 
 通知、Close 握手及正在进行的写入共享关闭期限；超过期限关闭底层连接。任何关闭路径先撤销对应操作权，不能等通知送达后才解除绑定。未绑定连接也登记并回收。应用退出时取剩余总退出时间与连接关闭预算中较小值，详见[架构：退出](web-ssh-architecture-implementation-plan.md#shutdown)。
 

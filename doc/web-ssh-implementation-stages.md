@@ -63,7 +63,7 @@
 
 ### 3.2 实施任务
 
-1. 初始化 Go、Vue 3、TypeScript 和 Vite 工程，固定兼容的依赖版本；HTTP 使用既定标准库方案。
+1. 初始化 Go、Vue 3、TypeScript 和 Vite 工程，固定兼容的依赖版本；WebSocket 按[架构 §7.5](web-ssh-architecture-implementation-plan.md#ws-read-close)锁定 `github.com/coder/websocket v1.8.15`，HTTP 使用既定标准库方案。
 2. 实现完整配置结构、默认值、严格解析和启动校验。所有参数名称、层级、单位、必填规则以核心配置表为准。
 3. 选择并验证纯 Go SQLite 驱动，落实迁移版本记录及核心文档规定的全部表结构。后续阶段使用这些表，不临时另造认证或信任表。
 4. 实现数据库连接初始化、短事务与关闭。逐物理连接应用并回读要求的 PRAGMA，连接重开仍须生效。
@@ -197,6 +197,26 @@
 
 使用 `go test -race ./...` 验证本阶段并发代码，真实 SSH 测试必须列出测试环境和实际结果。尚未实施自动恢复协调、主动接管 UI，不将手动恢复测试等同于它们已经完成。
 
+<a id="ws-header-acceptance"></a>
+#### 5.5.1 不完整帧头、正常空闲与资源回收专项验收
+
+依据[架构 §7.5](web-ssh-architecture-implementation-plan.md#ws-read-close)，在阶段3的真实 HTTP/1.1 Upgrade 和 WS 生命周期上执行以下测试，不推迟到阶段7。测试客户端使用原始 TCP 编码帧，确认服务端已读到注入字节后再开始断言；可缩短配置时间并给出有限调度容差，但不能用 mock Reader 代替固定库，也不能只检查客户端已断开。
+
+| 场景 | 必须断言 |
+|---|---|
+| 已绑定后半帧头停发 | 分别只发第一个基础字节、部分 16/64 位扩展长度、部分掩码；Reader 不返回消息读取器，消息计时器尚未启动，Writer 仍发出 Ping，Pong 期限到达后撤销 Binding 并进入统一终止；底层强关不超过 §7.5 的总预算与调度容差。 |
+| Pong 不能越过半帧头 | 在未完成的 64 位长度字段后直接追加匹配 Ping 的原始 Pong 字节，明确这是故意构造的非法拼接；验证它们被当作当前帧头字节而非独立 Pong，不能让 Ping 成功或延长期限。 |
+| 正常空闲与正常拆包 | 保持无应用输入超过多个 message_read_timeout 和至少六轮 Ping/Pong，连接和 Binding 仍有效；另测帧头正常分批到达并在相关期限内补全，可继续输入。不能以固定 Reader 读期限误杀空闲连接。 |
+| 绑定前半帧头 | 升级后不发送数据或只发部分 bind 帧头，bind_timeout 从升级时生效，未绑定通道也完整回收。 |
+| 心跳调度与写入阻塞 | 持续输出时到期 Ping 不被饿死；只读服务端数据而永不完成客户端帧头也不能保活。另让客户端不读以堵住应用 Write，按写入/关闭期限强关，Reader/Writer 均退出。 |
+| Close 已经开始 | 让 Writer 卡在 Close 握手，并验证并发 CloseNow 不能代替强关；独立监督器关闭 ConnContext 中的底层连接后，Reader、Writer（含 Ping/Close）、执行器和监督器的完成信号全部到达，无自等待。 |
+| 强关时 Ping 尚在等待 | 令 pong_timeout 大于 close_timeout，在 Ping 已发送后由另一终止原因触发关闭；终止同步取消在途 Ping context，不能因只关闭原始 socket 而让 Writer 等到原 Pong 期限，名额须在任务完成后回收。 |
+| 名额与 SSH 隔离 | 将实际全局 WS 上限设为 1，关闭中仍拒绝额外升级，全部任务退出后只归还一次名额，新连接能立即升级并绑定；原 SSH 保持运行、输出继续进入缓存，重复终止不改变结果。 |
+
+2026-11-14 设计复核证据：Go `1.26.5`、Linux/amd64（WSL2）、`coder/websocket v1.8.15`、真实环回 TCP/HTTP Upgrade、禁用压缩；临时实验位于 `/tmp/codex/ws-header-audit-20261114/`。在该目录执行 `./go/bin/go test -v -count=1 -timeout=30s .` 与 `./go/bin/go test -count=20 -timeout=45s .` 均通过。实验确认四类帧头阻塞；80ms Ping 超时后 Reader 仍阻塞，直接关闭底层连接才解除；追加 Pong 不能越过帧头；正常空闲六轮心跳及正常拆包通过；80ms bind 期限有效；60ms 关闭监督期限解除 Reader/Close/并发 CloseNow，模拟名额在任务完成后归零；堵塞的真实 TCP Write 与 Read 也均被解除；另确认原始 socket 关闭后在途 Ping 仍可等待，显式取消其 context 后即返回。测试源和日志分别为 `header_test.go`、`test-results.txt`、`repeat-results.txt`。
+
+以上为固定库与最小回收模型的实测，未实现业务服务，不能代替上表的实际 Binding、名额管理器、SSH 隔离、持续输出调度和阶段并发验收。本机无 C 编译器，未运行 race；阶段3实际实现仍必须完成上述场景与 `go test -race ./...`。
+
 ### 5.6 完成条件
 
 能从浏览器进入真实 SSH 终端，并通过最终协议完成首次凭证签发、绑定、回放和输入输出；断开后 SSH 保留且能回收。Session 所有权、缓存、偏移和关闭基础已正确建立，后续阶段不需要重造这些机制。
@@ -245,7 +265,7 @@
 | 代次保护 | 旧连接仍在但代次未变时有限等待；代次变化立即停止，自动恢复不抢回其他设备操作权 |
 | 离线回收 | 使用可控时钟验证期限；重新绑定后旧超时任务不能关闭当前 Session |
 | SSH Keepalive | 拒绝回复仍算有响应；连续超时只保留一个在途探测；关闭后解除阻塞并回收协程 |
-| Reader | 分片累计上限、不完整消息、读取器返回前等待和整条消息期限均按固定依赖实际验证 |
+| Reader | 分片累计上限、不完整消息、读取器返回前等待和整条消息期限均按固定依赖实际验证；复用[阶段3帧头专项验收](#ws-header-acceptance)，加入连续 100 轮连接/阻塞/关闭及与应用退出的竞争，确认任务、定时器和全局名额恢复基线 |
 | Writer | 控制与输出顺序、终止事件中断回放、写失败、队列满和关闭预算均无并发写或无限等待 |
 | 心跳 | 浏览器无输入仍可保持，Ping/Pong 失联只关闭通道，SSH Keepalive 状态独立 |
 | 统一关闭 | 手动、自然退出、Keepalive 和超时同时发生只关闭一次，工作协程不等待自身；CLOSING/CLOSED 后迟到的 Detach 或 Reader/Writer 回调不能回退状态或重设离线期限 |
@@ -382,7 +402,7 @@
 | Session所有权与名额 | 阶段3 | 阶段4/5生命周期竞争 | [所有权](web-ssh-architecture-implementation-plan.md#ownership)、[生命周期](web-ssh-architecture-implementation-plan.md#session-lifecycle) |
 | 通用凭证与attach | 阶段3 | 阶段4自动恢复、阶段5主动替换 | [绑定](web-ssh-architecture-implementation-plan.md#binding)、[Session API](web-ssh-design-development-plan.md#api-sessions) |
 | 双上限缓存/单次回放 | 阶段3 | 阶段4缺口、慢端与边界 | [缓存](web-ssh-architecture-implementation-plan.md#output-buffer)、[发送顺序](web-ssh-websocket-protocol.md#output-order) |
-| Reader/Writer与通道关闭 | 阶段3 | 阶段4故障/退出、阶段7库行为实测 | [传输](web-ssh-websocket-protocol.md#transport)、[限制](web-ssh-websocket-protocol.md#limits) |
+| Reader/Writer与通道关闭 | 阶段3及[帧头专项实测](#ws-header-acceptance) | 阶段4故障/退出与重复回收、阶段7回归 | [读取与关闭预算](web-ssh-architecture-implementation-plan.md#ws-read-close)、[限制](web-ssh-websocket-protocol.md#limits) |
 | 输入/resize操作权 | 阶段3 | 阶段4普通断开、阶段5接管竞争 | [操作顺序](web-ssh-architecture-implementation-plan.md#operation-order) |
 | xterm偏移和待写队列 | 阶段3 | 阶段4排空/重建/有限自动恢复 | [tracker](web-ssh-websocket-protocol.md#client-tracker)、[恢复](web-ssh-websocket-protocol.md#reconnect) |
 | 离线计时/Keepalive/关闭 | 阶段3 | 阶段4竞争与资源硬截止 | [生命周期](web-ssh-architecture-implementation-plan.md#session-lifecycle)、[退出](web-ssh-architecture-implementation-plan.md#shutdown) |
