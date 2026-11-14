@@ -1,0 +1,24 @@
+services:
+  web-ssh:
+    build: .
+    image: web-ssh:stage1
+    container_name: web-ssh
+    restart: unless-stopped
+    # 必须严格大于配置中的 server.shutdown_timeout（默认 25 秒）。
+    stop_grace_period: 30s
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      # 整个目录持久化，包含 DB、WAL 与 SHM。
+      - ./data:/data
+    environment:
+      TZ: Asia/Shanghai
+      APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?请提供标准 Base64 编码的 32 字节密钥}
+      APP_ADMIN_PASSWORD: ${APP_ADMIN_PASSWORD:-}
+    networks:
+      - global_net
+
+networks:
+  global_net:
+    external: true

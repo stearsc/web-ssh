@@ -1,0 +1,26 @@
+# 仅排除本地数据与产物；镜像内重新执行前端构建。
+.git
+.idea
+.vscode
+doc
+node_modules
+**/node_modules
+**/dist
+**/bin
+**/build
+coverage
+*.log
+**/*.log
+.env
+.env.*
+config.yaml
+config.local.yaml
+backend/config.yaml
+backend/config.local.yaml
+data
+secrets
+**/*.db
+**/*.db-*
+**/*.sqlite*
+**/*.key
+**/*.pem

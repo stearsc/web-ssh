@@ -1,0 +1,83 @@
+server:
+  host: "0.0.0.0"
+  port: 8080
+  public_origin: "https://localhost:8080"
+  trusted_proxies: []
+  # HTTP 首部等待、请求总预算及退出预算，单位秒
+  read_header_timeout: 5
+  request_timeout: 30
+  shutdown_timeout: 25
+  # 管理 API 请求体上限，单位字节
+  max_request_body_size: 65536
+
+auth:
+  # 登录有效期，单位天；Cookie 安全属性默认开启
+  session_ttl: 7
+  cookie_secure: true
+  # 全局登录尝试固定窗口：秒、次数
+  login_rate_window: 60
+  login_rate_limit: 10
+  # 同时有效的 Web 登录会话总数
+  max_sessions: 64
+
+session:
+  # 浏览器离线保留，单位分钟
+  idle_timeout: 120
+  max_sessions_per_server: 20
+  # 原始输出缓存，单位字节；历史行数按 LF 统计
+  output_buffer_size: 1048576
+  history_limit: 2000
+  # 一次性绑定凭证：有效期秒数及全局记录上限
+  binding_credential_ttl: 30
+  binding_credential_limit: 256
+  # 等待输入队列空位或远端操作串行许可的上限，单位秒
+  operation_wait_timeout: 5
+
+ssh:
+  # TCP、握手、认证、PTY 和 Shell 建立的共同总预算，单位秒
+  connect_timeout: 15
+  # 已建立连接的单次输入/resize 操作上限，单位秒
+  operation_timeout: 10
+  keepalive_interval: 30
+  keepalive_timeout: 10
+  # 同一在途 Keepalive 请求连续未应答的超时窗口数
+  keepalive_max_failures: 3
+  # Host Key 探测凭证：有效期秒数及全局记录上限
+  host_key_probe_ttl: 300
+  host_key_probe_limit: 256
+
+websocket:
+  # 全部已升级连接，包括未绑定及正在关闭的连接
+  max_connections: 128
+  control_queue_limit: 32
+  # 单条完整消息或输出块的字节上限
+  max_control_message_size: 16384
+  max_input_message_size: 65536
+  output_chunk_size: 65536
+  # 以下时间均为秒
+  bind_timeout: 5
+  message_read_timeout: 10
+  write_timeout: 10
+  close_timeout: 10
+  ping_interval: 30
+  pong_timeout: 10
+
+terminal:
+  max_cols: 500
+  max_rows: 300
+  # 单终端待提交与在途 write 数据合计上限，单位字节
+  write_queue_bytes: 1048576
+  # 等待在途 write 完成的上限，单位秒
+  write_drain_timeout: 10
+  reconnect_max_attempts: 10
+  # 恢复间隔与重置失败计数所需稳定时长，单位秒
+  reconnect_delay: 5
+  reconnect_stable_time: 30
+
+database:
+  path: "/data/web-ssh.db"
+  # SQLite 锁等待上限，单位毫秒
+  busy_timeout: 5000
+
+logging:
+  level: "info"
