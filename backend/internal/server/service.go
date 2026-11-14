@@ -128,6 +128,10 @@ func (s *Service) Create(ctx context.Context, login *auth.Session, input Input) 
 	if err != nil {
 		return View{}, err
 	}
+	// 先锁定新对象，再取得登录读锁，与编辑/删除保持相同锁顺序。
+	st := &State{version: 1}
+	st.mu.Lock()
+	defer st.mu.Unlock()
 	release, err := login.Acquire(s.now())
 	if err != nil {
 		return View{}, err
@@ -143,22 +147,29 @@ func (s *Service) Create(ctx context.Context, login *auth.Session, input Input) 
 	}
 	now := s.now().UnixMilli()
 	r := Record{ID: hex.EncodeToString(id), Name: in.Name, Host: in.Host, Port: *in.Port, Username: in.Username, PasswordEncrypted: encrypted, GroupName: in.GroupName, Remark: in.Remark, CreatedAt: now, UpdatedAt: now}
-	st := &State{record: r, version: 1}
+	st.record = r
+	// 提交前登记 State，提交结果确定前一直持有服务器锁。索引锁不跨数据库操作。
+	// 列表即使读到了已提交的 ID，也一定能找到 State，并等待创建完成。
+	s.mu.Lock()
+	s.states[r.ID] = st
+	s.mu.Unlock()
 	result := s.transact(ctx, func(tx *sql.Tx) error { return save(ctx, tx, r, true) })
 	if result == database.RolledBack {
+		// 已取得指针的并发请求也必须看到删除标记，不能读取回滚的对象。
+		st.deleted = true
+		s.mu.Lock()
+		delete(s.states, r.ID)
+		s.mu.Unlock()
 		return View{}, fault.Error("STORAGE_ERROR")
 	}
 	if result == database.Uncertain {
 		st.unavailable = true
-		// 新对象尚未发布，先确定不确定创建是否真正存在，避免留下虚构服务器。
+		// 仍持有服务器锁，先确定不确定创建是否真正存在，避免留下虚构服务器。
 		_ = s.reload(ctx, st)
 		if st.deleted {
 			return View{}, fault.Error("SERVER_UNAVAILABLE")
 		}
 	}
-	s.mu.Lock()
-	s.states[r.ID] = st
-	s.mu.Unlock()
 	if result == database.Uncertain {
 		return View{}, fault.Error("SERVER_UNAVAILABLE")
 	}
