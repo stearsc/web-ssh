@@ -1,0 +1,907 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <title>Web SSH · 界面原型 02</title>
+  <style>
+    :root {
+      --page: #fafafa;
+      --panel: #ffffff;
+      --hover: #f2f2f2;
+      --text: #252525;
+      --secondary: #777777;
+      --muted: #969696;
+      --line: #dedede;
+      --line-soft: #ebebeb;
+      --strong: #252525;
+      --on-strong: #ffffff;
+      --green: #4f8069;
+      --amber: #997b43;
+      --red: #a2544e;
+      --blue: #647a8c;
+      --selection: #e4ebe7;
+      --overlay: rgb(20 20 20 / 28%);
+      --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      --sidebar: 228px;
+      --header: 52px;
+    }
+    [data-theme="dark"] {
+      --page: #191919;
+      --panel: #1d1d1d;
+      --hover: #272727;
+      --text: #e2e2df;
+      --secondary: #a0a09c;
+      --muted: #858581;
+      --line: #373737;
+      --line-soft: #2d2d2d;
+      --strong: #e2e2df;
+      --on-strong: #1b1b1b;
+      --green: #83ab91;
+      --amber: #c2a675;
+      --red: #d49188;
+      --blue: #8da3b7;
+      --selection: #35443b;
+      --overlay: rgb(0 0 0 / 55%);
+    }
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    html, body { margin: 0; min-height: 100%; }
+    body { background: var(--page); color: var(--text); font-family: var(--sans); font-size: 14px; -webkit-font-smoothing: antialiased; }
+    button, input, select, textarea { font: inherit; color: inherit; }
+    button, a, input, select, textarea { -webkit-tap-highlight-color: transparent; }
+    button { cursor: pointer; }
+    button:disabled { cursor: not-allowed; opacity: .45; }
+    button, input, select, textarea { border-radius: 2px; }
+    button { background: none; border: 0; }
+    a { color: inherit; text-decoration: none; }
+    :focus-visible { outline: 2px solid var(--text); outline-offset: 3px; }
+    ::selection { background: var(--selection); }
+    svg.icon { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.45; stroke-linecap: square; stroke-linejoin: miter; flex: 0 0 auto; }
+    .mono { font-family: var(--mono); }
+    .muted { color: var(--secondary); }
+    .small { font-size: 12px; }
+    .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
+    .button { min-height: 37px; display: inline-flex; align-items: center; justify-content: center; gap: 9px; padding: 8px 13px; background: var(--panel); border: 1px solid var(--line); font-size: 13px; white-space: nowrap; }
+    .button:hover { border-color: var(--secondary); background: var(--hover); }
+    .button.primary { background: var(--strong); border-color: var(--strong); color: var(--on-strong); }
+    .button.primary:hover { opacity: .86; }
+    .button.danger { color: var(--red); }
+    .button.compact { min-height: 31px; padding: 5px 10px; font-size: 12px; }
+    .icon-button { display: inline-flex; align-items: center; justify-content: center; width: 37px; height: 37px; padding: 0; border: 1px solid var(--line); background: var(--panel); }
+    .icon-button:hover { background: var(--hover); border-color: var(--secondary); }
+    .plain-button { display: inline-flex; gap: 7px; align-items: center; color: var(--secondary); padding: 7px; font-size: 12px; }
+    .plain-button:hover { color: var(--text); background: var(--hover); }
+    .dot { width: 6px; height: 6px; display: inline-block; background: var(--green); border-radius: 50%; flex: 0 0 auto; }
+    .dot.offline { background: var(--amber); }
+    .dot.idle { background: var(--muted); }
+    .wordmark { display: block; color: var(--text); width: 118px; height: auto; }
+    .app { display: grid; grid-template-columns: 0 minmax(0, 1fr); grid-template-rows: var(--header) minmax(0, 1fr); height: 100vh; height: 100dvh; min-height: 0; }
+    .app.sidebar-visible { grid-template-columns: var(--sidebar) minmax(0, 1fr); }
+    .topbar { grid-column: 1 / -1; grid-row: 1; padding: 0 12px; display: flex; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--line); }
+    .brand { display: flex; align-items: center; gap: 15px; min-width: 0; }
+    .brand a { display: inline-block; }
+    .top-actions { display: flex; align-items: center; gap: 8px; }
+    .topbar .icon-button, .login-theme { width: 32px; height: 32px; }
+    .topbar .button { min-height: 32px; padding: 6px 11px; font-size: 12px; }
+    .sidebar-toggle { background: transparent; border-color: transparent; }
+    .sidebar-toggle[aria-expanded="true"] { background: var(--panel); border-color: var(--line); }
+    .sidebar { grid-column: 1; grid-row: 2; display: flex; flex-direction: column; min-height: 0; overflow-y: auto; border-right: 1px solid var(--line); background: var(--page); }
+    .server-section { padding: 17px 12px; }
+    .section-heading { display: flex; align-items: center; justify-content: space-between; padding: 0 4px; margin-bottom: 16px; }
+    .section-heading h2 { margin: 0; font-size: 12px; font-weight: 600; }
+    .section-heading .label { color: var(--muted); font: 10px var(--mono); letter-spacing: .08em; margin-left: 8px; }
+    .section-heading .icon-button { width: 26px; height: 26px; }
+    .section-heading .icon-button svg { width: 13px; height: 13px; }
+    .search-field { position: relative; margin: 0 3px 22px; }
+    .search-field svg { position: absolute; top: 11px; left: 10px; width: 13px; height: 13px; color: var(--muted); pointer-events: none; }
+    .search-field input { width: 100%; height: 35px; padding: 0 10px 0 30px; background: var(--panel); border: 1px solid var(--line); font-size: 12px; outline-offset: 1px; }
+    input::placeholder, textarea::placeholder { color: var(--muted); }
+    .server-group { margin-bottom: 21px; }
+    .group-heading { display: flex; align-items: center; gap: 8px; width: 100%; padding: 2px 5px 9px; color: var(--secondary); font-size: 11px; text-align: left; }
+    .group-heading svg { width: 10px; height: 10px; transition: transform .15s; }
+    .group-heading[aria-expanded="false"] svg { transform: rotate(-90deg); }
+    .group-heading .group-count { font: 10px var(--mono); margin-left: auto; color: var(--muted); }
+    .server-row { display: flex; align-items: center; border: 1px solid transparent; margin: 3px 0; min-height: 57px; }
+    .server-row:hover { background: var(--hover); }
+    .server-row.selected { background: var(--panel); border-color: var(--line); }
+    .server-open { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; padding: 10px 8px; text-align: left; }
+    .server-copy { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+    .server-name { font-size: 12px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .server-address { color: var(--muted); font: 10px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .server-edit { width: 25px; height: 31px; display: grid; place-items: center; color: var(--muted); padding: 3px; margin-right: 3px; }
+    .server-edit svg { width: 14px; }
+    .server-edit:hover { color: var(--text); background: var(--hover); }
+    .main { grid-column: 2; grid-row: 2; min-width: 0; min-height: 0; overflow: auto; padding: 8px; display: flex; flex-direction: column; }
+    .workspace-page { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+    .terminal-card { border: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; flex: 1; min-height: 0; }
+    .terminal-tabs, .terminal-meta { flex-shrink: 0; }
+    .terminal-tabs { min-height: 38px; display: flex; align-items: stretch; background: var(--page); border-bottom: 1px solid var(--line); }
+    .tabs-scroll { display: flex; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: thin; }
+    .terminal-tab { display: flex; align-items: stretch; border-right: 1px solid var(--line); min-width: 162px; position: relative; color: var(--secondary); flex-shrink: 0; }
+    .terminal-tab.active { background: var(--panel); color: var(--text); }
+    .terminal-tab.active::before { content: ""; height: 2px; background: var(--text); position: absolute; top: -1px; left: 0; right: 0; }
+    .tab-name { display: flex; gap: 9px; align-items: center; flex: 1; padding: 0 16px; font: 11px var(--mono); text-align: left; }
+    .tab-name .dot { width: 5px; height: 5px; }
+    .tab-close { color: var(--muted); width: 30px; padding: 0; font: 16px var(--mono); margin-right: 4px; }
+    .tab-close:hover { color: var(--text); }
+    .add-tab { padding: 0 12px; min-height: 37px; color: var(--secondary); border-left: 1px solid var(--line); }
+    .add-tab:hover { background: var(--hover); color: var(--text); }
+    .terminal-meta { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 30px; padding: 0 13px; border-top: 1px solid var(--line); color: var(--secondary); }
+    .connection-address { font: 10px var(--mono); display: flex; gap: 8px; align-items: center; min-width: 0; }
+    #connectionAddress { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .terminal-meta .meta-right { display: flex; align-items: center; gap: 15px; flex-shrink: 0; }
+    .terminal-meta .plain-button { font-size: 10px; padding: 4px 0; }
+    .terminal-meta .plain-button svg { width: 12px; height: 12px; }
+    #terminalSize { font: 10px var(--mono); color: var(--muted); }
+    .terminal-view { flex: 1; min-height: 0; padding: 18px 20px; overflow: auto; font: 13px/1.8 var(--mono); cursor: text; }
+    .terminal-output { white-space: pre-wrap; overflow-wrap: anywhere; }
+    .terminal-line { min-height: 1.8em; }
+    .terminal-line.subtle { color: var(--muted); }
+    .terminal-line.success, .prompt-user { color: var(--green); }
+    .terminal-line.heading { color: var(--secondary); }
+    .prompt-path { color: var(--blue); }
+    .terminal-input-row { position: relative; display: flex; align-items: baseline; gap: 8px; margin: 0; }
+    .terminal-prompt { flex-shrink: 0; white-space: nowrap; }
+    .terminal-input { background: transparent; border: 0; border-radius: 0; min-width: 0; flex: 1; height: 24px; padding: 0; font: inherit; outline: none; caret-color: var(--text); }
+    .terminal-input:focus-visible { outline: none; }
+    .terminal-input::placeholder { color: var(--muted); }
+    .session-page { padding: 16px; }
+    .session-heading { margin: 0 0 19px; font-size: 18px; font-weight: 600; }
+    .session-panel { border: 1px solid var(--line); background: var(--panel); }
+    .session-toolbar { display: flex; align-items: center; justify-content: space-between; min-height: 59px; padding: 0 22px; border-bottom: 1px solid var(--line); gap: 15px; }
+    .session-filters { display: flex; gap: 23px; align-items: stretch; align-self: stretch; }
+    .filter-button { color: var(--secondary); font-size: 12px; position: relative; padding: 0; white-space: nowrap; }
+    .filter-button.active { color: var(--text); font-weight: 600; }
+    .filter-button.active::after { content: ""; position: absolute; bottom: -1px; height: 2px; left: 0; right: 0; background: var(--text); }
+    .filter-button span { font: 10px var(--mono); color: var(--muted); margin-left: 7px; }
+    .session-table { width: 100%; border-collapse: collapse; font-size: 12px; text-align: left; }
+    .session-table th { height: 47px; padding: 10px 22px; color: var(--muted); font-size: 11px; font-weight: 400; background: var(--page); border-bottom: 1px solid var(--line); white-space: nowrap; }
+    .session-table td { padding: 23px 22px; border-bottom: 1px solid var(--line-soft); vertical-align: middle; }
+    .session-table tr:last-child td { border-bottom: 0; }
+    .session-table .cell-name { font: 12px var(--mono); font-weight: 600; }
+    .cell-detail { margin-top: 7px; color: var(--muted); font: 10px var(--mono); }
+    .session-state { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
+    .cell-actions { display: flex; gap: 7px; }
+    .session-empty { text-align: center; padding: 45px; color: var(--secondary); font-size: 13px; }
+    .empty-workspace { display: flex; flex: 1; min-height: 0; gap: 10px; align-items: center; justify-content: center; padding: 20px; }
+    .drawer-backdrop { display: none; }
+    .login-page { min-height: 100vh; min-height: 100dvh; position: relative; display: flex; align-items: center; justify-content: center; padding: 64px 24px; }
+    .login-theme { position: absolute; top: 18px; right: 20px; }
+    .login-card { width: min(340px, 100%); }
+    .login-brand { display: flex; justify-content: center; margin-bottom: 32px; }
+    .login-brand .wordmark { width: 208px; }
+    .login-form { position: relative; }
+    .login-form .password-wrap { position: relative; }
+    .login-form input { width: 100%; height: 44px; border: 1px solid var(--line); background: var(--panel); padding: 0 44px 0 13px; font-size: 13px; }
+    .password-toggle { position: absolute; right: 4px; top: 4px; width: 36px; height: 36px; display: grid; place-items: center; color: var(--muted); }
+    .login-submit { width: 100%; min-height: 42px; font-size: 13px; margin-top: 14px; }
+    dialog { color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 2px; padding: 0; width: min(520px, calc(100vw - 32px)); max-height: calc(100dvh - 48px); overflow: auto; }
+    dialog::backdrop { background: var(--overlay); }
+    .dialog-header { display: flex; align-items: center; justify-content: space-between; padding: 20px 24px; border-bottom: 1px solid var(--line); }
+    .dialog-header h2 { margin: 0; font-size: 16px; font-weight: 600; }
+    .dialog-header .icon-button { width: 29px; height: 29px; border-color: transparent; background: transparent; }
+    .dialog-body { padding: 24px; }
+    .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px 17px; }
+    .field.full { grid-column: 1 / -1; }
+    .field label { display: block; font-size: 12px; margin: 0 0 8px; }
+    .field input, .field textarea { width: 100%; min-height: 39px; padding: 9px 10px; background: var(--page); border: 1px solid var(--line); font-size: 12px; }
+    .field textarea { min-height: 67px; resize: vertical; }
+    .field small { display: block; margin-top: 7px; font-size: 10px; color: var(--muted); line-height: 1.7; }
+    .dialog-footer { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 17px 24px; border-top: 1px solid var(--line); }
+    .dialog-footer .left-action { margin-right: auto; }
+    .confirm-dialog { width: min(420px, calc(100vw - 32px)); }
+    .confirm-copy { color: var(--secondary); font-size: 13px; line-height: 1.9; margin: 0; }
+    .confirm-target { border: 1px solid var(--line); padding: 13px 15px; margin: 19px 0 0; font: 12px var(--mono); }
+    .form-notice { font-size: 11px; color: var(--green); margin: 15px 0 0; line-height: 1.8; }
+    .toast { position: fixed; bottom: 27px; left: 50%; transform: translate(-50%, 14px); max-width: calc(100vw - 32px); width: max-content; padding: 12px 18px; border: 1px solid var(--line); background: var(--strong); color: var(--on-strong); font-size: 12px; z-index: 20; opacity: 0; pointer-events: none; transition: opacity .18s, transform .18s; line-height: 1.7; }
+    .toast.visible { opacity: 1; transform: translate(-50%, 0); }
+    @media (max-width: 1100px) {
+      .session-table th, .session-table td { padding-left: 15px; padding-right: 15px; }
+      .session-table .time-column { display: none; }
+    }
+    @media (max-width: 720px) {
+      .app, .app.sidebar-visible { grid-template-columns: 0 minmax(0, 1fr); }
+      .topbar { padding: 0 8px; gap: 8px; }
+      .brand { gap: 8px; }
+      .brand .wordmark { width: 96px; }
+      .top-actions { gap: 5px; }
+      .topbar .button { padding: 6px 8px; }
+      .topbar .button svg { display: none; }
+      .sidebar { position: fixed; left: 0; top: var(--header); bottom: 0; z-index: 6; width: min(260px, calc(100vw - 48px)); }
+      .drawer-open .drawer-backdrop { display: block; position: fixed; inset: var(--header) 0 0; background: var(--overlay); z-index: 5; }
+      .main { padding: 4px; }
+      .terminal-tab { min-width: 139px; }
+      .tab-name { padding-left: 12px; padding-right: 8px; }
+      .terminal-meta { padding: 0 9px; }
+      .connection-address { font-size: 9px; gap: 6px; }
+      .terminal-meta .meta-right { gap: 9px; }
+      #terminalSize { font-size: 9px; }
+      .terminal-meta .plain-button span { display: none; }
+      .terminal-meta .plain-button { min-height: 30px; width: 25px; justify-content: center; }
+      .terminal-view { padding: 13px 11px; font-size: 11px; }
+      .terminal-input { font-size: 16px; }
+      .terminal-input-row { gap: 5px; }
+      .session-page { padding: 14px 8px; }
+      .session-toolbar { padding: 0 14px; }
+      .session-filters { gap: 18px; }
+      .session-toolbar > .mono { display: none; }
+      .session-table, .session-table tbody { display: block; }
+      .session-table thead { display: none; }
+      .session-table tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 14px; padding: 19px 15px; border-bottom: 1px solid var(--line); }
+      .session-table td { display: block; padding: 0; border: 0; }
+      .session-table td.server-column { grid-column: 1; grid-row: 2; }
+      .session-table td.state-column { grid-column: 2; grid-row: 1; text-align: right; }
+      .session-table td.retention-column { grid-column: 2; grid-row: 2; text-align: right; }
+      .session-table td.actions-column { grid-column: 1 / -1; margin-top: 3px; }
+      .cell-actions { justify-content: flex-end; }
+      .cell-actions .button { min-height: 35px; }
+      .login-form input { font-size: 16px; }
+      .form-grid { gap: 17px 13px; }
+      .dialog-header, .dialog-body, .dialog-footer { padding-left: 20px; padding-right: 20px; }
+      .field input, .field textarea { font-size: 16px; }
+      .field label { font-size: 11px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { transition: none !important; scroll-behavior: auto !important; }
+    }
+  </style>
+</head>
+<body>
+  <svg xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden">
+    <symbol id="i-terminal" viewBox="0 0 20 20"><path d="m4 5 5 5-5 5M11 15h5"/></symbol>
+    <symbol id="i-sessions" viewBox="0 0 20 20"><rect x="3" y="3" width="10" height="10"/><path d="M7 16h10V7"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 20 20"><path d="M10 4v12M4 10h12"/></symbol>
+    <symbol id="i-search" viewBox="0 0 20 20"><circle cx="8.5" cy="8.5" r="5"/><path d="m12 12 5 5"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 20 20"><path d="m5 7 5 5 5-5"/></symbol>
+    <symbol id="i-more" viewBox="0 0 20 20"><path d="M4 10h1m4 0h1m4 0h1" stroke-width="2"/></symbol>
+    <symbol id="i-square" viewBox="0 0 20 20"><rect x="5" y="5" width="10" height="10"/></symbol>
+    <symbol id="i-logout" viewBox="0 0 20 20"><path d="M6 3v10h9m-4-4 4 4-4 4"/></symbol>
+    <symbol id="i-close" viewBox="0 0 20 20"><path d="m5 5 10 10M15 5 5 15"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 20 20"><path d="M4 10h12m-5-5 5 5-5 5"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 20 20"><rect x="4" y="9" width="12" height="8"/><path d="M6 9V6a4 4 0 0 1 8 0v3M10 12v2"/></symbol>
+    <symbol id="i-eye" viewBox="0 0 20 20"><path d="M2 10s3-5 8-5 8 5 8 5-3 5-8 5-8-5-8-5Z"/><circle cx="10" cy="10" r="2"/></symbol>
+    <symbol id="i-sidebar" viewBox="0 0 20 20"><rect x="2.5" y="3" width="15" height="14"/><path d="M7 3v14"/></symbol>
+    <symbol id="i-theme" viewBox="0 0 20 20"><circle cx="10" cy="10" r="6.5"/><path d="M10 3.5a6.5 6.5 0 0 1 0 13Z" fill="currentColor" stroke="none"/></symbol>
+  </svg>
+
+  <section class="login-page" id="loginPage" hidden aria-label="Web SSH 登录">
+    <button class="icon-button login-theme" data-action="theme" aria-label="切换深色主题" title="切换深色主题"><svg class="icon"><use href="#i-theme"/></svg></button>
+    <div class="login-card">
+      <div class="login-brand">
+        <svg class="wordmark" data-wordmark role="img" aria-label="Web SSH"></svg>
+      </div>
+      <form class="login-form" id="loginForm">
+        <label class="sr-only" for="loginPassword">管理密码</label>
+        <div class="password-wrap">
+          <input id="loginPassword" name="password" type="password" autocomplete="off" placeholder="管理密码" title="界面原型，无需填写真实密码">
+          <button class="password-toggle" id="passwordToggle" type="button" aria-label="显示密码"><svg class="icon"><use href="#i-eye"/></svg></button>
+        </div>
+        <button class="button primary login-submit" type="submit">登录</button>
+      </form>
+    </div>
+  </section>
+
+  <div class="app" id="app">
+    <header class="topbar">
+      <div class="brand">
+        <button class="icon-button sidebar-toggle" id="sidebarToggle" aria-label="显示服务器列表" aria-controls="sidebar" aria-expanded="false" title="显示服务器列表"><svg class="icon"><use href="#i-sidebar"/></svg></button>
+        <a href="#workspace" aria-label="Web SSH 工作区" title="终端"><svg class="wordmark" data-wordmark role="img" aria-label="Web SSH"></svg></a>
+      </div>
+      <div class="top-actions">
+        <button class="button" id="pageToggle" data-page="sessions" aria-label="会话管理"><svg class="icon"><use href="#i-sessions"/></svg><span>会话</span></button>
+        <button class="icon-button" data-action="theme" aria-label="切换深色主题" title="切换深色主题"><svg class="icon"><use href="#i-theme"/></svg></button>
+        <button class="icon-button" data-action="logout" title="退出登录" aria-label="退出登录"><svg class="icon"><use href="#i-logout"/></svg></button>
+      </div>
+    </header>
+
+    <button class="drawer-backdrop" id="drawerBackdrop" aria-label="隐藏服务器列表" tabindex="-1"></button>
+    <aside class="sidebar" id="sidebar" aria-label="服务器" hidden inert>
+      <section class="server-section" aria-label="服务器列表">
+        <div class="section-heading"><h2>服务器<span class="label" id="serverCount">04</span></h2><button class="icon-button" data-action="add-server" title="添加服务器" aria-label="添加服务器"><svg class="icon"><use href="#i-plus"/></svg></button></div>
+        <div class="search-field"><svg class="icon"><use href="#i-search"/></svg><input id="serverSearch" type="search" placeholder="搜索服务器…" aria-label="搜索服务器"></div>
+        <div id="serverGroups"></div>
+      </section>
+    </aside>
+
+    <main class="main">
+      <section class="workspace-page" id="workspacePage" aria-label="终端工作区">
+        <div class="terminal-card">
+          <div class="terminal-tabs"><div class="tabs-scroll" id="terminalTabs" role="tablist" aria-label="终端标签"></div><button class="add-tab" data-action="new-terminal" aria-label="新建终端标签" title="新建终端"><svg class="icon"><use href="#i-plus"/></svg></button></div>
+          <div class="terminal-view" id="terminalView" role="tabpanel" aria-label="模拟终端">
+            <div class="terminal-output" id="terminalOutput"></div>
+            <form class="terminal-input-row" id="terminalForm"><label class="sr-only" for="terminalInput">模拟终端命令</label><span class="terminal-prompt" id="terminalPrompt"></span><input class="terminal-input" id="terminalInput" autocomplete="off" autocapitalize="off" spellcheck="false"></form>
+          </div>
+          <div class="empty-workspace" id="emptyWorkspace" hidden><button class="button" data-action="show-servers">选择服务器</button><button class="button" data-page="sessions">会话管理</button></div>
+          <div class="terminal-meta" id="terminalMeta"><div class="connection-address"><span class="dot" role="img" aria-label="已连接"></span><span id="connectionAddress"></span></div><div class="meta-right"><span id="terminalSize">120 × 32</span><button class="plain-button" id="closeCurrentSession" aria-label="关闭会话" title="关闭 SSH 会话"><span>关闭会话</span><svg class="icon"><use href="#i-close"/></svg></button></div></div>
+        </div>
+      </section>
+
+      <section class="session-page" id="sessionsPage" aria-labelledby="sessionsHeading" hidden>
+        <h1 class="session-heading" id="sessionsHeading">会话管理</h1>
+        <div class="session-panel">
+          <div class="session-toolbar"><div class="session-filters" id="sessionFilters"><button class="filter-button active" data-filter="all">全部<span id="allSessionCount">03</span></button><button class="filter-button" data-filter="connected">已连接<span id="connectedSessionCount">02</span></button><button class="filter-button" data-filter="disconnected">离线保留<span id="disconnectedSessionCount">01</span></button></div></div>
+          <table class="session-table"><thead><tr><th>会话</th><th>服务器</th><th>状态</th><th class="time-column">最近接入</th><th>剩余保留</th><th>操作</th></tr></thead><tbody id="sessionRows"></tbody></table>
+          <div class="session-empty" id="sessionEmpty" hidden>当前没有符合条件的会话。</div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="serverDialog" aria-labelledby="serverDialogTitle">
+    <form id="serverForm">
+      <div class="dialog-header"><h2 id="serverDialogTitle">添加服务器</h2><button type="button" class="icon-button" data-close-dialog="serverDialog" aria-label="关闭服务器表单"><svg class="icon"><use href="#i-close"/></svg></button></div>
+      <div class="dialog-body">
+        <div class="form-grid">
+          <div class="field"><label for="serverName">名称</label><input id="serverName" name="name" placeholder="例如：prod-web" required maxlength="40"></div>
+          <div class="field"><label for="serverGroup">分组</label><input id="serverGroup" name="group" placeholder="例如：生产环境" maxlength="30" list="groupOptions"><datalist id="groupOptions"><option value="生产环境"><option value="开发环境"><option value="个人设备"></datalist></div>
+          <div class="field"><label for="serverHost">Host</label><input id="serverHost" name="host" placeholder="IP 或域名" required maxlength="100"></div>
+          <div class="field"><label for="serverPort">Port</label><input id="serverPort" name="port" type="number" min="1" max="65535" value="22" required></div>
+          <div class="field"><label for="serverUser">Username</label><input id="serverUser" name="username" value="root" required maxlength="40"></div>
+          <div class="field"><label for="serverPassword">Password</label><input id="serverPassword" name="password" type="password" autocomplete="new-password" placeholder="演示，无需真实密码"><small id="passwordHint">原型不会保存密码。</small></div>
+          <div class="field full"><label for="serverRemark">备注</label><textarea id="serverRemark" name="remark" placeholder="可选" maxlength="200"></textarea></div>
+        </div>
+        <p class="form-notice" id="connectionTestResult" hidden></p>
+      </div>
+      <div class="dialog-footer"><button class="button compact danger left-action" id="deleteServerButton" type="button" hidden>删除</button><button class="button compact left-action" id="testServerButton" type="button">测试连接</button><button class="button" type="button" data-close-dialog="serverDialog">取消</button><button class="button primary" type="submit">保存服务器</button></div>
+    </form>
+  </dialog>
+
+  <dialog class="confirm-dialog" id="confirmDialog" aria-labelledby="confirmTitle">
+    <div class="dialog-header"><h2 id="confirmTitle">关闭 SSH 会话？</h2><button class="icon-button" data-close-dialog="confirmDialog" aria-label="取消关闭"><svg class="icon"><use href="#i-close"/></svg></button></div>
+    <div class="dialog-body"><p class="confirm-copy" id="confirmMessage"></p><div class="confirm-target" id="confirmTarget"></div></div>
+    <div class="dialog-footer"><button class="button" data-close-dialog="confirmDialog">取消</button><button class="button primary" id="confirmAction">确认关闭</button></div>
+  </dialog>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <!-- 原型脚本仅演示交互，不建立网络连接，也不保存任何认证凭据。 -->
+  <script>
+    'use strict';
+
+    const element = (id) => document.getElementById(id);
+    const icon = (name) => `<svg class="icon" aria-hidden="true"><use href="#i-${name}"/></svg>`;
+    const escapeHtml = (value) => String(value).replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
+    const countLabel = (count) => String(count).padStart(2, '0');
+    const retentionMilliseconds = 120 * 60 * 1000;
+    const themeStorageKey = 'webssh-prototype-v2-theme';
+    const mobileLayout = window.matchMedia('(max-width: 720px)');
+
+    const servers = [
+      { id: 'prod', name: 'prod-web', host: '10.0.0.11', port: 22, username: 'root', group: '生产环境', remark: '生产应用服务器' },
+      { id: 'data', name: 'prod-data', host: '10.0.0.12', port: 22, username: 'ubuntu', group: '生产环境', remark: '数据服务' },
+      { id: 'dev', name: 'dev-server', host: '10.0.1.21', port: 22, username: 'ubuntu', group: '开发环境', remark: '日常开发环境' },
+      { id: 'home', name: 'home-lab', host: '192.168.1.8', port: 22, username: 'alex', group: '个人设备', remark: '家用实验环境' }
+    ];
+
+    function initialOutput(serverId) {
+      if (serverId === 'prod') {
+        return [
+          { kind: 'subtle', text: 'Last login: Fri Nov 13 10:42:18 2026 from 10.0.0.2' },
+          { kind: 'normal', text: 'Welcome to Ubuntu 24.04.1 LTS (GNU/Linux 6.8.0 x86_64)' },
+          { kind: 'normal', text: '' },
+          { kind: 'command', text: 'docker compose ps' },
+          { kind: 'heading', text: 'NAME          IMAGE             STATUS          PORTS' },
+          { kind: 'normal', text: 'web           nginx:1.27        Up 12 days      80:80' },
+          { kind: 'normal', text: 'api           app:stable        Up 12 days      8080:8080' },
+          { kind: 'normal', text: 'worker        worker:stable     Up 12 days      —' },
+          { kind: 'normal', text: '' },
+          { kind: 'command', text: 'uptime' },
+          { kind: 'normal', text: ' 11:32:06 up 12 days,  4:18,  1 user,  load average: 0.08, 0.12, 0.09' },
+          { kind: 'normal', text: '' }
+        ];
+      }
+      if (serverId === 'data') {
+        return [
+          { kind: 'subtle', text: 'Last login: Fri Nov 13 09:15:02 2026 from 10.0.0.2' },
+          { kind: 'command', text: 'docker compose logs --tail=3' },
+          { kind: 'normal', text: 'database  | 2026-11-13 10:58:02  checkpoint complete' },
+          { kind: 'normal', text: 'database  | 2026-11-13 10:59:02  database ready for connections' },
+          { kind: 'normal', text: 'database  | 2026-11-13 11:00:02  background worker completed' },
+          { kind: 'normal', text: '' }
+        ];
+      }
+      return [
+        { kind: 'subtle', text: 'Welcome to Ubuntu 24.04.1 LTS' },
+        { kind: 'normal', text: '' },
+        { kind: 'command', text: 'pwd' },
+        { kind: 'normal', text: serverId === 'dev' ? '/home/ubuntu' : '/home/alex' },
+        { kind: 'normal', text: '' }
+      ];
+    }
+
+    const sessions = [
+      { id: '8f31a2', serverId: 'prod', name: 'prod-web', state: 'connected', createdAt: '10:42', attachedAt: '11:32', disconnectedAt: null, output: initialOutput('prod'), draft: '' },
+      { id: 'd2b708', serverId: 'dev', name: 'dev-server', state: 'connected', createdAt: '10:08', attachedAt: '10:08', disconnectedAt: null, output: initialOutput('dev'), draft: '' },
+      { id: 'c91e64', serverId: 'data', name: 'prod-data', state: 'disconnected', createdAt: '09:15', attachedAt: '10:03', disconnectedAt: Date.now() - 18 * 60 * 1000, output: initialOutput('data'), draft: '' }
+    ];
+    let openTabs = ['8f31a2', 'd2b708'];
+    let activeSessionId = '8f31a2';
+    let selectedServerId = 'prod';
+    let currentPage = 'workspace';
+    let sessionFilter = 'all';
+    let editingServerId = null;
+    let confirmCallback = null;
+    let toastTimer = null;
+    let isDesktopSidebarOpen = false;
+    let isMobileSidebarOpen = false;
+    const collapsedGroups = new Set();
+
+    // 使用本地矢量像素字标，原型离线打开时也无需加载字体或图片。
+    function renderWordmarks() {
+      const glyphs = {
+        W: ['1000001', '1000001', '1000001', '1001001', '1010101', '1100011', '1000001'],
+        E: ['11111', '10000', '10000', '11110', '10000', '10000', '11111'],
+        B: ['11110', '10001', '10001', '11110', '10001', '10001', '11110'],
+        S: ['01111', '10000', '10000', '01110', '00001', '00001', '11110'],
+        H: ['10001', '10001', '10001', '11111', '10001', '10001', '10001']
+      };
+      let cursor = 0;
+      let pixels = '';
+      for (const letter of 'WEB SSH') {
+        if (letter === ' ') { cursor += 3; continue; }
+        const rows = glyphs[letter];
+        rows.forEach((row, rowIndex) => {
+          [...row].forEach((pixel, columnIndex) => {
+            if (pixel === '1') pixels += `<rect x="${cursor + columnIndex}" y="${rowIndex}" width="1" height="1"/>`;
+          });
+        });
+        cursor += rows[0].length + 1;
+      }
+      document.querySelectorAll('[data-wordmark]').forEach((wordmark) => {
+        wordmark.setAttribute('viewBox', `0 0 ${cursor} 8`);
+        wordmark.setAttribute('shape-rendering', 'crispEdges');
+        wordmark.innerHTML = `<g fill="currentColor" opacity=".18" transform="translate(.38 .42)">${pixels}</g><g fill="currentColor">${pixels}</g>`;
+      });
+    }
+
+    function setTheme(theme) {
+      document.documentElement.dataset.theme = theme;
+      document.querySelectorAll('[data-action="theme"]').forEach((button) => {
+        const label = theme === 'dark' ? '切换白色主题' : '切换深色主题';
+        button.setAttribute('aria-label', label);
+        button.title = label;
+      });
+      try { localStorage.setItem(themeStorageKey, theme); } catch (error) { console.info('主题偏好无法写入浏览器存储，当前页面仍可切换。', error.name); }
+    }
+
+    function initializeTheme() {
+      let theme = 'light';
+      try { if (localStorage.getItem(themeStorageKey) === 'dark') theme = 'dark'; } catch (error) { console.info('无法读取主题偏好，使用默认白色主题。', error.name); }
+      setTheme(theme);
+    }
+
+    function showToast(message) {
+      clearTimeout(toastTimer);
+      element('toast').textContent = message;
+      element('toast').classList.add('visible');
+      toastTimer = setTimeout(() => element('toast').classList.remove('visible'), 3200);
+    }
+
+    function syncSidebar() {
+      const isMobile = mobileLayout.matches;
+      const isVisible = isMobile ? isMobileSidebarOpen : isDesktopSidebarOpen;
+      const sidebar = element('sidebar');
+      const toggle = element('sidebarToggle');
+      if (!isVisible && sidebar.contains(document.activeElement)) toggle.focus({ preventScroll: true });
+      sidebar.hidden = !isVisible;
+      sidebar.inert = !isVisible;
+      element('app').classList.toggle('sidebar-visible', !isMobile && isVisible);
+      element('app').classList.toggle('drawer-open', isMobile && isVisible);
+      document.querySelector('.main').inert = isMobile && isVisible;
+      toggle.setAttribute('aria-expanded', String(isVisible));
+      const label = isVisible ? '隐藏服务器列表' : '显示服务器列表';
+      toggle.setAttribute('aria-label', label);
+      toggle.title = label;
+      updateTerminalSize();
+    }
+
+    function setSidebarVisible(isVisible) {
+      const shouldMoveFocus = isVisible && mobileLayout.matches && document.querySelector('.main').contains(document.activeElement);
+      if (mobileLayout.matches) isMobileSidebarOpen = isVisible;
+      else isDesktopSidebarOpen = isVisible;
+      syncSidebar();
+      if (shouldMoveFocus) element('sidebarToggle').focus({ preventScroll: true });
+    }
+
+    // 选中服务器后只自动收起手机抽屉，桌面侧栏按用户选择保持显隐。
+    function closeDrawer() {
+      const shouldRestoreFocus = mobileLayout.matches && isMobileSidebarOpen;
+      isMobileSidebarOpen = false;
+      syncSidebar();
+      if (shouldRestoreFocus) element('sidebarToggle').focus({ preventScroll: true });
+    }
+
+    function applyRoute() {
+      const route = location.hash.slice(1);
+      currentPage = ['workspace', 'sessions', 'login'].includes(route) ? route : 'workspace';
+      const isLogin = currentPage === 'login';
+      element('loginPage').hidden = !isLogin;
+      element('app').hidden = isLogin;
+      element('workspacePage').hidden = currentPage !== 'workspace';
+      element('sessionsPage').hidden = currentPage !== 'sessions';
+      const isSessionsPage = currentPage === 'sessions';
+      const pageToggle = element('pageToggle');
+      pageToggle.dataset.page = isSessionsPage ? 'workspace' : 'sessions';
+      pageToggle.setAttribute('aria-label', isSessionsPage ? '返回终端' : '会话管理');
+      pageToggle.innerHTML = `${icon(isSessionsPage ? 'terminal' : 'sessions')}<span>${isSessionsPage ? '终端' : '会话'}</span>`;
+      closeDrawer();
+      if (currentPage === 'sessions') renderSessions();
+      if (currentPage === 'workspace') updateTerminalSize();
+    }
+
+    function navigate(page) {
+      if (location.hash === `#${page}`) applyRoute();
+      else location.hash = page;
+    }
+
+    function getActiveSession() { return sessions.find((session) => session.id === activeSessionId); }
+    function getServer(serverId) { return servers.find((server) => server.id === serverId); }
+    function currentTime() { return new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }); }
+
+    function renderServers() {
+      const query = element('serverSearch').value.trim().toLowerCase();
+      const groups = [...new Set(servers.map((server) => server.group || '未分组'))];
+      const markup = groups.map((group) => {
+        const members = servers.filter((server) => (server.group || '未分组') === group && `${server.name} ${server.host}`.toLowerCase().includes(query));
+        if (!members.length) return '';
+        const isExpanded = !collapsedGroups.has(group) || Boolean(query);
+        return `<section class="server-group"><button class="group-heading" data-group="${escapeHtml(group)}" aria-expanded="${isExpanded}">${icon('chevron')}<span>${escapeHtml(group)}</span><span class="group-count">${countLabel(members.length)}</span></button><div ${isExpanded ? '' : 'hidden'}>${members.map((server) => {
+          const hasConnected = sessions.some((session) => session.serverId === server.id && session.state === 'connected');
+          const hasDisconnected = sessions.some((session) => session.serverId === server.id && session.state === 'disconnected');
+          const dotClass = hasConnected ? '' : hasDisconnected ? 'offline' : 'idle';
+          return `<div class="server-row ${server.id === selectedServerId ? 'selected' : ''}"><button class="server-open" data-open-server="${server.id}" title="打开 ${escapeHtml(server.name)} 终端"><span class="dot ${dotClass}"></span><span class="server-copy"><span class="server-name">${escapeHtml(server.name)}</span><span class="server-address">${escapeHtml(server.username)}@${escapeHtml(server.host)}</span></span></button><button class="server-edit" data-edit-server="${server.id}" aria-label="编辑 ${escapeHtml(server.name)}" title="编辑服务器">${icon('more')}</button></div>`;
+        }).join('')}</div></section>`;
+      }).join('');
+      element('serverGroups').innerHTML = markup || '<p class="muted small" style="padding:0 5px">没有匹配的服务器。</p>';
+      element('serverCount').textContent = countLabel(servers.length);
+    }
+
+    function renderTabs() {
+      element('terminalTabs').innerHTML = openTabs.map((sessionId) => {
+        const session = sessions.find((item) => item.id === sessionId);
+        if (!session) return '';
+        const isActive = session.id === activeSessionId;
+        return `<div class="terminal-tab ${isActive ? 'active' : ''}"><button id="tab-${session.id}" class="tab-name" role="tab" aria-selected="${isActive}" aria-controls="terminalView" data-tab="${session.id}"><span class="dot"></span>${escapeHtml(session.name)}</button><button class="tab-close" data-close-tab="${session.id}" aria-label="关闭 ${escapeHtml(session.name)} 视图" title="关闭视图，保留会话">×</button></div>`;
+      }).join('');
+    }
+
+    function promptMarkup(server) {
+      return `<span class="prompt-user">${escapeHtml(server.username)}@${escapeHtml(server.name)}</span>:<span class="prompt-path">~</span>${server.username === 'root' ? '#' : '$'}`;
+    }
+
+    function renderTerminal() {
+      const session = getActiveSession();
+      const hasSession = Boolean(session);
+      element('terminalMeta').hidden = !hasSession;
+      element('terminalView').hidden = !hasSession;
+      element('emptyWorkspace').hidden = hasSession;
+      if (!session) return;
+      const server = getServer(session.serverId);
+      element('terminalView').setAttribute('aria-labelledby', `tab-${session.id}`);
+      element('connectionAddress').textContent = `${server.username}@${server.host}:${server.port}`;
+      element('connectionAddress').title = `Session: ${session.id}`;
+      element('terminalPrompt').innerHTML = promptMarkup(server);
+      element('terminalInput').value = session.draft;
+      element('terminalOutput').innerHTML = session.output.map((line) => {
+        const content = line.kind === 'command' ? `${promptMarkup(server)} ${escapeHtml(line.text)}` : escapeHtml(line.text);
+        return `<div class="terminal-line ${line.kind === 'command' ? '' : line.kind}">${content || ' '}</div>`;
+      }).join('');
+      updateTerminalSize();
+    }
+
+    function remainingTime(session) {
+      if (session.state === 'connected') return '—';
+      const remainingMinutes = Math.max(0, Math.ceil((retentionMilliseconds - (Date.now() - session.disconnectedAt)) / 60000));
+      if (!remainingMinutes) return '已到期';
+      return `${String(Math.floor(remainingMinutes / 60)).padStart(2, '0')}h ${String(remainingMinutes % 60).padStart(2, '0')}m`;
+    }
+
+    function renderSessions() {
+      const visibleSessions = sessions.filter((session) => sessionFilter === 'all' || session.state === sessionFilter);
+      element('sessionRows').innerHTML = visibleSessions.map((session) => {
+        const server = getServer(session.serverId);
+        const isConnected = session.state === 'connected';
+        const disconnectLabel = isConnected ? '当前浏览器' : `${new Date(session.disconnectedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })} 已断开`;
+        return `<tr><td><div class="cell-name">${escapeHtml(session.name)}</div><div class="cell-detail">${session.id} · 创建于 ${session.createdAt}</div></td><td class="server-column"><span class="mono">${escapeHtml(server.host)}</span><div class="cell-detail">${escapeHtml(server.username)} : ${server.port}</div></td><td class="state-column"><span class="session-state"><span class="dot ${isConnected ? '' : 'offline'}"></span>${isConnected ? '已连接' : '离线保留'}</span><div class="cell-detail">${disconnectLabel}</div></td><td class="time-column mono">${session.attachedAt}</td><td class="retention-column mono">${remainingTime(session)}</td><td class="actions-column"><div class="cell-actions"><button class="button compact" data-takeover="${session.id}">${isConnected ? '打开' : '接管'} ${icon('arrow')}</button><button class="button compact danger" data-close-session="${session.id}">关闭</button></div></td></tr>`;
+      }).join('');
+      element('sessionEmpty').hidden = visibleSessions.length > 0;
+      const connectedCount = sessions.filter((session) => session.state === 'connected').length;
+      element('allSessionCount').textContent = countLabel(sessions.length);
+      element('connectedSessionCount').textContent = countLabel(connectedCount);
+      element('disconnectedSessionCount').textContent = countLabel(sessions.length - connectedCount);
+      document.querySelectorAll('[data-filter]').forEach((button) => button.classList.toggle('active', button.dataset.filter === sessionFilter));
+    }
+
+    function renderAll() { renderServers(); renderTabs(); renderTerminal(); renderSessions(); }
+
+    function focusSession(sessionId) {
+      const session = sessions.find((item) => item.id === sessionId);
+      if (!session) return;
+      activeSessionId = session.id;
+      selectedServerId = session.serverId;
+      renderAll();
+      navigate('workspace');
+    }
+
+    function createSession(serverId) {
+      const server = getServer(serverId);
+      if (!server) { openServerForm(); return; }
+      const existingCount = sessions.filter((session) => session.serverId === serverId).length;
+      if (existingCount >= 20) { showToast('该服务器已达到 20 个会话，请先关闭不需要的会话。'); return; }
+      const suffix = existingCount ? ` · ${existingCount + 1}` : '';
+      const session = { id: crypto.randomUUID().slice(0, 6), serverId, name: `${server.name}${suffix}`, state: 'connected', createdAt: currentTime(), attachedAt: currentTime(), disconnectedAt: null, output: [], draft: '' };
+      sessions.push(session);
+      openTabs.push(session.id);
+      focusSession(session.id);
+    }
+
+    function openServer(serverId) {
+      selectedServerId = serverId;
+      const localSession = sessions.find((session) => session.serverId === serverId && openTabs.includes(session.id));
+      if (localSession) focusSession(localSession.id);
+      else createSession(serverId);
+      closeDrawer();
+    }
+
+    // 关闭标签只解除当前视图，保留相同会话标识、历史输出和离线倒计时。
+    function closeTab(sessionId) {
+      const session = sessions.find((item) => item.id === sessionId);
+      if (!session) return;
+      session.state = 'disconnected';
+      session.disconnectedAt = Date.now();
+      openTabs = openTabs.filter((id) => id !== sessionId);
+      if (activeSessionId === sessionId) activeSessionId = openTabs[0] || null;
+      const activeSession = getActiveSession();
+      if (activeSession) selectedServerId = activeSession.serverId;
+      renderAll();
+      showToast('视图已关闭，会话保留 2 小时。');
+    }
+
+    function takeoverSession(sessionId) {
+      const session = sessions.find((item) => item.id === sessionId);
+      if (!session) return;
+      const wasDisconnected = session.state === 'disconnected';
+      session.state = 'connected';
+      session.disconnectedAt = null;
+      session.attachedAt = currentTime();
+      if (!openTabs.includes(session.id)) openTabs.push(session.id);
+      focusSession(session.id);
+      if (wasDisconnected) showToast('已接管原会话。');
+    }
+
+    function showConfirmation(title, message, target, actionLabel, callback) {
+      element('confirmTitle').textContent = title;
+      element('confirmMessage').textContent = message;
+      element('confirmTarget').textContent = target;
+      element('confirmAction').textContent = actionLabel;
+      confirmCallback = callback;
+      element('confirmDialog').showModal();
+    }
+
+    function requestCloseSession(sessionId) {
+      const session = sessions.find((item) => item.id === sessionId);
+      if (!session) return;
+      showConfirmation('关闭 SSH 会话？', '正在执行的前台命令可能中断。', `${session.name} / ${session.id}`, '确认关闭', () => {
+        const sessionIndex = sessions.findIndex((item) => item.id === sessionId);
+        if (sessionIndex < 0) { showToast('该会话已经结束。'); return; }
+        sessions.splice(sessionIndex, 1);
+        openTabs = openTabs.filter((id) => id !== sessionId);
+        if (activeSessionId === sessionId) activeSessionId = openTabs[0] || null;
+        if (getActiveSession()) selectedServerId = getActiveSession().serverId;
+        renderAll();
+        showToast('演示会话已关闭。');
+      });
+    }
+
+    function openServerForm(serverId = null) {
+      editingServerId = serverId;
+      const server = serverId ? getServer(serverId) : null;
+      element('serverForm').reset();
+      element('serverDialogTitle').textContent = server ? '编辑服务器' : '添加服务器';
+      element('deleteServerButton').hidden = !server;
+      element('testServerButton').classList.toggle('left-action', !server);
+      element('connectionTestResult').hidden = true;
+      element('passwordHint').textContent = server ? '留空保留原密码。原型不会保存密码。' : '原型不会保存密码。';
+      if (server) {
+        element('serverName').value = server.name;
+        element('serverGroup').value = server.group;
+        element('serverHost').value = server.host;
+        element('serverPort').value = server.port;
+        element('serverUser').value = server.username;
+        element('serverRemark').value = server.remark;
+      }
+      element('serverDialog').showModal();
+    }
+
+    function saveServer(event) {
+      event.preventDefault();
+      const name = element('serverName').value.trim();
+      const host = element('serverHost').value.trim();
+      const username = element('serverUser').value.trim();
+      if (!name || !host || !username) { showToast('请填写服务器名称、地址和用户名。'); return; }
+      const updated = { name, host, username, port: Number(element('serverPort').value), group: element('serverGroup').value.trim() || '未分组', remark: element('serverRemark').value.trim() };
+      if (editingServerId) Object.assign(getServer(editingServerId), updated);
+      else servers.push({ id: crypto.randomUUID().slice(0, 8), ...updated });
+      element('serverPassword').value = '';
+      element('serverDialog').close();
+      renderAll();
+      showToast('已保存。');
+    }
+
+    function requestDeleteServer() {
+      const server = getServer(editingServerId);
+      if (!server) return;
+      if (sessions.some((session) => session.serverId === server.id)) {
+        element('connectionTestResult').hidden = false;
+        element('connectionTestResult').textContent = '该服务器仍有活动会话，请先在会话管理中关闭。';
+        return;
+      }
+      element('serverDialog').close();
+      showConfirmation('删除服务器？', '此操作会从服务器列表移除这条连接配置。', `${server.name} / ${server.host}`, '确认删除', () => {
+        servers.splice(servers.indexOf(server), 1);
+        if (selectedServerId === server.id) selectedServerId = servers[0]?.id || null;
+        renderAll();
+        showToast('服务器已从演示列表移除。');
+      });
+    }
+
+    function runCommand(event) {
+      event.preventDefault();
+      const session = getActiveSession();
+      if (!session) return;
+      const server = getServer(session.serverId);
+      const command = element('terminalInput').value;
+      const normalized = command.trim();
+      session.draft = '';
+      if (normalized === 'clear') session.output = [];
+      else {
+        session.output.push({ kind: 'command', text: command });
+        let output = '';
+        if (normalized === 'help') output = '演示命令\n  pwd · whoami · hostname · ls · date · uptime\n  docker ps · echo <内容> · clear\n\n这是界面原型，不会向真实服务器执行命令。';
+        else if (normalized === 'pwd') output = server.username === 'root' ? '/root' : `/home/${server.username}`;
+        else if (normalized === 'whoami') output = server.username;
+        else if (normalized === 'hostname') output = server.name;
+        else if (normalized === 'ls' || normalized === 'ls -la') output = 'apps/    backups/    compose.yaml    notes.txt';
+        else if (normalized === 'date') output = new Date().toLocaleString('zh-CN', { hour12: false });
+        else if (normalized === 'uptime') output = ' 11:32:06 up 12 days,  4:18,  1 user,  load average: 0.08, 0.12, 0.09';
+        else if (normalized === 'docker ps' || normalized === 'docker compose ps') output = 'NAME        IMAGE            STATUS\nweb         nginx:1.27       Up 12 days\napi         app:stable       Up 12 days\nworker      worker:stable    Up 12 days';
+        else if (normalized.startsWith('echo ')) output = normalized.slice(5);
+        else if (normalized) output = '此命令未在原型中模拟。输入 help 查看可演示的命令。';
+        if (output) session.output.push({ kind: 'normal', text: output });
+      }
+      // 原型只保留少量演示记录；正式实现由服务端执行字节数与历史行数双限制。
+      if (session.output.length > 200) session.output.splice(0, session.output.length - 200);
+      renderTerminal();
+      element('terminalInput').focus({ preventScroll: true });
+      element('terminalView').scrollTop = element('terminalView').scrollHeight;
+    }
+
+    function updateTerminalSize() {
+      if (currentPage !== 'workspace' || element('terminalView').hidden) return;
+      const terminal = element('terminalView');
+      const style = getComputedStyle(terminal);
+      const fontSize = parseFloat(style.fontSize);
+      const availableWidth = terminal.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+      const availableHeight = terminal.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom);
+      const columns = Math.max(20, Math.floor(availableWidth / (fontSize * .6)));
+      const rows = Math.max(5, Math.floor(availableHeight / parseFloat(style.lineHeight)));
+      element('terminalSize').textContent = `${columns} × ${rows}`;
+    }
+
+    function logout() {
+      const disconnectedAt = Date.now();
+      sessions.forEach((session) => {
+        if (openTabs.includes(session.id)) { session.state = 'disconnected'; session.disconnectedAt = disconnectedAt; }
+      });
+      openTabs = [];
+      activeSessionId = null;
+      element('loginPassword').value = '';
+      renderAll();
+      navigate('login');
+    }
+
+    document.addEventListener('click', (event) => {
+      const button = event.target.closest('button');
+      if (!button) return;
+      if (button.dataset.page) navigate(button.dataset.page);
+      else if (button.dataset.action === 'theme') setTheme(document.documentElement.dataset.theme === 'light' ? 'dark' : 'light');
+      else if (button.dataset.action === 'new-terminal') createSession(getActiveSession()?.serverId || selectedServerId || servers[0]?.id);
+      else if (button.dataset.action === 'show-servers') setSidebarVisible(true);
+      else if (button.dataset.action === 'add-server') openServerForm();
+      else if (button.dataset.action === 'logout') logout();
+      else if (button.dataset.openServer) openServer(button.dataset.openServer);
+      else if (button.dataset.editServer) openServerForm(button.dataset.editServer);
+      else if (button.dataset.tab) focusSession(button.dataset.tab);
+      else if (button.dataset.closeTab) closeTab(button.dataset.closeTab);
+      else if (button.dataset.takeover) takeoverSession(button.dataset.takeover);
+      else if (button.dataset.closeSession) requestCloseSession(button.dataset.closeSession);
+      else if (button.dataset.closeDialog) element(button.dataset.closeDialog).close();
+      else if (button.dataset.filter) { sessionFilter = button.dataset.filter; renderSessions(); }
+      else if (button.dataset.group) {
+        if (collapsedGroups.has(button.dataset.group)) collapsedGroups.delete(button.dataset.group);
+        else collapsedGroups.add(button.dataset.group);
+        renderServers();
+      }
+    });
+
+    element('serverSearch').addEventListener('input', renderServers);
+    element('serverForm').addEventListener('submit', saveServer);
+    element('deleteServerButton').addEventListener('click', requestDeleteServer);
+    element('testServerButton').addEventListener('click', () => {
+      const hasHost = Boolean(element('serverHost').value.trim());
+      element('connectionTestResult').hidden = false;
+      element('connectionTestResult').textContent = hasHost ? '演示：连接测试成功。此原型未建立真实 SSH 连接。' : '请先填写服务器地址。';
+    });
+    element('serverDialog').addEventListener('close', () => { element('serverPassword').value = ''; });
+    element('terminalForm').addEventListener('submit', runCommand);
+    element('terminalInput').addEventListener('input', () => { if (getActiveSession()) getActiveSession().draft = element('terminalInput').value; });
+    element('terminalInput').addEventListener('keydown', (event) => {
+      const session = getActiveSession();
+      if (!session) return;
+      if (event.ctrlKey && event.key.toLowerCase() === 'l') { event.preventDefault(); session.output = []; renderTerminal(); }
+      if (event.ctrlKey && event.key.toLowerCase() === 'c') {
+        event.preventDefault();
+        session.output.push({ kind: 'command', text: `${element('terminalInput').value}^C` });
+        session.draft = '';
+        renderTerminal();
+      }
+    });
+    element('terminalView').addEventListener('click', (event) => {
+      if (event.target !== element('terminalInput') && window.getSelection().isCollapsed) element('terminalInput').focus({ preventScroll: true });
+    });
+    element('terminalTabs').addEventListener('keydown', (event) => {
+      if (!['ArrowLeft', 'ArrowRight'].includes(event.key) || event.target.getAttribute('role') !== 'tab') return;
+      event.preventDefault();
+      const direction = event.key === 'ArrowRight' ? 1 : -1;
+      const nextIndex = (openTabs.indexOf(activeSessionId) + direction + openTabs.length) % openTabs.length;
+      focusSession(openTabs[nextIndex]);
+      element(`tab-${activeSessionId}`).focus();
+    });
+    element('closeCurrentSession').addEventListener('click', () => requestCloseSession(activeSessionId));
+    element('confirmAction').addEventListener('click', () => {
+      const callback = confirmCallback;
+      confirmCallback = null;
+      element('confirmDialog').close();
+      if (callback) callback();
+    });
+    element('confirmDialog').addEventListener('close', () => { confirmCallback = null; });
+    element('sidebarToggle').addEventListener('click', () => setSidebarVisible(element('sidebar').hidden));
+    mobileLayout.addEventListener('change', closeDrawer);
+    element('drawerBackdrop').addEventListener('click', closeDrawer);
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && !document.querySelector('dialog[open]')) setSidebarVisible(false);
+    });
+    element('passwordToggle').addEventListener('click', () => {
+      const password = element('loginPassword');
+      password.type = password.type === 'password' ? 'text' : 'password';
+      element('passwordToggle').setAttribute('aria-label', password.type === 'password' ? '显示密码' : '隐藏密码');
+    });
+    element('loginForm').addEventListener('submit', (event) => {
+      event.preventDefault();
+      element('loginPassword').value = '';
+      navigate(openTabs.length ? 'workspace' : 'sessions');
+    });
+    window.addEventListener('hashchange', applyRoute);
+    new ResizeObserver(updateTerminalSize).observe(element('terminalView'));
+    window.visualViewport?.addEventListener('resize', updateTerminalSize);
+
+    // 在演示页停留时按时间清理离线会话，接管保留原标识与已有输出。
+    setInterval(() => {
+      const currentTimestamp = Date.now();
+      let hasExpired = false;
+      for (let index = sessions.length - 1; index >= 0; index -= 1) {
+        const session = sessions[index];
+        if (session.state === 'disconnected' && currentTimestamp - session.disconnectedAt >= retentionMilliseconds) { sessions.splice(index, 1); hasExpired = true; }
+      }
+      if (hasExpired) renderAll();
+      else if (currentPage === 'sessions') renderSessions();
+    }, 30000);
+
+    renderWordmarks();
+    initializeTheme();
+    renderAll();
+    applyRoute();
+  </script>
+</body>
+</html>

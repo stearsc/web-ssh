@@ -1,0 +1,55 @@
+# 操作系统与编辑器本地文件
+.DS_Store
+._*
+Thumbs.db
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+*~
+
+# 前端依赖、构建产物与工具缓存；保留依赖锁文件
+node_modules/
+/dist/
+/frontend/dist/
+/backend/web/dist/
+.vite/
+*.tsbuildinfo
+
+# Go 编译产物、本地工作区与测试覆盖率；保留 go.mod 和 go.sum
+/bin/
+/backend/bin/
+/build/
+/backend/build/
+*.test
+*.exe
+go.work
+go.work.sum
+coverage/
+coverage.out
+coverage.html
+
+# 本地运行配置与密钥；示例配置可以提交
+.env
+.env.*
+!.env.example
+!.env.*.example
+/config.yaml
+/config.local.yaml
+/backend/config.yaml
+/backend/config.local.yaml
+/secrets/
+*.key
+*.pem
+
+# SQLite 数据、旁路文件与运行日志
+/data/
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+logs/
+*.log

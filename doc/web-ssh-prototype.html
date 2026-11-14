@@ -1,0 +1,788 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Web SSH</title>
+  <style>
+    :root {
+      --bg: #ffffff;
+      --panel: #ffffff;
+      --soft: #f6f6f5;
+      --soft-hover: #eeeeec;
+      --text: #242424;
+      --muted: #858585;
+      --line: #e7e7e5;
+      --accent: #242424;
+      --accent-text: #ffffff;
+      --green: #25865a;
+      --red: #c34b45;
+      --terminal: #fbfbfa;
+      --shadow: 0 10px 35px #00000012;
+    }
+    [data-theme="dark"] {
+      --bg: #171717;
+      --panel: #1d1d1d;
+      --soft: #242424;
+      --soft-hover: #303030;
+      --text: #ededed;
+      --muted: #999999;
+      --line: #343434;
+      --accent: #ededed;
+      --accent-text: #171717;
+      --green: #5fbd8b;
+      --red: #e07870;
+      --terminal: #141414;
+      --shadow: 0 10px 35px #0008;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, -apple-system, BlinkMacSystemFont,
+      "Segoe UI", sans-serif;
+      font-size: 14px;
+    }
+    button, input { font: inherit; }
+    button {
+      cursor: pointer;
+      color: inherit;
+    }
+    .app {
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    .topbar {
+      height: 58px;
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 0 20px;
+      border-bottom: 1px solid var(--line);
+    }
+    .logo {
+      font-size: 17px;
+      font-weight: 750;
+      letter-spacing: -.5px;
+    }
+    .logo span {
+      color: var(--muted);
+      font-weight: 400;
+    }
+    .top-actions {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: 9px;
+    }
+    .btn, .icon-btn {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      border-radius: 7px;
+      padding: 8px 11px;
+    }
+    .icon-btn {
+      width: 36px;
+      height: 36px;
+      padding: 0;
+    }
+    .btn.primary {
+      color: var(--accent-text);
+      background: var(--accent);
+      border-color: var(--accent);
+    }
+    .btn.danger { color: var(--red); }
+    .layout {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+    }
+    .sidebar {
+      width: 252px;
+      flex-shrink: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      padding: 17px 12px;
+      border-right: 1px solid var(--line);
+      background: var(--panel);
+    }
+    .search {
+      width: 100%;
+      padding: 9px 10px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      outline: none;
+      color: var(--text);
+      background: var(--soft);
+    }
+    .section-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 8px 7px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .08em;
+    }
+    .server {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      padding: 9px 10px;
+      border-radius: 7px;
+      cursor: pointer;
+    }
+    .server:hover, .server.active {
+      background: var(--soft);
+    }
+    .server small {
+      display: block;
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 11px;
+    }
+    .dot {
+      width: 7px;
+      height: 7px;
+      flex-shrink: 0;
+      border-radius: 50%;
+      background: var(--green);
+    }
+    .side-bottom {
+      margin-top: auto;
+      padding-top: 12px;
+      border-top: 1px solid var(--line);
+    }
+    .nav-item {
+      padding: 10px;
+      border-radius: 7px;
+      color: var(--muted);
+      cursor: pointer;
+    }
+    .nav-item:hover {
+      color: var(--text);
+      background: var(--soft);
+    }
+    .main {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+    }
+    .server-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 16px 22px;
+      border-bottom: 1px solid var(--line);
+    }
+    .server-header small { color: var(--muted); }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 8px;
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      font-size: 11px;
+    }
+    .workspace {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      padding: 16px 18px;
+    }
+    .tabs {
+      display: flex;
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-bottom: 0;
+      border-radius: 9px 9px 0 0;
+      background: var(--soft);
+    }
+    .tab {
+      flex-shrink: 0;
+      padding: 12px 14px;
+      border-right: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .tab.active {
+      color: var(--text);
+      background: var(--terminal);
+      font-weight: 650;
+    }
+    .tab .close {
+      margin-left: 10px;
+      opacity: .55;
+    }
+    .terminal {
+      flex: 1;
+      min-height: 220px;
+      overflow: auto;
+      padding: 18px 20px;
+      border: 1px solid var(--line);
+      border-radius: 0 0 9px 9px;
+      background: var(--terminal);
+      color: var(--text);
+      font: 13px/1.75 ui-monospace, SFMono-Regular, Menlo,
+      Consolas, monospace;
+    }
+    .terminal .muted { color: var(--muted); }
+    .terminal .green { color: var(--green); }
+    .terminal .blue { color: #4979bd; }
+    .command-row {
+      display: flex;
+      gap: 9px;
+      margin-top: 12px;
+    }
+    .command-row input {
+      flex: 1;
+      min-width: 0;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      outline: none;
+      color: var(--text);
+      background: var(--panel);
+    }
+    .statusbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 15px;
+      padding: 10px 2px;
+      color: var(--muted);
+      font-size: 11px;
+    }
+    .statusbar .online { color: var(--green); }
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 5;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 18px;
+      background: #0006;
+    }
+    .modal-backdrop.show { display: flex; }
+    .modal {
+      width: min(780px, 100%);
+      max-height: 85vh;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+    .modal-header {
+      display: flex;
+      align-items: center;
+      padding: 17px 20px;
+      border-bottom: 1px solid var(--line);
+    }
+    .modal-header h2 {
+      margin: 0;
+      font-size: 16px;
+    }
+    .modal-header button { margin-left: auto; }
+    .modal-body { padding: 18px 20px; }
+    .modal-footer {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      padding: 14px 20px;
+      border-top: 1px solid var(--line);
+    }
+    .table-wrap { overflow-x: auto; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+    th {
+      padding: 10px;
+      border-bottom: 1px solid var(--line);
+      color: var(--muted);
+      text-align: left;
+    }
+    td {
+      padding: 13px 10px;
+      border-bottom: 1px solid var(--line);
+    }
+    .actions { display: flex; gap: 6px; }
+    .actions button { padding: 6px 8px; font-size: 11px; }
+    .muted { color: var(--muted); }
+    .form-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+    .field label {
+      display: block;
+      margin-bottom: 6px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .field input {
+      width: 100%;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      color: var(--text);
+      background: var(--bg);
+    }
+    .toast {
+      position: fixed;
+      z-index: 10;
+      bottom: 22px;
+      left: 50%;
+      display: none;
+      transform: translateX(-50%);
+      padding: 10px 15px;
+      border-radius: 8px;
+      color: var(--accent-text);
+      background: var(--accent);
+    }
+    .toast.show { display: block; }
+    .mobile-menu { display: none; }
+    @media(max-width:720px) {
+      .sidebar {
+        position: absolute;
+        z-index: 4;
+        top: 58px;
+        bottom: 0;
+        width: 240px;
+        transform: translateX(-105%);
+        transition: transform .2s;
+        box-shadow: var(--shadow);
+      }
+      .sidebar.open { transform: translateX(0); }
+      .mobile-menu { display: inline-flex; }
+      .workspace { padding: 10px; }
+      .topbar { padding: 0 12px; }
+      .form-grid { grid-template-columns: 1fr; }
+      table { min-width: 650px; }
+    }
+  </style>
+</head>
+<body>
+<div class="app">
+
+  <header class="topbar">
+    <button class="icon-btn mobile-menu" onclick="toggleSidebar()">☰</button>
+    <div class="logo">Web SSH <span>/ Personal Client</span></div>
+    <div class="top-actions">
+      <button class="btn" onclick="openSessions()">会话管理</button>
+      <button class="icon-btn" id="themeButton"
+              onclick="toggleTheme()" title="切换主题">☼</button>
+      <button class="icon-btn" onclick="toast('演示原型')">◉</button>
+    </div>
+  </header>
+
+  <div class="layout">
+
+    <aside class="sidebar" id="sidebar">
+      <input class="search" placeholder="⌕ 搜索服务器..."
+             oninput="filterServers(this.value)">
+
+      <section>
+        <div class="section-title">
+          <span>SERVERS</span>
+          <button class="icon-btn" style="width:26px;height:26px"
+                  onclick="openServerForm()">＋</button>
+        </div>
+
+        <div id="serverList">
+          <div class="server active" data-name="production"
+               onclick="selectServer(this,'Production','192.168.1.10')">
+            <span class="dot"></span>
+            <div>Production<small>192.168.1.10 · root</small></div>
+          </div>
+
+          <div class="server" data-name="staging"
+               onclick="selectServer(this,'Staging','10.0.0.21')">
+            <span class="dot"></span>
+            <div>Staging<small>10.0.0.21 · ubuntu</small></div>
+          </div>
+
+          <div class="server" data-name="database"
+               onclick="selectServer(this,'Database','10.0.0.35')">
+            <span class="dot"></span>
+            <div>Database<small>10.0.0.35 · admin</small></div>
+          </div>
+
+          <div class="server" data-name="dev"
+               onclick="selectServer(this,'Dev Server','dev.example.com')">
+            <span class="dot"></span>
+            <div>Dev Server<small>dev.example.com · root</small></div>
+          </div>
+        </div>
+      </section>
+
+      <div class="side-bottom">
+        <div class="nav-item" onclick="openSessions()">
+          ▤ &nbsp; Sessions <span style="float:right">3</span>
+        </div>
+        <div class="nav-item"
+             onclick="toast('设置功能将在正式版实现')">
+          ⚙ &nbsp; Settings
+        </div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <div class="server-header">
+        <strong id="serverTitle">Production</strong>
+        <span class="pill"><span class="dot"></span> SSH Connected</span>
+        <small id="serverAddress">192.168.1.10:22</small>
+        <button class="btn primary" style="margin-left:auto"
+                onclick="newTab()">＋ New Terminal</button>
+      </div>
+
+      <div class="workspace">
+        <div class="tabs" id="tabs">
+          <div class="tab active" onclick="switchTab(this)">
+            Production <span class="close"
+                             onclick="event.stopPropagation();closeTab(this)">×</span>
+          </div>
+          <div class="tab" onclick="switchTab(this)">
+            Staging <span class="close"
+                          onclick="event.stopPropagation();closeTab(this)">×</span>
+          </div>
+          <div class="tab" onclick="switchTab(this)">
+            Database <span class="close"
+                           onclick="event.stopPropagation();closeTab(this)">×</span>
+          </div>
+        </div>
+
+        <div class="terminal" id="terminal">
+          <div class="muted">
+            Last login: Thu Nov 13 10:42:18 2026
+          </div>
+          <div>
+            <span class="green">root@production</span>:
+            <span class="blue">~</span># docker ps
+          </div>
+          <div>CONTAINER ID&nbsp;&nbsp; IMAGE&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; STATUS</div>
+          <div>c1a8d3f2&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; nginx:latest&nbsp;&nbsp; Up 12 days</div>
+          <div>8b2f91a0&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; app:latest&nbsp;&nbsp;&nbsp; Up 3 days</div>
+          <div>f7e3a921&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; postgres:16&nbsp;&nbsp; Up 12 days</div>
+          <div style="margin-top:8px">
+            <span class="green">root@production</span>:
+            <span class="blue">~</span># <span class="muted">_</span>
+          </div>
+        </div>
+
+        <div class="command-row">
+          <input id="command" placeholder="输入命令并回车（模拟终端）"
+                 onkeydown="if(event.key==='Enter')runCommand()">
+          <button class="btn" onclick="runCommand()">发送 ↵</button>
+        </div>
+
+        <div class="statusbar">
+          <span class="online">● Connected</span>
+          <span>SSH · <span id="statusAddress">192.168.1.10</span></span>
+          <span id="sessionInfo">Session: ws_8f31a2</span>
+          <span style="margin-left:auto">120 × 34</span>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- Session management -->
+<div class="modal-backdrop" id="sessionsModal"
+     onclick="if(event.target===this)closeModal('sessionsModal')">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>Sessions</h2>
+      <button class="icon-btn"
+              onclick="closeModal('sessionsModal')">×</button>
+    </div>
+    <div class="modal-body">
+      <p class="muted">
+        管理正在运行的 SSH 会话。浏览器断开不会自动关闭远端会话。
+      </p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+          <tr>
+            <th>SESSION</th>
+            <th>SERVER</th>
+            <th>STATUS</th>
+            <th>CREATED</th>
+            <th>LAST DISCONNECTED</th>
+            <th>ACTION</th>
+          </tr>
+          </thead>
+          <tbody id="sessionRows">
+          <tr>
+            <td>Production</td>
+            <td>192.168.1.10</td>
+            <td><span class="pill"><span class="dot"></span> Connected</span></td>
+            <td>10:42</td><td>—</td>
+            <td><div class="actions">
+              <button class="btn"
+                      onclick="takeover('Production')">打开</button>
+              <button class="btn danger"
+                      onclick="closeSession(this)">关闭</button>
+            </div></td>
+          </tr>
+          <tr>
+            <td>Staging</td>
+            <td>10.0.0.21</td>
+            <td><span class="pill">
+                <span class="dot" style="background:#c18a39"></span>
+                Disconnected</span></td>
+            <td>09:15</td><td>10:03</td>
+            <td><div class="actions">
+              <button class="btn"
+                      onclick="takeover('Staging')">接管</button>
+              <button class="btn danger"
+                      onclick="closeSession(this)">关闭</button>
+            </div></td>
+          </tr>
+          <tr>
+            <td>Database</td>
+            <td>10.0.0.35</td>
+            <td><span class="pill">
+                <span class="dot" style="background:#c18a39"></span>
+                Disconnected</span></td>
+            <td>昨天 18:20</td><td>昨天 19:01</td>
+            <td><div class="actions">
+              <button class="btn"
+                      onclick="takeover('Database')">接管</button>
+              <button class="btn danger"
+                      onclick="closeSession(this)">关闭</button>
+            </div></td>
+          </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn"
+              onclick="closeModal('sessionsModal')">完成</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add server -->
+<div class="modal-backdrop" id="serverModal"
+     onclick="if(event.target===this)closeModal('serverModal')">
+  <div class="modal" style="width:min(520px,100%)">
+    <div class="modal-header">
+      <h2>Add server</h2>
+      <button class="icon-btn"
+              onclick="closeModal('serverModal')">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-grid">
+        <div class="field">
+          <label>名称</label><input placeholder="Production">
+        </div>
+        <div class="field">
+          <label>分组</label><input placeholder="Default">
+        </div>
+        <div class="field">
+          <label>Host</label><input placeholder="192.168.1.10">
+        </div>
+        <div class="field">
+          <label>Port</label><input value="22">
+        </div>
+        <div class="field">
+          <label>Username</label><input placeholder="root">
+        </div>
+        <div class="field">
+          <label>Password</label><input type="password"
+                                        placeholder="SSH password">
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn"
+              onclick="closeModal('serverModal')">取消</button>
+      <button class="btn primary"
+              onclick="closeModal('serverModal');toast('演示：服务器已添加')">
+        保存
+      </button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+  function toast(message) {
+    const element = document.getElementById("toast");
+    element.textContent = message;
+    element.classList.add("show");
+    setTimeout(() => element.classList.remove("show"), 2200);
+  }
+
+  function toggleTheme() {
+    const root = document.documentElement;
+    const next = root.dataset.theme === "dark" ? "light" : "dark";
+    root.dataset.theme = next;
+    localStorage.setItem("webssh-theme", next);
+    document.getElementById("themeButton").textContent =
+            next === "dark" ? "☾" : "☼";
+  }
+
+  (function initTheme() {
+    const theme = localStorage.getItem("webssh-theme") || "light";
+    document.documentElement.dataset.theme = theme;
+    document.getElementById("themeButton").textContent =
+            theme === "dark" ? "☾" : "☼";
+  })();
+
+  function openSessions() {
+    document.getElementById("sessionsModal").classList.add("show");
+  }
+
+  function openServerForm() {
+    document.getElementById("serverModal").classList.add("show");
+  }
+
+  function closeModal(id) {
+    document.getElementById(id).classList.remove("show");
+  }
+
+  function takeover(name) {
+    closeModal("sessionsModal");
+    document.getElementById("serverTitle").textContent = name;
+    document.getElementById("sessionInfo").textContent =
+            "Session: ws_" + Math.random().toString(16).slice(2, 8);
+    toast("已模拟接管 " + name + " 会话");
+  }
+
+  function closeSession(button) {
+    if (!confirm("确定关闭该 SSH Session？远端前台命令可能中断。")) {
+      return;
+    }
+    button.closest("tr").remove();
+    toast("Session 已关闭（模拟）");
+  }
+
+  function runCommand() {
+    const input = document.getElementById("command");
+    const command = input.value.trim();
+    if (!command) return;
+
+    const terminal = document.getElementById("terminal");
+
+    const line = document.createElement("div");
+    line.textContent = "root@production:~# " + command;
+    terminal.appendChild(line);
+
+    const output = document.createElement("div");
+    output.className = "muted";
+
+    if (command === "pwd") output.textContent = "/root";
+    else if (command === "whoami") output.textContent = "root";
+    else if (command === "date")
+      output.textContent = new Date().toString();
+    else if (command.startsWith("echo "))
+      output.textContent = command.slice(5);
+    else
+      output.textContent =
+              "（演示原型：未连接真实 SSH，命令未执行）";
+
+    terminal.appendChild(output);
+
+    const prompt = document.createElement("div");
+    prompt.innerHTML =
+            '<span class="green">root@production</span>:' +
+            '<span class="blue">~</span># <span class="muted">_</span>';
+    terminal.appendChild(prompt);
+
+    terminal.scrollTop = terminal.scrollHeight;
+    input.value = "";
+  }
+
+  function newTab() {
+    const tabs = document.getElementById("tabs");
+    const number = tabs.children.length + 1;
+
+    const tab = document.createElement("div");
+    tab.className = "tab";
+    tab.textContent = "Terminal " + number;
+
+    const close = document.createElement("span");
+    close.className = "close";
+    close.textContent = "×";
+
+    close.onclick = event => {
+      event.stopPropagation();
+      closeTab(close);
+    };
+
+    tab.appendChild(close);
+    tab.onclick = () => switchTab(tab);
+    tabs.appendChild(tab);
+
+    switchTab(tab);
+    toast("已创建模拟终端标签");
+  }
+
+  function switchTab(tab) {
+    document.querySelectorAll(".tab").forEach(item => {
+      item.classList.remove("active");
+    });
+
+    tab.classList.add("active");
+
+    document.getElementById("serverTitle").textContent =
+            tab.textContent.replace("×", "").trim();
+  }
+
+  function closeTab(element) {
+    const tab = element.closest(".tab");
+    if (!tab) return;
+
+    const wasActive = tab.classList.contains("active");
+    tab.remove();
+
+    if (wasActive) {
+      const first = document.querySelector(".tab");
+      if (first) switchTab(first);
+    }
+
+    toast("已关闭终端视图（模拟）");
+  }
+
+  function filterServers(query) {
+    document.querySelectorAll("#serverList .server").forEach(server => {
+      server.style.display =
+              server.dataset.name.includes(query.toLowerCase()) ? "flex" : "none";
+    });
+  }
+
+  function selectServer(element, name, address) {
+    document.querySelectorAll(".server").forEach(server => {
+      server.classList.remove("active");
+    });
+
+    element.classList.add("active");
+    document.getElementById("serverTitle").textContent = name;
+    document.getElementById("serverAddress").textContent = address + ":22";
+    document.getElementById("statusAddress").textContent = address;
+
+    if (window.innerWidth < 720) toggleSidebar();
+  }
+
+  function toggleSidebar() {
+    document.getElementById("sidebar").classList.toggle("open");
+  }
+</script>
+</body>
+</html>
