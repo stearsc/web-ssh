@@ -3,8 +3,13 @@ package sshclient
 import (
 	"bytes"
 	"context"
+	"errors"
+	"io"
+	"net"
 	"testing"
 	"time"
+
+	"golang.org/x/crypto/ssh"
 
 	"github.com/stearsc/web-ssh/backend/internal/fault"
 	"github.com/stearsc/web-ssh/backend/internal/testutil"
@@ -99,5 +104,132 @@ func TestTerminalFailuresAndCancellation(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestTerminalNewSessionTimeoutReclaimsConnection(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer := testutil.Key(t)
+	cfg := &ssh.ServerConfig{PasswordCallback: func(metadata ssh.ConnMetadata, password []byte) (*ssh.Permissions, error) {
+		if metadata.User() != "tester" || string(password) != "ssh-secret" {
+			return nil, errors.New("denied")
+		}
+		return nil, nil
+	}}
+	cfg.AddHostKey(signer)
+	authenticated := make(chan struct{})
+	requested := make(chan struct{})
+	remoteDone := make(chan struct{})
+	remoteError := make(chan error, 1)
+	go func() {
+		defer close(remoteDone)
+		defer listener.Close()
+		raw, e := listener.Accept()
+		if e != nil {
+			remoteError <- e
+			return
+		}
+		defer raw.Close()
+		// 仅用于失败测试的最终兜底；成功断言必须在该期限前观察到客户端主动关闭。
+		if e = raw.SetDeadline(time.Now().Add(5 * time.Second)); e != nil {
+			remoteError <- e
+			return
+		}
+		remote, channels, requests, e := ssh.NewServerConn(raw, cfg)
+		if e != nil {
+			remoteError <- e
+			return
+		}
+		defer remote.Close()
+		close(authenticated)
+		requestsDone := make(chan struct{})
+		go func() { defer close(requestsDone); ssh.DiscardRequests(requests) }()
+		seen := false
+		for incoming := range channels {
+			if incoming.ChannelType() != "session" || seen {
+				remoteError <- errors.New("unexpected channel request")
+				remote.Close()
+				break
+			}
+			seen = true
+			close(requested)
+			// 故意不 Accept/Reject，NewSession 必须等待总建连期限关闭真实 TCP。
+		}
+		_ = remote.Wait()
+		<-requestsDone
+	}()
+	t.Cleanup(func() {
+		listener.Close()
+		select {
+		case <-remoteDone:
+		case <-time.After(6 * time.Second):
+			t.Error("SSH 测试对端任务未退出")
+		}
+	})
+	cipher, password := diagnosticCipher(t, "ssh-secret")
+	snap := Snapshot{Host: "127.0.0.1", Port: listener.Addr().(*net.TCPAddr).Port, Username: "tester", PasswordEncrypted: password, PublicKey: signer.PublicKey().Marshal()}
+	const budget = time.Second
+	type outcome struct {
+		terminal *Terminal
+		observed *Observed
+		err      error
+	}
+	result := make(chan outcome, 1)
+	openDone := make(chan struct{})
+	started := time.Now()
+	go func() {
+		defer close(openDone)
+		terminal, observed, e := Open(t.Context(), snap, cipher, budget, 80, 24, io.Discard)
+		result <- outcome{terminal, observed, e}
+	}()
+	for _, signal := range []struct {
+		name string
+		done <-chan struct{}
+	}{
+		{"SSH 握手及认证", authenticated}, {"Session Channel 请求", requested},
+	} {
+		select {
+		case <-signal.done:
+		case e := <-remoteError:
+			t.Fatal(e)
+		case <-time.After(2 * time.Second):
+			t.Fatal("未完成", signal.name)
+		}
+	}
+	select {
+	case got := <-result:
+		if got.terminal != nil {
+			got.terminal.Close()
+			t.Fatal("超时返回了终端资源")
+		}
+		if got.observed != nil || got.err != fault.Error("SSH_CONNECT_TIMEOUT") {
+			t.Fatal(got.observed, got.err)
+		}
+		if time.Since(started) < budget {
+			t.Fatal("未等待总建连期限")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("NewSession 未被总建连期限解除")
+	}
+	// 不依赖 t.Cleanup 或测试对端的五秒兜底来证明回收。
+	for _, signal := range []struct {
+		name string
+		done <-chan struct{}
+	}{
+		{"Open 调用任务", openDone}, {"SSH 传输、请求处理及底层连接", remoteDone},
+	} {
+		select {
+		case <-signal.done:
+		case <-time.After(time.Second):
+			t.Fatal(signal.name, "未及时退出")
+		}
+	}
+	select {
+	case e := <-remoteError:
+		t.Fatal(e)
+	default:
 	}
 }

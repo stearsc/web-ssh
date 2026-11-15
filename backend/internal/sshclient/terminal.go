@@ -58,13 +58,13 @@ func Open(ctx context.Context, snapshot Snapshot, cipher *secret.Cipher, timeout
 	}()
 	shell, err := t.client.NewSession()
 	if err != nil {
-		return nil, nil, fault.Error("SSH_CONNECT_FAILED")
+		return nil, nil, failure("SSH_CONNECT_FAILED")
 	}
 	term.shell = shell
 	shell.Stdout, shell.Stderr = output, output
 	term.input, err = shell.StdinPipe()
 	if err != nil {
-		return nil, nil, fault.Error("SSH_CONNECT_FAILED")
+		return nil, nil, failure("SSH_CONNECT_FAILED")
 	}
 	if err = shell.RequestPty("xterm-256color", rows, cols, ssh.TerminalModes{}); err != nil {
 		return nil, nil, failure("SSH_PTY_FAILED")
