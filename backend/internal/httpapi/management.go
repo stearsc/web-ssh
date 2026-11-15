@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"errors"
 	"log/slog"
 	"net/http"
 	"regexp"
@@ -11,6 +12,7 @@ import (
 	"github.com/stearsc/web-ssh/backend/internal/config"
 	"github.com/stearsc/web-ssh/backend/internal/fault"
 	servers "github.com/stearsc/web-ssh/backend/internal/server"
+	"github.com/stearsc/web-ssh/backend/internal/sshclient"
 )
 
 type Management struct {
@@ -194,16 +196,26 @@ func (m *Management) Handler(fallback http.Handler, ready func() bool) http.Hand
 		if err := m.decode(w, r, &Empty{}, true); err != nil {
 			return err
 		}
-		result, probe, err := m.Servers.Test(r.Context(), login, r.PathValue("id"), time.Duration(m.Config.Ssh.ConnectTimeout)*time.Second)
+		ctx, diagnostic := sshclient.WithDiagnostic(r.Context(), r.PathValue("id"))
+		defer func() { m.Logger.Info("SSH 测试诊断", "diagnostic", diagnostic.Snapshot()) }()
+		result, probe, err := m.Servers.Test(ctx, login, r.PathValue("id"), time.Duration(m.Config.Ssh.ConnectTimeout)*time.Second)
 		if err != nil {
+			code := "INTERNAL_ERROR"
+			var business fault.Error
+			if errors.As(err, &business) {
+				code = string(business)
+			}
+			diagnostic.Complete(code)
 			m.Logger.Info("SSH 测试失败", "server_id", r.PathValue("id"))
 			return err
 		}
 		if probe != nil {
+			diagnostic.Complete("HOST_KEY_CONFIRMATION_REQUIRED")
 			m.Logger.Info("SSH Host Key 待确认", "server_id", r.PathValue("id"))
 			JSON(w, 409, ErrorResponse[*servers.Confirmation]{"HOST_KEY_CONFIRMATION_REQUIRED", "请核对目标及指纹后确认信任", probe}, m.Logger)
 			return nil
 		}
+		diagnostic.Complete("0")
 		m.Logger.Info("SSH 测试成功", "server_id", r.PathValue("id"))
 		m.success(w, 200, result)
 		return nil

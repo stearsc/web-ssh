@@ -92,7 +92,9 @@ func (s *Service) Test(ctx context.Context, login *auth.Session, id string, time
 	if observed == nil {
 		return TestResult{snapshot.Host, snapshot.Port, snapshot.Username, true}, nil, nil
 	}
-	return s.publish(ctx, login, st, snapshot, version, *observed)
+	result, confirmation, err := s.publish(ctx, login, st, snapshot, version, *observed)
+	sshclient.RecordProbePublication(ctx, err == nil && confirmation != nil)
+	return result, confirmation, err
 }
 func (s *Service) publish(ctx context.Context, login *auth.Session, st *State, snapshot Record, version uint64, observed sshclient.Observed) (TestResult, *Confirmation, error) {
 	st.mu.Lock()

@@ -3,11 +3,14 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
 
@@ -15,7 +18,9 @@ import (
 	"github.com/stearsc/web-ssh/backend/internal/config"
 	secret "github.com/stearsc/web-ssh/backend/internal/crypto"
 	servers "github.com/stearsc/web-ssh/backend/internal/server"
+	"github.com/stearsc/web-ssh/backend/internal/sshclient"
 	"github.com/stearsc/web-ssh/backend/internal/testutil"
+	"golang.org/x/crypto/ssh"
 )
 
 type envelope[T any] struct {
@@ -215,5 +220,136 @@ func TestOriginAuthenticationAndStrictRequests(t *testing.T) {
 	}
 	if w := call(t, h, "POST", "/api/auth/logout", "{}", nil, origin); w.Code != 200 {
 		t.Fatal("缺失 Cookie 退出不幂等")
+	}
+}
+
+func TestSSHDiagnosticHTTPIsolationProtocolAndRedaction(t *testing.T) {
+	h, m, logs := api(t)
+	m.Logger = slog.New(slog.NewJSONHandler(logs, nil))
+	origin := m.Config.Server.PublicOrigin
+	cookie := loginCookie(t, h, origin)
+	type target struct {
+		id, oldFingerprint, fingerprint string
+		remote                          *testutil.SSH
+	}
+	targets := make([]target, 2)
+	forbidden := []string{cookie.Value, "admin-secret", "ssh-secret"}
+	for i := range targets {
+		remote := testutil.StartSSH(t)
+		port := remote.Port()
+		payload, _ := json.Marshal(servers.Input{Name: "test", Host: "127.0.0.1", Port: &port, Username: "tester", Password: "ssh-secret"})
+		created := call(t, h, "POST", "/api/servers", string(payload), cookie, origin)
+		if created.Code != 201 {
+			t.Fatal(created.Body.String())
+		}
+		view := decode[servers.View](t, created)
+		path := "/api/servers/" + view.ID
+		probe := decode[servers.Confirmation](t, call(t, h, "POST", path+"/test", "{}", cookie, origin))
+		forbidden = append(forbidden, probe.ProbeID, base64.StdEncoding.EncodeToString(remote.PublicKey().Marshal()))
+		w := call(t, h, "POST", path+"/host-key/confirm", `{"probe_id":"`+probe.ProbeID+`"}`, cookie, origin)
+		if w.Code != 200 {
+			t.Fatal(w.Body.String())
+		}
+		targets[i] = target{view.ID, probe.Fingerprint, probe.Fingerprint, remote}
+	}
+	// 同时请求两个不同服务器：一个变化、一个仍可信，检查诊断互不污染。
+	targets[0].remote.Rotate(t)
+	targets[0].fingerprint = ssh.FingerprintSHA256(targets[0].remote.PublicKey())
+	forbidden = append(forbidden, base64.StdEncoding.EncodeToString(targets[0].remote.PublicKey().Marshal()))
+	logs.Reset()
+	responses := make([]*httptest.ResponseRecorder, len(targets))
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i, target := range targets {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			responses[i] = call(t, h, "POST", "/api/servers/"+target.id+"/test", "{}", cookie, origin)
+		}()
+	}
+	close(start)
+	wg.Wait()
+	if responses[0].Code != 409 || responses[1].Code != 200 {
+		t.Fatal(responses[0].Body.String(), responses[1].Body.String())
+	}
+	changed := envelope[servers.Confirmation]{}
+	if err := json.Unmarshal(responses[0].Body.Bytes(), &changed); err != nil {
+		t.Fatal(err)
+	}
+	if string(changed.Code) != `"HOST_KEY_CONFIRMATION_REQUIRED"` || changed.Data.Reason != "key_changed" || changed.Data.Fingerprint != targets[0].fingerprint || changed.Data.PreviousFingerprint == nil || *changed.Data.PreviousFingerprint != targets[0].oldFingerprint {
+		t.Fatal(changed)
+	}
+	forbidden = append(forbidden, changed.Data.ProbeID)
+	if targets[0].remote.AuthCalls.Load() != 0 || targets[1].remote.AuthCalls.Load() != 1 {
+		t.Fatal("变化密钥继续认证，或可信服务器行为改变")
+	}
+	// 未确认前可信记录不能被覆盖；有效确认凭证必须绑定本次实际观察到的新密钥。
+	path := "/api/servers/" + targets[0].id
+	before := decode[servers.View](t, call(t, h, "GET", path, "", cookie, ""))
+	if before.HostKey == nil || before.HostKey.Fingerprint != targets[0].oldFingerprint {
+		t.Fatal("测试擅自更新信任", before)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(logs.Bytes()))
+	records := map[string]sshclient.DiagnosticRecord{}
+	ids := map[string]bool{}
+	for {
+		var entry struct {
+			Message    string                      `json:"msg"`
+			Diagnostic *sshclient.DiagnosticRecord `json:"diagnostic"`
+		}
+		err := decoder.Decode(&entry)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if entry.Message != "SSH 测试诊断" {
+			continue
+		}
+		if entry.Diagnostic == nil {
+			t.Fatal("缺少结构化诊断")
+		}
+		r := *entry.Diagnostic
+		if ids[r.AttemptID] || r.AttemptID == "" {
+			t.Fatal("请求 ID 重复")
+		}
+		ids[r.AttemptID] = true
+		if _, exists := records[r.ServerID]; exists {
+			t.Fatal("重复诊断")
+		}
+		records[r.ServerID] = r
+	}
+	if len(records) != 2 {
+		t.Fatal(records)
+	}
+	for i, target := range targets {
+		r := records[target.id]
+		if r.ObservedFingerprint != target.fingerprint || r.TrustedFingerprint != target.oldFingerprint || !r.TCPConnected {
+			t.Fatal(r)
+		}
+		if i == 0 {
+			if r.HostKeyDecision != "changed" || !r.HostKeyRejectionPreserved || r.PasswordCallbackEntered || r.PasswordProvided || r.AuthCallbackCount != 0 || r.ProbePublishResult != "published" || r.BusinessCode != "HOST_KEY_CONFIRMATION_REQUIRED" {
+				t.Fatal(r)
+			}
+		} else {
+			if r.HostKeyDecision != "match" || !r.PasswordProvided || r.ProbePublishResult != "not_attempted" || r.BusinessCode != "0" {
+				t.Fatal(r)
+			}
+		}
+	}
+	w := call(t, h, "POST", path+"/host-key/confirm", `{"probe_id":"`+changed.Data.ProbeID+`"}`, cookie, origin)
+	if w.Code != 200 {
+		t.Fatal(w.Body.String())
+	}
+	after := decode[servers.View](t, call(t, h, "GET", path, "", cookie, ""))
+	if after.HostKey == nil || after.HostKey.Fingerprint != targets[0].fingerprint {
+		t.Fatal("确认凭证绑定了错误密钥")
+	}
+	for _, value := range forbidden {
+		if strings.Contains(logs.String(), value) {
+			t.Fatal("诊断日志泄露敏感数据")
+		}
 	}
 }
