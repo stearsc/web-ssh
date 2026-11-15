@@ -8,7 +8,7 @@ import {
   type ServerView,
   type Probe,
 } from '../api/management'
-import { logout, identity } from '../stores/auth'
+import { logout, identity, logoutPending } from '../stores/auth'
 import { createSession, type SessionView } from '../api/sessions'
 import TerminalPane from '../components/terminal/TerminalPane.vue'
 import ThemeButton from '../components/layout/ThemeButton.vue'
@@ -16,6 +16,16 @@ import Modal from '../components/layout/Modal.vue'
 import ServerForm from '../components/server/ServerForm.vue'
 import HostKeyDialog from '../components/server/HostKeyDialog.vue'
 const tabs = ref<SessionView[]>([])
+const signingOut = ref(false)
+const panes = new Map<
+  string,
+  { stop(): Promise<void>; dispose(): Promise<void> }
+>()
+function setPane(id: string, pane: unknown): void {
+  if (pane)
+    panes.set(id, pane as { stop(): Promise<void>; dispose(): Promise<void> })
+  else panes.delete(id)
+}
 const activeTab = ref('')
 const probeAction = ref<'test' | 'connect'>('test')
 function removeTab(id: string): void {
@@ -23,7 +33,7 @@ function removeTab(id: string): void {
   if (activeTab.value === id) activeTab.value = tabs.value.at(-1)?.id ?? ''
 }
 async function connectServer(id = selected.value?.id): Promise<void> {
-  if (!id || busy.value || !identity.value) return
+  if (!id || busy.value || !identity.value || logoutPending.value) return
   busy.value = true
   notice.value = ''
   probe.value = null
@@ -82,6 +92,7 @@ const grouped = computed(() =>
   })),
 )
 async function load(): Promise<void> {
+  if (logoutPending.value) return
   query?.abort()
   const controller = new AbortController()
   query = controller
@@ -123,6 +134,7 @@ function toggleGroup(name: string): void {
   else collapsed.value.add(name)
 }
 async function choose(item: ServerView): Promise<void> {
+  if (logoutPending.value) return
   const generation = ++selectionGeneration
   try {
     const view = await request<ServerView>(
@@ -131,7 +143,8 @@ async function choose(item: ServerView): Promise<void> {
       undefined,
       operations.signal,
     )
-    if (generation !== selectionGeneration || operations.signal.aborted) return
+    if (generation !== selectionGeneration || operations.signal.aborted)
+      return
     selected.value = view
     activeTab.value = ''
     if (matchMedia('(max-width: 720px)').matches) sidebar.value = false
@@ -140,6 +153,7 @@ async function choose(item: ServerView): Promise<void> {
   }
 }
 function edit(value: ServerView | null): void {
+  if (logoutPending.value) return
   editTarget.value = value
   editing.value = true
 }
@@ -173,7 +187,7 @@ async function remove(): Promise<void> {
   }
 }
 async function testServer(id = selected.value?.id): Promise<void> {
-  if (!id || busy.value) return
+  if (!id || busy.value || logoutPending.value) return
   busy.value = true
   notice.value = ''
   probe.value = null
@@ -216,15 +230,28 @@ async function confirmed(): Promise<void> {
   }
 }
 async function signOut(): Promise<void> {
-  if (busy.value) return
-  busy.value = true
+  if (signingOut.value) return
+  signingOut.value = true
+  logoutPending.value = true
+  operations.abort()
+  query?.abort()
+  clearTimeout(debounce)
+  probe.value = null
+  const stopped = Promise.allSettled(
+    [...panes.values()].map((pane) => pane.stop()),
+  )
   try {
     await logout()
+    await stopped
+    await Promise.allSettled(
+      [...panes.values()].map((pane) => pane.dispose()),
+    )
+    tabs.value = []
     await router.replace('/login')
   } catch (error) {
     notice.value = '退出未完成，请重试。' + message(error)
   } finally {
-    busy.value = false
+    signingOut.value = false
   }
 }
 </script>
@@ -242,11 +269,10 @@ async function signOut(): Promise<void> {
         ><span class="wordmark">Web SSH</span>
       </div>
       <div class="top-actions">
-        <button @click="edit(null)">添加服务器</button><ThemeButton /><button
-          :disabled="busy"
-          @click="signOut"
-        >
-          退出登录
+        <button :disabled="logoutPending" @click="edit(null)">
+          添加服务器</button
+        ><ThemeButton /><button :disabled="signingOut" @click="signOut">
+          {{ logoutPending ? '重试退出登录' : '退出登录' }}
         </button>
       </div>
     </header>
@@ -328,6 +354,7 @@ async function signOut(): Promise<void> {
         v-for="tab in tabs"
         :key="tab.id"
         v-show="activeTab === tab.id"
+        :ref="(pane) => setPane(tab.id, pane)"
         :session="tab"
         :active="activeTab === tab.id"
         @closed="removeTab(tab.id)"
@@ -336,7 +363,11 @@ async function signOut(): Promise<void> {
         <div class="detail-heading">
           <h1>{{ selected.name }}</h1>
           <div class="actions">
-            <button class="primary" :disabled="busy" @click="connectServer()">
+            <button
+              class="primary"
+              :disabled="busy || logoutPending"
+              @click="connectServer()"
+            >
               连接终端
             </button>
             <button :disabled="busy" @click="testServer()">
@@ -360,11 +391,15 @@ async function signOut(): Promise<void> {
           <dd>{{ selected.host_key ? '已信任' : '尚未信任' }}</dd>
           <template v-if="selected.host_key"
             ><dt>可信目标</dt>
-            <dd>{{ selected.host_key.host }} : {{ selected.host_key.port }}</dd>
+            <dd>
+              {{ selected.host_key.host }} : {{ selected.host_key.port }}
+            </dd>
             <dt>算法</dt>
             <dd>{{ selected.host_key.algorithm }}</dd>
             <dt>SHA256 指纹</dt>
-            <dd class="mono">{{ selected.host_key.fingerprint }}</dd></template
+            <dd class="mono">
+              {{ selected.host_key.fingerprint }}
+            </dd></template
           >
           <dt>创建时间</dt>
           <dd>{{ new Date(selected.created_at).toLocaleString() }}</dd>

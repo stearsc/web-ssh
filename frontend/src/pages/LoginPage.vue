@@ -13,7 +13,7 @@ onBeforeUnmount(() => {
   controller.abort()
 })
 async function submit(): Promise<void> {
-  if (busy.value) return
+  if (busy.value || logoutPending.value) return
   busy.value = true
   authNotice.value = ''
   try {
@@ -54,9 +54,9 @@ async function retryLogout(): Promise<void> {
         autocomplete="current-password"
         placeholder="管理密码"
         required
-        :disabled="busy"
+        :disabled="busy || logoutPending"
       />
-      <button class="primary login-submit" :disabled="busy">
+      <button class="primary login-submit" :disabled="busy || logoutPending">
         {{ busy ? '正在登录…' : '登录' }}
       </button>
       <p v-if="authNotice" role="alert" class="error">{{ authNotice }}</p>

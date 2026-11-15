@@ -1,19 +1,23 @@
 import { ref } from 'vue'
-import { request, type AuthView } from '../api/management'
+import { request, type AuthView } from '../api/management.ts'
 
 export const identity = ref<AuthView | null>(null)
 export const authNotice = ref('')
 export const logoutPending = ref(false)
+let logoutTask: Promise<void> | null = null
+let identityEpoch = 0
 let timer: ReturnType<typeof setTimeout> | undefined
 let expire = (): void => {}
 export function setExpiryHandler(callback: () => void): void {
   expire = callback
 }
 export function clearIdentity(): void {
+  identityEpoch++
   clearTimeout(timer)
   identity.value = null
 }
 export function acceptIdentity(value: AuthView): void {
+  if (logoutPending.value) return
   clearTimeout(timer)
   identity.value = value
   const schedule = (): void => {
@@ -27,11 +31,29 @@ export function acceptIdentity(value: AuthView): void {
   schedule()
 }
 export async function checkIdentity(): Promise<void> {
-  acceptIdentity(await request<AuthView>('/api/auth/me'))
+  if (logoutPending.value) return
+  const epoch = identityEpoch
+  const value = await request<AuthView>('/api/auth/me')
+  if (epoch === identityEpoch && !logoutPending.value) acceptIdentity(value)
 }
-export async function logout(): Promise<void> {
+export function logout(): Promise<void> {
   logoutPending.value = true
-  await request('/api/auth/logout', 'POST', {})
-  logoutPending.value = false
+  identityEpoch++
+  if (logoutTask) return logoutTask
+  logoutTask = request('/api/auth/logout', 'POST', {})
+    .then(() => {
+      clearIdentity()
+      logoutPending.value = false
+    })
+    .finally(() => {
+      logoutTask = null
+    })
+  return logoutTask
+}
+// 主动退出未确认时，其他请求的 AUTH_REQUIRED 不能将它覆盖成成功退出。
+export function expireIdentity(): boolean {
+  if (logoutPending.value) return false
   clearIdentity()
+  authNotice.value = '登录已过期，请重新登录'
+  return true
 }

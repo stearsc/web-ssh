@@ -1,5 +1,6 @@
-// 按冻结协议实现单次在途 write、回调偏移和断线排空；不包含自动恢复。
+// 单在途 write、回调偏移、有限排空和一次性稳定资格共用同一终端 epoch。
 export interface ClientSettings {
+  credential_timeout: number
   max_control_message_size: number
   max_input_message_size: number
   output_chunk_size: number
@@ -56,7 +57,9 @@ function ensure(condition: boolean, message: string): asserts condition {
   if (!condition) throw new ClientFailure('protocol', message)
 }
 function safeOffset(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+  return (
+    typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+  )
 }
 
 export class TerminalOutputTracker {
@@ -70,6 +73,8 @@ export class TerminalOutputTracker {
   private bufferedBytes = 0
   private receiveCursor = 0
   private processedOffset = 0
+  private readySince: number | null = null
+  private onReady: () => void
   private requestedOffset = 0
   private replayStart = 0
   private replayEnd = 0
@@ -87,11 +92,13 @@ export class TerminalOutputTracker {
     settings: ClientSettings,
     notice: (message: string) => void,
     onTerminalFailure: () => void,
+    onReady: () => void = () => {},
   ) {
     this.createTerminal = createTerminal
     this.settings = settings
     this.notice = notice
     this.onTerminalFailure = onTerminalFailure
+    this.onReady = onReady
     this.terminal = createTerminal()
   }
 
@@ -110,6 +117,19 @@ export class TerminalOutputTracker {
     return this.phase === 'stream'
   }
 
+  consumeStability(now: number): boolean {
+    const stable =
+      this.readySince !== null &&
+      now - this.readySince >= this.settings.reconnect_stable_time * 1000
+    this.readySince = null
+    return stable
+  }
+  private updateReady(): void {
+    if (this.inputEnabled && this.readySince === null) {
+      this.readySince = Date.now()
+      this.onReady()
+    }
+  }
   begin(requested: number): void {
     ensure(
       safeOffset(requested) && requested === this.requestedStartOffset(),
@@ -118,6 +138,7 @@ export class TerminalOutputTracker {
     this.requestedOffset = requested
     this.receiveCursor = requested
     this.phase = 'binding'
+    this.readySince = null
   }
   bind(message: BindSuccess): void {
     ensure(this.phase === 'binding', '重复或顺序错误的绑定响应')
@@ -133,6 +154,7 @@ export class TerminalOutputTracker {
     this.receiveCursor = this.replayStart
     this.phase =
       this.replayStart > this.requestedOffset ? 'truncated' : 'stream'
+    this.updateReady()
   }
   truncated(message: HistoryTruncated): void {
     ensure(
@@ -146,12 +168,14 @@ export class TerminalOutputTracker {
     )
     this.replaceTerminal(this.replayStart)
     this.phase = 'stream'
-    this.notice('较早输出已截断，已重建终端')
+    this.notice('较早输出已截断，已重建终端；保留的后缀不能恢复全部历史画面')
+    this.updateReady()
   }
   binary(data: Uint8Array): void {
     ensure(this.phase === 'stream', '绑定前缀完成前收到二进制输出')
     ensure(
-      data.byteLength > 0 && data.byteLength <= this.settings.output_chunk_size,
+      data.byteLength > 0 &&
+        data.byteLength <= this.settings.output_chunk_size,
       '输出块大小非法',
     )
     const startOffset = this.receiveCursor
@@ -177,7 +201,8 @@ export class TerminalOutputTracker {
     if (this.isDisposed) return
     this.phase = 'idle'
     if (!keepQueued) {
-      for (const item of this.queue) this.bufferedBytes -= item.data.byteLength
+      for (const item of this.queue)
+        this.bufferedBytes -= item.data.byteLength
       this.queue = []
     }
     this.schedulePump()
@@ -253,6 +278,7 @@ export class TerminalOutputTracker {
         this.processedOffset = item.endOffset
         this.bufferedBytes -= item.data.byteLength
         this.inFlight = null
+        this.updateReady()
         this.schedulePump()
       })
     } catch {
@@ -269,6 +295,7 @@ export class TerminalOutputTracker {
     this.schedulePump()
   }
   private replaceTerminal(baseOffset: number): void {
+    this.readySince = null
     this.terminalEpoch += 1
     this.terminal?.dispose()
     this.terminal =

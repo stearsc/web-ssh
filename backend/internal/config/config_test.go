@@ -139,3 +139,23 @@ func TestLoadAndKey(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestIndependentCredentialTimeout(t *testing.T) {
+	for _, body := range []string{"", "http: {}"} {
+		c, err := Parse([]byte(body))
+		if err != nil || c.HTTP.CredentialTimeout != 5 || c.Websocket.BindTimeout != 5 {
+			t.Fatal(c, err)
+		}
+	}
+	c, err := Parse([]byte("http:\n  credential_timeout: 2\nwebsocket:\n  bind_timeout: 7"))
+	if err != nil || c.HTTP.CredentialTimeout != 2 || c.Websocket.BindTimeout != 7 {
+		t.Fatal(c, err)
+	}
+	for _, value := range []string{"0", "-1", "null", "'5'", "1.5", "9223372036854775808", "9223372036854775807", "9007199254740992", "2147484"} {
+		for _, key := range []string{"http:\n  credential_timeout: ", "websocket:\n  bind_timeout: "} {
+			if _, err := Parse([]byte(key + value)); err == nil {
+				t.Fatalf("accepted %s%s", key, value)
+			}
+		}
+	}
+}

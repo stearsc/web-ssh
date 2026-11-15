@@ -354,3 +354,18 @@ func TestSSHDiagnosticHTTPIsolationProtocolAndRedaction(t *testing.T) {
 		}
 	}
 }
+
+func TestMeIndependentTimeoutSources(t *testing.T) {
+	h, m, _ := api(t)
+	m.Config.HTTP.CredentialTimeout = 2
+	m.Config.Websocket.BindTimeout = 7
+	cookie := loginCookie(t, h, m.Config.Server.PublicOrigin)
+	w := call(t, h, "GET", "/api/auth/me", "", cookie, "")
+	if w.Code != 200 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	v := decode[AuthView](t, w)
+	if v.ClientSettings.CredentialTimeout != 2 || v.ClientSettings.BindTimeout != 7 {
+		t.Fatal(v)
+	}
+}

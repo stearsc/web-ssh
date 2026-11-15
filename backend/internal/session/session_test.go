@@ -3,8 +3,10 @@ package session
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"io"
 	"log/slog"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -571,4 +573,188 @@ func TestCreateSnapshotSurvivesEditAndProtectsDelete(t *testing.T) {
 		t.Fatal(e)
 	}
 	waitBytes(t, s, []byte("snapshot-kept"))
+}
+
+func TestBusyCredentialNotConsumedAndGenerationPreserved(t *testing.T) {
+	m, login, id, _ := setup(t)
+	s := createSession(t, m, login, id)
+	token, err := m.Prepare(login, s.id, "attach", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 占住真实操作门，固定取消发生在取得许可之前。
+	s.gate <- struct{}{}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err = s.Attach(ctx, login, token.Credential, 0, func(string) {}); err != fault.Error("BIND_BUSY") {
+		t.Fatal(err)
+	}
+	<-s.gate
+	hash := sha256.Sum256([]byte(token.Credential))
+	m.credentialsMu.Lock()
+	_, exists := m.credentials[hash]
+	m.credentialsMu.Unlock()
+	if !exists || s.View().Generation != 0 {
+		t.Fatal("失败已消费或增代")
+	}
+	b, err := s.Attach(t.Context(), login, token.Credential, 0, func(string) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = m.Prepare(login, s.id, "attach", 1); err != fault.Error("BIND_BUSY") {
+		t.Fatal(err)
+	}
+	m.credentialsMu.Lock()
+	count := len(m.credentials)
+	m.credentialsMu.Unlock()
+	if count != 0 {
+		t.Fatal("Prepare 忙仍签发凭证")
+	}
+	s.Detach(b)
+	if s.View().Generation != 1 {
+		t.Fatal("Detach 改代次")
+	}
+	next := bind(t, m, s, login)
+	s.Detach(b)
+	if s.View().Generation != 2 || s.View().Status != "CONNECTED" {
+		t.Fatal("旧 Detach 影响新绑定")
+	}
+	if err = s.Execute(b, []byte("old-input"), 0, 0); err == nil {
+		t.Fatal("旧输入获准")
+	}
+	if err = s.Execute(b, nil, 90, 25); err == nil {
+		t.Fatal("旧 resize 获准")
+	}
+	s.Detach(next)
+}
+
+func TestAttachSnapshotCancellationAndOfflineScanOrdering(t *testing.T) {
+	for _, mode := range []string{"cancel", "deadline", "rebind"} {
+		t.Run(mode, func(t *testing.T) {
+			m, login, id, _ := setup(t)
+			s := createSession(t, m, login, id)
+			b := bind(t, m, s, login)
+			s.Detach(b)
+			token, err := m.Prepare(login, s.id, "attach", b.Generation)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			m.beforeCredentialCommit = func() {
+				if mode == "cancel" {
+					cancel()
+				}
+				if mode == "deadline" {
+					s.expires = time.Now().Add(-time.Second)
+				}
+			}
+			next, err := s.Attach(ctx, login, token.Credential, 0, func(string) {})
+			if mode == "rebind" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				s.Detach(b)
+				m.Sweep()
+				if s.View().Status != "CONNECTED" || s.View().Generation != next.Generation {
+					t.Fatal("扫描或旧回调关闭新绑定")
+				}
+			} else {
+				want := fault.Error("BIND_BUSY")
+				if mode == "deadline" {
+					want = fault.Error("SESSION_NOT_READY")
+				}
+				if err != want || s.View().Generation != b.Generation {
+					t.Fatal(err, s.View())
+				}
+				m.credentialsMu.Lock()
+				_, exists := m.credentials[sha256.Sum256([]byte(token.Credential))]
+				m.credentialsMu.Unlock()
+				if !exists {
+					t.Fatal("提交前失败消费凭证")
+				}
+			}
+		})
+	}
+}
+
+func TestBufferRawBoundariesAndStableCopies(t *testing.T) {
+	for _, tc := range []struct {
+		input, want     string
+		capacity, lines int
+	}{
+		{"", "", 8, 2}, {"x", "x", 8, 2}, {"\n\n\n", "\n\n", 8, 2},
+		{"a\r\nb\r", "a\r\nb\r", 16, 2}, {"a\nb\nc", "b\nc", 4, 2},
+		{"abcdefghi", "fghi", 4, 8}, {"\x1b[31m中文\x1b[0m", "\x1b[31m中文\x1b[0m", 32, 2},
+	} {
+		for split := 0; split <= len(tc.input); split++ {
+			b := NewBuffer(tc.capacity, tc.lines)
+			b.Write([]byte(tc.input[:split]))
+			b.Write([]byte(tc.input[split:]))
+			replay, err := b.Snapshot(0)
+			if err != nil || string(replay.Data) != tc.want || replay.Start != uint64(len(tc.input)-len(tc.want)) || replay.End != uint64(len(tc.input)) {
+				t.Fatal(tc, split, replay, err)
+			}
+			copyOf := bytes.Clone(replay.Data)
+			b.Write(bytes.Repeat([]byte{'Z'}, 2*tc.capacity))
+			if !bytes.Equal(copyOf, replay.Data) {
+				t.Fatal("快照改变")
+			}
+			if _, err := b.Read(replay.End, 1); err != ErrGap {
+				t.Fatal("未报告实时游标缺口", err)
+			}
+		}
+	}
+}
+
+func TestOneHundredSessionReclaims(t *testing.T) {
+	m, login, id, remote := setupWith(t, testutil.TerminalOptions{}, func(c *config.Config) { c.Session.MaxSessionsPerServer = 1 })
+	baseline := runtime.NumGoroutine()
+	for i := 0; i < 100; i++ {
+		s := createSession(t, m, login, id)
+		<-remote.Ready
+		b := bind(t, m, s, login)
+		s.Detach(b)
+		var wg sync.WaitGroup
+		for _, reason := range []string{"user_closed", "ssh_exit", "idle_timeout"} {
+			wg.Add(1)
+			go func() { defer wg.Done(); s.Close(reason) }()
+		}
+		wg.Wait()
+		select {
+		case <-s.Done():
+		case <-time.After(3 * time.Second):
+			t.Fatal("回收超时", i)
+		}
+		s.Detach(b)
+		if _, err := m.Get(s.id); err != fault.Error("SESSION_NOT_FOUND") {
+			t.Fatal(err)
+		}
+		s.buffer.mu.Lock()
+		released := s.buffer.data == nil
+		s.buffer.mu.Unlock()
+		if !released {
+			t.Fatal("缓存未释放")
+		}
+		m.mu.Lock()
+		count := len(m.sessions)
+		m.mu.Unlock()
+		if count != 0 {
+			t.Fatal("索引未释放")
+		}
+	}
+	if remote.Shells.Load() != 100 {
+		t.Fatal(remote.Shells.Load())
+	}
+	if err := m.servers.Delete(t.Context(), login, id); err != nil {
+		t.Fatal("名额未归还", err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for runtime.NumGoroutine() > baseline+4 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if runtime.NumGoroutine() > baseline+4 {
+		t.Fatalf("协程基线 %d，结束 %d", baseline, runtime.NumGoroutine())
+	}
+	t.Logf("100次真实SSH创建/关闭，goroutine baseline=%d final=%d", baseline, runtime.NumGoroutine())
 }

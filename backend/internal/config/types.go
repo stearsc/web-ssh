@@ -2,6 +2,7 @@ package config
 
 // 配置字段及数值单位与核心文档第 7 章保持一致，时间在使用边界转换。
 type Config struct {
+	HTTP      HTTP      `yaml:"http"`
 	Server    Server    `yaml:"server"`
 	Auth      Auth      `yaml:"auth"`
 	Session   Session   `yaml:"session"`
@@ -21,6 +22,11 @@ type Server struct {
 	RequestTimeout     int64    `yaml:"request_timeout"`
 	ShutdownTimeout    int64    `yaml:"shutdown_timeout"`
 	MaxRequestBodySize int64    `yaml:"max_request_body_size"`
+}
+
+// HTTP 控制浏览器凭证请求本地期限，与服务端及 WS 期限独立。
+type HTTP struct {
+	CredentialTimeout int64 `yaml:"credential_timeout"`
 }
 
 type Auth struct {

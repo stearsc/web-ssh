@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -299,7 +300,10 @@ func TestBindTimeoutAndConcurrentTermination(t *testing.T) {
 	for _, mode := range []string{"silent", "partial", "concurrent"} {
 		t.Run(mode, func(t *testing.T) {
 			t.Parallel()
-			h := newHarness(t, nil)
+			h := newHarness(t, func(cfg *config.Config) {
+				cfg.HTTP.CredentialTimeout = 9
+				cfg.Websocket.BindTimeout = 1
+			})
 			raw, _ := h.raw(t, false)
 			c := h.current(t)
 			if mode == "partial" {
@@ -315,6 +319,9 @@ func TestBindTimeoutAndConcurrentTermination(t *testing.T) {
 				}
 			}
 			awaitDone(t, c, 4*time.Second)
+			if mode != "concurrent" && c.reason != "BIND_TIMEOUT" {
+				t.Fatal("首 bind 未按独立期限结束", c.reason)
+			}
 		})
 	}
 }
@@ -788,4 +795,48 @@ func TestLoginExpiryAndInputLimit(t *testing.T) {
 			t.Fatal("超限输入进入 SSH")
 		}
 	})
+}
+
+func TestOneHundredBlockedConnectionsAndShutdown(t *testing.T) {
+	h := newHarness(t, func(c *config.Config) { c.Websocket.MaxConnections = 1 })
+	baseline := runtime.NumGoroutine()
+	headers := [][]byte{{0x82}, {0x82, 0xfe, 0}, {0x82, 0xff, 0, 0, 0}, {0x82, 0x81, 1, 2}}
+	for i := 0; i < 100; i++ {
+		raw, _ := h.raw(t, true)
+		c := h.current(t)
+		if _, err := raw.Write(headers[i%len(headers)]); err != nil {
+			t.Fatal(err)
+		}
+		// 阻塞 Reader/Close 后，以应用共同截止时间收紧预算，实际底层 socket 解除阻塞。
+		deadline := time.Now().Add(20 * time.Millisecond)
+		if i == 99 {
+			h.service.Stop(deadline)
+		} else {
+			c.terminate("INTERNAL_ERROR", deadline)
+		}
+		awaitDone(t, c, time.Second)
+		raw.Close()
+		select {
+		case <-c.workersDone:
+		default:
+			t.Fatal("worker 未退出")
+		}
+		if h.session.View().Status != "DISCONNECTED" || h.session.View().Generation != uint64(i+1) {
+			t.Fatal(h.session.View())
+		}
+	}
+	if h.remote.Shells.Load() != 1 {
+		t.Fatal("恢复重建了 SSH", h.remote.Shells.Load())
+	}
+	if _, err := h.manager.Prepare(h.login, h.session.View().ID, "attach", 100); err != nil {
+		t.Fatal("SSH未保留", err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for runtime.NumGoroutine() > baseline+4 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if runtime.NumGoroutine() > baseline+4 {
+		t.Fatalf("协程基线 %d，结束 %d", baseline, runtime.NumGoroutine())
+	}
+	t.Logf("100轮半帧头/关闭，worker、supervisor和名额归零；goroutine baseline=%d final=%d", baseline, runtime.NumGoroutine())
 }

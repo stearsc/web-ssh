@@ -36,6 +36,7 @@ type LoginView struct {
 	ExpiresAt string `json:"expires_at"`
 }
 type Settings struct {
+	CredentialTimeout     int64 `json:"credential_timeout"`
 	MaxControlMessageSize int64 `json:"max_control_message_size"`
 	MaxInputMessageSize   int64 `json:"max_input_message_size"`
 	OutputChunkSize       int64 `json:"output_chunk_size"`
@@ -60,7 +61,7 @@ type ServerList struct {
 
 func (m *Management) settings() Settings {
 	c := m.Config
-	return Settings{c.Websocket.MaxControlMessageSize, c.Websocket.MaxInputMessageSize, c.Websocket.OutputChunkSize, c.Websocket.BindTimeout, c.Session.OperationWaitTimeout, c.Websocket.WriteTimeout, c.Terminal.MaxCols, c.Terminal.MaxRows, c.Terminal.WriteQueueBytes, c.Terminal.WriteDrainTimeout, c.Terminal.ReconnectMaxAttempts, c.Terminal.ReconnectDelay, c.Terminal.ReconnectStableTime}
+	return Settings{c.HTTP.CredentialTimeout, c.Websocket.MaxControlMessageSize, c.Websocket.MaxInputMessageSize, c.Websocket.OutputChunkSize, c.Websocket.BindTimeout, c.Session.OperationWaitTimeout, c.Websocket.WriteTimeout, c.Terminal.MaxCols, c.Terminal.MaxRows, c.Terminal.WriteQueueBytes, c.Terminal.WriteDrainTimeout, c.Terminal.ReconnectMaxAttempts, c.Terminal.ReconnectDelay, c.Terminal.ReconnectStableTime}
 }
 func token(r *http.Request) string {
 	cookie, err := r.Cookie("web_ssh_auth")

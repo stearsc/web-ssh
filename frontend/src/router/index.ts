@@ -9,6 +9,8 @@ import {
   clearIdentity,
   authNotice,
   setExpiryHandler,
+  logoutPending,
+  expireIdentity,
 } from '../stores/auth'
 
 export const router = createRouter({
@@ -19,10 +21,13 @@ export const router = createRouter({
   ],
 })
 router.beforeEach(async (to) => {
+  if (logoutPending.value) return to.path === '/login' ? true : '/login'
   try {
     await checkIdentity()
+    if (logoutPending.value) return to.path === '/login' ? true : '/login'
     return to.path === '/login' ? '/' : true
   } catch (error) {
+    if (logoutPending.value) return to.path === '/login' ? true : '/login'
     clearIdentity()
     if (to.path === '/login') return true
     authNotice.value =
@@ -34,8 +39,7 @@ router.beforeEach(async (to) => {
 })
 const expired = (): void => {
   const wasLoggedIn = identity.value !== null
-  clearIdentity()
-  authNotice.value = '登录已过期，请重新登录'
+  if (!expireIdentity()) return
   if (wasLoggedIn && router.currentRoute.value.path !== '/login')
     void router.replace('/login')
 }

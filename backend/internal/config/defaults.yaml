@@ -10,6 +10,10 @@ server:
   # 管理 API 请求体上限，单位字节
   max_request_body_size: 65536
 
+http:
+  # 浏览器绑定凭证 POST 本地等待期限，单位秒
+  credential_timeout: 5
+
 auth:
   # 登录有效期，单位天；Cookie 安全属性默认开启
   session_ttl: 7

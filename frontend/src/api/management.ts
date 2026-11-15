@@ -48,6 +48,9 @@ let onExpired = (): void => {}
 export function onAuthExpired(callback: () => void): void {
   onExpired = callback
 }
+export function notifyAuthExpired(): void {
+  onExpired()
+}
 export async function request<T>(
   path: string,
   method = 'GET',
