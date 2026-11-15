@@ -9,6 +9,7 @@ RUN npm run build
 FROM golang:1.26.5-bookworm AS backend
 WORKDIR /src/backend
 COPY backend/go.mod backend/go.sum ./
+RUN go env -w GOPROXY=https://goproxy.cn,direct
 RUN go mod download
 COPY backend/ ./
 COPY --from=frontend /src/backend/web/dist ./web/dist
