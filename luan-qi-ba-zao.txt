@@ -29,10 +29,7 @@ docker rmi debian:bookworm-slim
 
 
 
-git archive \
-  --format=zip \
-  --output=web-ssh-stage2-2.zip \
-  feb43dc5
+git archive --format=zip --output=web-ssh-stage2-3.zip 221b11cf
 
 
 docker pull  swr.na-mexico-1.myhuaweicloud.com/hubs/node:24.22.3-bookworm-slim
@@ -66,3 +63,9 @@ git branch -m main master
 git fetch origin
 git branch -u origin/master master
 git remote set-head origin -a
+
+
+-- 设置目录权限
+mkdir -p ./data
+sudo chown -R 10001:10001 ./data
+sudo chmod 700 ./data
