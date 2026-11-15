@@ -31,8 +31,8 @@ docker rmi debian:bookworm-slim
 
 git archive \
   --format=zip \
-  --output=web-ssh-stage2.zip \
-  7f84f5d4
+  --output=web-ssh-stage2-2.zip \
+  feb43dc5
 
 
 docker pull  swr.na-mexico-1.myhuaweicloud.com/hubs/node:24.22.3-bookworm-slim

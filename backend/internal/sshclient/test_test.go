@@ -345,14 +345,15 @@ func TestDiagnosticRSAKeyTypeAndNegotiatedAlgorithm(t *testing.T) {
 
 func TestDiagnosticClassificationAndIsolation(t *testing.T) {
 	cases := []struct {
-		name string
-		err  error
-		want string
+		name      string
+		err       error
+		want      string
+		wantBasis string
 	}{
-		{"wrapped-timeout", fmt.Errorf("wrapped: %w", &net.DNSError{IsTimeout: true}), "timeout"},
-		{"wrapped-rejection", fmt.Errorf("wrapped: %w", errHostKeyConfirmation), "host_key_confirmation_required"},
-		{"unknown", errors.New("password=SECRET cookie=COOKIE token=TOKEN"), "pre_host_key_callback_failure"},
-		{"rsa", fmt.Errorf("wrapped: %w", rsa.ErrVerification), "signature_verification_failed"},
+		{"wrapped-timeout", fmt.Errorf("wrapped: %w", &net.DNSError{IsTimeout: true}), "timeout", "error_type"},
+		{"wrapped-rejection", fmt.Errorf("wrapped: %w", errHostKeyConfirmation), "host_key_confirmation_required", "sentinel"},
+		{"unknown", errors.New("password=SECRET cookie=COOKIE token=TOKEN"), "pre_host_key_callback_failure", "execution_checkpoint"},
+		{"rsa", fmt.Errorf("wrapped: %w", rsa.ErrVerification), "signature_verification_failed", "sentinel"},
 	}
 	var wg sync.WaitGroup
 	ids := make(chan string, len(cases))
@@ -365,7 +366,7 @@ func TestDiagnosticClassificationAndIsolation(t *testing.T) {
 			d.classify(item.err)
 			r := d.Snapshot()
 			ids <- r.AttemptID
-			if r.ServerID != item.name || r.FailureClass != item.want {
+			if r.ServerID != item.name || r.FailureClass != item.want || r.ClassificationBasis != item.wantBasis {
 				t.Error(r)
 			}
 			encoded, _ := json.Marshal(r)

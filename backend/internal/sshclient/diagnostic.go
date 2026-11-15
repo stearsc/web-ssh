@@ -181,6 +181,7 @@ func (d *Diagnostic) classify(err error) {
 		r.FailureClass, r.ClassificationBasis = "unknown", "unclassified"
 		if r.HostKeyCallbackCount == 0 && r.LastCheckpoint == "ssh_handshake_started" {
 			r.FailureClass = "pre_host_key_callback_failure"
+			r.ClassificationBasis = "execution_checkpoint"
 		}
 		if r.PasswordDecryptFailed {
 			r.FailureClass, r.ClassificationBasis = "password_decrypt_failed", "execution_point"
