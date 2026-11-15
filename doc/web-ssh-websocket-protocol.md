@@ -185,7 +185,8 @@ Writer 在发送完整绑定前缀前不发送 status 或二进制输出。控�
 |---|---|
 | 升级连接总容量，含未绑定和关闭中连接 | `websocket.max_connections` |
 | 完整控制消息、二进制输入、输出块大小 | `websocket.max_control_message_size`、`max_input_message_size`、`output_chunk_size` |
-| 首条完整 bind 等待 | `websocket.bind_timeout` |
+| 浏览器绑定凭证 HTTP POST 本地等待 | `http.credential_timeout`，通过 `client_settings.credential_timeout` 下发 |
+| Upgrade 成功后首条完整 bind 等待 | `websocket.bind_timeout`，继续通过 `client_settings.bind_timeout` 下发 |
 | 取得消息读取器后，整条消息累计读取时间 | `websocket.message_read_timeout` |
 | 每次消息写入、关闭通知加握手总预算 | `websocket.write_timeout`、`close_timeout` |
 | Ping 周期、单个在途 Ping 的 Pong 期限 | `websocket.ping_interval`、`pong_timeout` |
@@ -211,6 +212,7 @@ interface ClientSettings {
   max_control_message_size: number;
   max_input_message_size: number;
   output_chunk_size: number;
+  credential_timeout: number;
   bind_timeout: number;
   operation_wait_timeout: number;
   write_timeout: number;
@@ -479,6 +481,10 @@ class TerminalOutputTracker {
 <a id="reconnect"></a>
 ## 7. 单任务恢复协调器
 
+HTTP 凭证 POST 的本地期限使用 `client_settings.credential_timeout`（来自 `http.credential_timeout`），从请求前建立定时器，到响应读取/校验完成或失败后清除；超时通过 AbortController 取消，只表示客户端停止等待并尝试取消，不保证服务端停止处理或撤销已签发凭证。`client_settings.bind_timeout` 仅保留 WS 绑定相关用途，不再用于 HTTP；WS 完整前缀等待的既有算式保持不变，不加入 credential_timeout。详情 GET 不设置本地定时超时，只支持主动取消及组件生命周期取消；服务端 request_timeout 不等于浏览器本地期限。
+
+浏览器原生 WebSocket API 在 Upgrade 被拒绝时不会向 JavaScript 暴露完整 HTTP 状态码和 JSON 响应体，不能从 onerror 直接判断 CONNECTION_LIMIT_REACHED 等业务码；这种失败可能只能观察为 NETWORK_ERROR，仍按下述有限预算处理。凭证 HTTP 请求通过 fetch 读取明确业务错误，继续按原 code 分类；不改变服务端响应、错误码或重试集合。
+
 下面代码与上一代码块一起使用。它完整规定 HTTP 凭证申请、消息解析、连接事件、终端排空及有限重试。界面创建一个协调器对应一个本地 Session 标签；首次调用 run 使用当前 HTTP Session DTO 的代次。新的用户主动动作必须先 stop 并等待其完成，再重新 run，不能并发启动第二条恢复链。每个标签同时最多一个 CONNECTING/OPEN 的当前 socket 和一个恢复任务；旧 socket 可以短暂处于 CLOSING，但其事件处理器已移除、操作权已失效，不再接受应用事件，仍计入服务端连接上限并受关闭期限回收。不能把请求 close 描述为底层连接已立即消失。输入及 resize 的 UI 监听使用当前协调器的 socket/代次及上述发送门禁，不能捕获可复用的全局 socket。
 
 配置 `reconnect_max_attempts` 表示首次用户发起的连接尝试之外，最多允许的自动恢复次数；每次自动恢复前等待 `reconnect_delay`，两者不包含 HTTP/网络自身耗时。该预算应覆盖正常失联判定窗口，默认值以核心配置为准。自动恢复只使用 attach 和最后成功获知的代次。HTTP/WS `BIND_CONFLICT` 停止恢复；不能自动重新查询新代次并继续抢占。绑定提交成功但 bind_success 丢失时，下次 attach 可能得到冲突，交由用户主动操作。只有历史已处理完成且连接保持 `reconnect_stable_time` 后，下一次断线才重置重试预算；每次 bind_success 不重置预算；一次稳定连接只提供一次预算重置资格，后续 HTTP 凭证申请失败不能重复使用该资格。
@@ -658,7 +664,7 @@ class SessionTerminalClient {
   private async prepareCredential(mode: BindingMode): Promise<string> {
     const controller = new AbortController();
     this.credentialRequest = controller;
-    const timer = setTimeout(() => controller.abort(), this.settings.bind_timeout * 1000);
+    const timer = setTimeout(() => controller.abort(), this.settings.credential_timeout * 1000);
     try {
       const response = await fetch(`/api/sessions/${encodeURIComponent(this.sessionId)}/takeover`, {
         method: "POST", credentials: "same-origin", signal: controller.signal,

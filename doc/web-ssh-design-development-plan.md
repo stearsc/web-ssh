@@ -13,7 +13,7 @@
 **部署：** Docker 单容器  
 **UI 参考：** OpenCode 官方网站 Web UI（https://opencode.ai），正式布局以已确认的 [v2 原型](web-ssh-prototype-v2.html) 为准。
 
-更新日期：2026-11-14。本文为四份文档统一修订后的产品与接口规范；文档修订不代表业务功能已经实现或通过验收。
+更新日期：2026-11-15。本轮经确认将浏览器 HTTP 凭证申请期限与 WebSocket 首条绑定期限拆分；仅修订设计，新增配置及客户端下发字段尚待后续编码。其余产品与接口规范保持不变，文档修订不代表业务功能已经实现或通过验收。
 
 | 权威文档 | 唯一负责的内容 |
 |---|---|
@@ -340,6 +340,10 @@ server:
   # 管理 API 请求体上限，单位字节
   max_request_body_size: 65536
 
+http:
+  # 浏览器申请 Session 绑定凭证的 HTTP POST 本地等待期限，单位秒
+  credential_timeout: 5
+
 auth:
   # 登录有效期，单位天；Cookie 安全属性默认开启
   session_ttl: 7
@@ -384,7 +388,7 @@ websocket:
   max_control_message_size: 16384
   max_input_message_size: 65536
   output_chunk_size: 65536
-  # 以下时间均为秒
+  # 以下时间均为秒；bind_timeout 仅用于升级后首条完整 bind，不用于 HTTP 凭证申请
   bind_timeout: 5
   message_read_timeout: 10
   write_timeout: 10
@@ -415,7 +419,7 @@ logging:
 
 ## 7.2 类型、合法值与关联校验
 
-所有未单列的数值均为正整数，不接受浮点数、字符串数字、`null`、零或负数；转换为 Go 容量或 duration 前须检测溢出。默认值只有本章 YAML 一份定义。所有下发客户端的数值还必须在 JavaScript 安全整数范围内；涉及客户端的秒数乘 1000，以及 `(websocket.bind_timeout + session.operation_wait_timeout + websocket.write_timeout) × 1000`，均不得超过 2147483647 毫秒，防止浏览器计时器溢出立即触发。
+所有未单列的数值均为正整数，不接受浮点数、字符串数字、`null`、零或负数；转换为 Go 容量或 duration 前须检测溢出。默认值只有本章 YAML 一份定义。所有下发客户端的数值还必须在 JavaScript 安全整数范围内；涉及客户端的秒数（包括 `http.credential_timeout`）乘 1000，以及 `(websocket.bind_timeout + session.operation_wait_timeout + websocket.write_timeout) × 1000`，均不得超过 2147483647 毫秒，防止浏览器计时器溢出立即触发。
 
 | 键或范围 | 单位与合法性 |
 |---|---|
@@ -425,6 +429,7 @@ logging:
 | `server.trusted_proxies` | CIDR 字符串数组，默认不信任转发客户端地址；非法 CIDR 拒绝 |
 | `server.read_header_timeout`、`server.request_timeout`、`server.shutdown_timeout` | 秒；请求预算不得小于 `ssh.connect_timeout`；退出预算必须小于容器停止宽限期 |
 | `server.max_request_body_size` | 字节，至少 1024；流式限额，不能先无界读取 |
+| `http.credential_timeout` | 正整数，秒；浏览器申请 Session 绑定凭证的 HTTP POST 本地等待期限，通过 AbortController 定时取消；受上述 JS 安全整数及毫秒计时器范围校验 |
 | `auth.session_ttl` | 天，1～365 |
 | `auth.cookie_secure` | 布尔值；false 仅允许监听环回 IP 且 public_origin 为 HTTP 的 localhost/环回 IP；其余必须 HTTPS 且 true |
 | `auth.login_rate_window`、`auth.login_rate_limit`、`auth.max_sessions` | 秒、每窗口尝试次数、有效登录会话数；均为正整数 |
@@ -439,7 +444,8 @@ logging:
 | `websocket.max_connections`、`websocket.control_queue_limit` | 个、条；连接直至 Reader/Writer/关闭任务回收后才释放容量 |
 | `websocket.max_control_message_size` | 字节，至少 1024；应用 JSON 控制消息上限 |
 | `websocket.max_input_message_size`、`websocket.output_chunk_size` | 字节；输出块不得大于 `session.output_buffer_size` 或 `terminal.write_queue_bytes` |
-| `websocket.bind_timeout`、`message_read_timeout`、`write_timeout`、`close_timeout`、`ping_interval`、`pong_timeout` | 秒，均为 `websocket` 下的键；具体计时起点见[协议限制](web-ssh-websocket-protocol.md#limits) |
+| `websocket.bind_timeout` | 正整数，秒；从 WebSocket Upgrade 成功起等待首条完整 bind，不用于 HTTP 凭证请求；具体计时规则见[协议限制](web-ssh-websocket-protocol.md#limits) |
+| `websocket.message_read_timeout`、`write_timeout`、`close_timeout`、`ping_interval`、`pong_timeout` | 秒，均为 `websocket` 下的键；具体计时起点见[协议限制](web-ssh-websocket-protocol.md#limits) |
 | `terminal.max_cols`、`terminal.max_rows` | 列、行，正整数且不大于 65535 |
 | `terminal.write_queue_bytes` | 字节；包含未提交队列及唯一在途 xterm.js write |
 | `terminal.write_drain_timeout` | 秒；超时销毁旧实例，新的终端从偏移 0 请求恢复 |
@@ -451,7 +457,11 @@ logging:
 
 默认自动恢复等待跨度覆盖常见的心跳失联判定，避免旧通道尚未被服务端判离线时过早用尽尝试。持续输出、调度或网络故障仍可能超过预算，次数耗尽后显示状态并由用户主动重试，不承诺无限等待一定恢复。
 
-API 请求预算仅覆盖 HTTP 阶段。已经创建的 Session、已升级 WebSocket 不能继承该请求截止时间；WebSocket 使用本章独立超时。
+`server.request_timeout` 继续作为服务端 HTTP 请求预算，仅覆盖 HTTP 阶段。已经创建的 Session、已升级 WebSocket 不能继承该请求截止时间；WebSocket 使用本章独立超时。
+
+经确认，`http.credential_timeout` 与 `websocket.bind_timeout` 各自从本章默认配置加载，职责独立，即使默认值相同也不得互相取值或回退。前者在浏览器发起绑定凭证 POST 前建立 AbortController 定时器，请求及响应读取完成或失败后清除；到期只表示浏览器停止等待并尝试取消请求，不能证明服务端已停止处理或未签发凭证。它不是服务端请求处理、Session 操作锁等待或 WS 首条 bind 的期限。后者仍从 Upgrade 成功后计时；`session.operation_wait_timeout`、WS 写入、Ping/Pong 和关闭预算均不变，不增加它们与新字段的大小关系或求和约束。
+
+Session 详情 GET 不设置浏览器本地自动超时，也不复用上述两个字段；支持用户主动取消和组件生命周期取消。`server.request_timeout` 不能作为浏览器本地等待完成的保证。
 
 以下为固定实现约束，不新增可配置开关：SQLite WAL、外键开启、最大打开/空闲连接均为 1；WebSocket 不启用压缩；输出通知容量 1；原始字节不做 UTF-8/ANSI 解析；同一 WebSocket 单 Reader、单应用 Writer。这样避免第一版出现不可测试的组合。
 
@@ -671,6 +681,7 @@ client_settings:
   max_control_message_size: 正整数，字节
   max_input_message_size: 正整数，字节
   output_chunk_size: 正整数，字节
+  credential_timeout: 正整数，秒
   bind_timeout: 正整数，秒
   operation_wait_timeout: 正整数，秒
   write_timeout: 正整数，秒
@@ -683,7 +694,7 @@ client_settings:
   reconnect_stable_time: 正整数，秒
 ```
 
-`operation_wait_timeout` 来自 `session`；消息大小、`bind_timeout`、`write_timeout` 来自 `websocket`；其余来自 `terminal`。不返回 Cookie 值、令牌哈希、内部登录会话 ID 或管理员密码哈希。未登录的 me 返回 `AUTH_REQUIRED`；密码错误为 `AUTH_FAILED`。登录限流与登录容量独立处理，见 §5.1。
+`credential_timeout` 仅来自 `http.credential_timeout`，用于浏览器凭证 POST；`bind_timeout` 仅来自 `websocket.bind_timeout`，保留首条绑定期限的语义。两字段独立下发、独立校验，不互相引用或补默认值。`operation_wait_timeout` 来自 `session`；消息大小、`write_timeout` 来自 `websocket`；其余来自 `terminal`。不返回 Cookie 值、令牌哈希、内部登录会话 ID 或管理员密码哈希。未登录的 me 返回 `AUTH_REQUIRED`；密码错误为 `AUTH_FAILED`。登录限流与登录容量独立处理，见 §5.1。
 
 **退出登录的成功与失败边界：**
 

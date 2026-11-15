@@ -1,11 +1,11 @@
 # Web SSH 第四阶段详细实施计划
 
 - 修订日期：2026-11-15。
-- 状态：第二轮修订已保存，待人工审查；BLOCKER-PROTOCOL 与 BLOCKER-HTTP 尚未解决，暂不能进入编码，不表示实现或测试通过。
+- 状态：凭证 HTTP 超时拆分设计已修订，两个历史 BLOCKER 已按用户确认解除；待人工审查。本次不授权编码，不表示实现或测试通过。
 - 阶段名称：Session 生命周期与输出缓存。
-- 第一轮新增本计划；本轮仅修订本文件，保留原有 21 节结构，四份冻结设计、第三阶段报告、业务代码及配置保持不变。
-- 基线分支：`codex/第三阶段`；HEAD：`65abdf265c493202e8a705c6895f1741a27370de`。
-- 本轮开始时：`luan-qi-ba-zao.txt` 为用户已有未暂存修改，本计划为上一轮遗留的未跟踪文件；暂存区为空。本轮不覆盖已有修改。
+- 本轮仅修订核心需求、WebSocket 协议和本计划三份文档，保留 21 节结构；架构、阶段指南、历史报告、业务代码及实际配置文件均不修改。
+- 本轮基线分支：`codex/第三阶段`；HEAD：`f7fd93af48c7c80715fa70c9f324392f3cd0244d`。
+- 本轮开始时工作区和暂存区均为空，本计划已进入 HEAD；保留 `luan-qi-ba-zao.txt` 及所有非授权文件的原始内容，不清理或覆盖用户文件。
 
 ## 1. 阶段目标、非目标与授权边界
 
@@ -21,7 +21,7 @@
 
 ## 2. 冻结依据与解释边界
 
-唯一协议依据是 HEAD `65abdf265c493202e8a705c6895f1741a27370de` 中的下列四份冻结设计。第三阶段报告仅作历史记录，代码仅作实现证据，原型仅作布局参考，均不能替代冻结契约。本次授权只允许保存修订，不解除两项 BLOCKER。文中代码/原文行号对应此 HEAD，仓库相对路径用于后续复核。
+协议依据为本轮基线 HEAD 的四份设计及本次明确批准的核心配置、client_settings 和协议参考实现修订；不混用其他版本。关闭码、错误分类及 Binding 规则不变。第三阶段报告仅作历史记录，代码仅作实现证据，原型仅作布局参考。文中已有代码及带行号的历史文档证据对应本轮基线 HEAD；修订后的设计以章节/锚点定位。本次解除两项历史设计阻塞，不授权编码。
 
 | 依据 | 对应章节与权威内容 | 本计划的落实位置 |
 |---|---|---|
@@ -38,17 +38,12 @@
 
 措辞校准：协议 §7 提及关闭旧 socket 后操作权失效，本地只能同步禁止旧任务发送和处理事件；服务端 Binding 何时失效由 Detach、心跳和超时决定。同节 BIND_BUSY 规则仍适用。请求 close 不等于远端已离线，也不等于全局 WS 名额已经归还。
 
-### 2.1 第二轮核对：当前原文与待确认事项
+### 2.1 已确认的设计依据与本次变更
 
-| 待核实事项 | 当前 HEAD 的冻结依据 | 本计划处理 |
-|---|---|---|
-| 自动恢复是否有既有算法/参数 | `web-ssh-websocket-protocol.md:480–484` 的 §7 为“单任务恢复协调器”；§6:311–316 定义稳定资格，§7:625–655 定义循环。核心 §7.1/§7.2、§11.2 已列三个参数 | 上一版引用协议 §7 有来源；补充精确位置和实现状态，不改称算法不存在 |
-| 第四/第五阶段引用 | `web-ssh-implementation-stages.md:225` 的 §6 是第四阶段，§6.1 链接恢复协调器，§6.2 第1–3项要求串行恢复及预算；281行起 §7 是第五阶段 | 第四阶段正向依据为指南 §6，指南 §7 仅用于排除列表及接管功能，不与协议 §7 混淆 |
-| 错误格式与关闭码 | 协议 §4.4:144–163 使用大写 code，error 只有 type/code/message；OUTPUT_GAP→4002，INVALID_CREDENTIAL 收到明确 code 后有限重新申请；§4.5:175–177 要求裸4001也停止恢复 | 仅记录当前契约，不引入另一版小写错误码、retryable字段或4001输出缺口含义 |
-
-**BLOCKER-PROTOCOL（尚待人工确认）**：第二轮任务所引“协议§7.2/§7.3、invalid_bind、output_gap/4001、retryable”的规则不在当前四份冻结文档中，且与当前原文冲突。上一版 §15.2 的4001停止规则符合当前冻结文件，不能在本轮擅自改成输出缺口。本次保存授权明确以当前HEAD为唯一依据，但同时要求保留此阻塞，故本计划不将依据确认视为冲突处置完成。有关纠正历史审查要求及是否关闭此阻塞，仍等待人工明确裁决；不实施其他版本，也不设计兼容映射。
-
-上一版需修订的是来源证据不足、已有实现与未来要求未充分区分，以及详情GET复用bind_timeout没有依据。HTTP期限冲突单独列为 §6.3 的 BLOCKER-HTTP；两项阻塞均不由本次保存自动解决。
+- 协议 §7 是“单任务恢复协调器”；§6 定义 tracker 稳定资格，阶段指南 §6 是第四阶段、§7 是第五阶段。恢复参数、次数和稳定规则保持原样。
+- 协议 §4.4/§4.5 使用大写业务 code：OUTPUT_GAP 对应4002并有限恢复，taken_over/4001停止，1000停止，1006/1011/1012/1013按既有预算有限恢复；不引入其他版本的错误码或字段。
+- 本次唯一配置增量是 `http.credential_timeout`，通过 `/api/auth/me` 的 `client_settings.credential_timeout` 下发；凭证 POST 改读此字段，WS 的 bind_timeout 来源和用途保持独立。详情 GET 仅主动/生命周期取消，无本地自动期限。
+- 两个历史审查问题的最终处理见 §21.2，均已解除；新配置尚未实现属于后续获准编码任务，不再作为待裁决设计阻塞。
 
 ## 3. 第三阶段现状与复用点
 
@@ -107,7 +102,7 @@ Sweep 提交关闭时在 Session 锁内重新校验 DISCONNECTED、无当前 Bin
 
 每次尝试按协议执行：冻结旧接收并等待排空 → 检查任务身份/停止/登出/销毁 → 读取该实例 processedOffset → 申请新 attach 凭证 → 复查有效性 → 创建 WS、先设 arraybuffer 再装 handler → 首条 bind → 验证成功前缀 → 一次回放 → 连续实时输出。
 
-各层期限按 §6.3 分开记录。现有凭证HTTP对bind_timeout的复用是已发现的冻结参考代码/实现与第二轮要求之间的冲突，不再当作已裁决的第四阶段方案；详情GET不得扩用它。WS完整前缀的本地总等待有独立的现成算式和来源，不能当成HTTP期限。
+各层期限按 §6.3 执行。凭证 HTTP POST 只使用 client_settings.credential_timeout 定时 Abort，不能读取 bind_timeout；这不保证服务端停止处理。详情 GET 仅支持用户主动和组件生命周期取消，无本地自动超时。WS 完整前缀总等待保持既有算式，不能当成 HTTP 期限。
 
 ### 6.2 结束、代次和重复事件
 
@@ -117,16 +112,16 @@ Sweep 提交关闭时在 Session 锁内重新校验 DISCONNECTED、无当前 Bin
 
 INVALID_CREDENTIAL 的合并语义、重新申请及停止边界见 §15.4，不能猜成另一版本错误或自动换代；BIND_BUSY 的凭证和代次变化见 §7.2。BIND_CONFLICT 终止长期任务并保留标签。INPUT_BACKPRESSURE 停止自动恢复，明确输入可能未全部发送，绝不自动补发。closed/taken_over 禁用输入并有限排空已接受队列；本阶段不新增任何主动接管入口。
 
-### 6.3 分层超时、现有实现与 BLOCKER-HTTP
+### 6.3 分层超时与已确认的配置拆分
 
-下表默认值来自核心 §7.1 和 `backend/internal/config/defaults.yaml`，不是新设参数；部署值可覆盖默认值。Go配置类型为int64秒，前端number秒仅在setTimeout边界乘1000。“已有”只指存在代码，不表示第四阶段已验收。
+下表默认值以修订后的核心 §7.1 为准。新增 http.credential_timeout 默认5秒；其余字段与基线 `backend/internal/config/defaults.yaml` 一致。部署值可覆盖默认值。设计要求 Go 配置为正整数秒、前端 number 秒仅在 setTimeout 边界乘1000；新增字段同样校验 JS 安全整数和2147483647毫秒计时器上限。“已有”只指当前代码，新字段尚待实现。
 
 | 层 / 配置（默认值） | 起始 → 结束条件 | 取消和边界 | 代码证据 / 实现状态 |
 |---|---|---|---|
 | HTTP凭证POST服务端：server.request_timeout（30秒） | handler建立请求context → 返回；net/http另管理读写期限 | defer cancel、客户端断开或应用取消；不能当作浏览器收响应保证 | `backend/cmd/server/run.go:90,115–134`已有。Prepare未接收context，锁等待不能被该context抢断，不承诺30秒强停所有内部操作 |
-| HTTP凭证POST浏览器：当前复用client_settings.bind_timeout（默认5秒） | 请求前启动timer → request及JSON处理结束后finally清timer | 超时AbortController.abort；stop/dispose取消请求 | `frontend/src/terminal/client.ts:84–108`已有；协议§7:658–680也这样使用。非独立HTTP配置，冲突待确认 |
-| HTTP详情GET服务端：server.request_timeout（30秒）；浏览器无独立超时字段/常量 | 服务端同上；浏览器fetch/JSON完成或失败，无本地定时上界 | request支持AbortSignal，当前inspect未传；后续生命周期取消按§11/§15.3 | `backend/cmd/server/run.go:132–134`、`frontend/src/api/management.ts:51–84`、`frontend/src/components/terminal/TerminalPane.vue:66–72`；不得借用bind_timeout |
-| Upgrade后首条完整bind：websocket.bind_timeout（5秒） | 升级成功记录upgraded → 收到并解析合法首条bind、关闭bindReceived | timer.Stop、连接ctx取消；超时Terminate(BIND_TIMEOUT) | `backend/internal/websocket/service.go:79–82`、`connection.go:104–114,202–213`已有；协议§2.2/§5、架构§7.5 |
+| HTTP凭证POST浏览器：http.credential_timeout → client_settings.credential_timeout（5秒） | 请求前启动timer → request及响应读取/校验结束后finally清timer | 超时AbortController.abort；用户停止/stop/dispose取消；不保证服务端停止或未签发 | 协议§6 ClientSettings及§7 prepareCredential参考代码已修订；实际 `frontend/src/terminal/client.ts:84–108` 仍为旧实现，配置/DTO/读取需后续编码迁移 |
+| HTTP详情GET服务端：server.request_timeout（30秒）；浏览器不设置本地定时超时 | 服务端同上；浏览器fetch/JSON完成、失败或显式取消，无本地定时上界 | 用户主动取消及组件生命周期取消；request支持AbortSignal，当前inspect未传，后续按§11/§15.3接入 | `backend/cmd/server/run.go:132–134`、`frontend/src/api/management.ts:51–84`、`frontend/src/components/terminal/TerminalPane.vue:66–72`；不得借用bind_timeout |
+| Upgrade后首条完整bind：websocket.bind_timeout（5秒），继续下发client_settings.bind_timeout | 升级成功记录upgraded → 收到并解析合法首条bind、关闭bindReceived | timer.Stop、连接ctx取消；超时Terminate(BIND_TIMEOUT) | `backend/internal/websocket/service.go:79–82`、`connection.go:104–114,202–213`已有；协议§2.2/§5、架构§7.5 |
 | 服务端绑定操作许可：session.operation_wait_timeout（5秒） | Attach等待gate前WithTimeout → 取得gate或期限/父ctx到达 | defer cancel；失败BIND_BUSY，未消费凭证 | `backend/internal/session/binding.go:102–109,153–158`已有；仅界定gate等待，不是整个提交事务的可抢断总预算 |
 | WS单次应用消息写：websocket.write_timeout（10秒） | 每次conn.Write前建context → Write返回 | cancel；错误进入统一终止，底层关闭可更早解除阻塞 | `backend/internal/websocket/connection.go:388–394,415–417`已有；终止通知取min(剩余关闭预算,write_timeout) |
 | WS Ping/Pong：websocket.ping_interval（30秒）、pong_timeout（10秒） | 绑定后设nextPing；每次Ping完成后设下一周期；单次调用前建context → Ping返回 | 返回后cancel；首次终止取消在途Ping，失败走终止 | `connection.go:225,325–340,85–86`已有；pong_timeout覆盖写Ping及等Pong，不再叠加写期限 |
@@ -136,9 +131,9 @@ INVALID_CREDENTIAL 的合并语义、重新申请及停止边界见 §15.4，不
 
 表中简写 connection.go 均指 `backend/internal/websocket/connection.go`。补充分层：`websocket.message_read_timeout`默认10秒，`connection.go:165–187`在Reader返回消息读取器之后计时，读完停表，到期取消读取context并终止；不覆盖Reader返回前半帧头，也不等于HTTP或bind等待。
 
-**BLOCKER-HTTP（尚待人工确认）**：第二轮要求禁止将首条bind期限用于HTTP，但当前冻结协议§7:661及客户端均用它限制凭证POST；不能在补充计划直接删除或替换。详情GET没有浏览器独立期限来源，上一版§15.3的bind_timeout规定已删除。server.request_timeout不在client_settings中，不能让前端读取不存在的字段、硬编码30秒或新增配置。
+配置职责已确定：http.credential_timeout 只约束浏览器凭证 POST 本地等待，websocket.bind_timeout 只保留 WS 绑定用途；两者默认值相同但来源独立，不互相回退。server.request_timeout 仍是服务端 HTTP 预算，session.operation_wait_timeout 仍是 Session 操作等待，其他期限不变。不增加详情 GET 超时字段或计时器，也不把服务端预算描述为浏览器完成保证。
 
-最小候选方案（未采纳）：服务端沿用request_timeout，浏览器凭证POST与详情GET仅使用用户/生命周期取消，明确网络响应未知时没有本地定时完成保证。凭证POST采纳此候选会偏离当前冻结参考代码，须另行人工确认和授权；若必须有浏览器有限等待，也须先确认合法的既有字段用途或另行批准契约变更。本轮不选择期限、不更改冻结文档/API/配置/代码，不用其他时钟相加补出HTTP预算。
+实际代码迁移边界：`backend/internal/config/{types.go,defaults.yaml,config.go}`、`config.example.yaml`、`backend/internal/httpapi/management.go` 和前端 ClientSettings/配置校验/凭证定时器仍需在未来编码时落实新字段、默认值、范围与下发来源。严格配置解析下，当前程序尚不支持新增 http 配置组；不能把文档 YAML 已更新当成可直接部署。本轮不修改上述任何文件，也不让前端静默回退到旧字段。
 
 ## 7. 重试预算与稳定资格
 
@@ -152,7 +147,7 @@ INVALID_CREDENTIAL 的合并语义、重新申请及停止边界见 §15.4，不
 | reconnect_delay | Go int64→JSON number；正整数秒；默认5 | 同目录 `types.go:74`、`defaults.yaml:74`，键terminal.reconnect_delay |
 | reconnect_stable_time | Go int64→JSON number；正整数秒且不小于delay；默认30 | 同目录 `types.go:75`、`defaults.yaml:75`，键terminal.reconnect_stable_time |
 
-`config.example.yaml:72–75`同样定义三项；`backend/internal/config/config.go:124–158,244–248`校验范围。HTTP字段/组装/路由在 `backend/internal/httpapi/management.go:49–55,61–64,131–134`。前端由 `frontend/src/stores/auth.ts:29–30` 请求/me保存identity，`components/terminal/TerminalPane.vue:107`调用 `terminal/client.ts:9–28` 的clientSettings检查正安全整数；这两个路径前缀均为 `frontend/src/`，ClientSettings类型见 `frontend/src/terminal/output.ts:13–15`。无需寻找替代字段或新增参数。
+`config.example.yaml:72–75`同样定义三项；`backend/internal/config/config.go:124–158,244–248`校验范围。HTTP字段/组装/路由在 `backend/internal/httpapi/management.go:49–55,61–64,131–134`。前端由 `frontend/src/stores/auth.ts:29–30` 请求/me保存identity，`components/terminal/TerminalPane.vue:107`调用 `terminal/client.ts:9–28` 的clientSettings检查正安全整数；这两个路径前缀均为 `frontend/src/`，ClientSettings类型见 `frontend/src/terminal/output.ts:13–15`。这三个恢复参数无需替代或新增；本次独立新增的 credential_timeout 见§6.3/§9.2。
 
 参数只读认证client_settings；10/5/30是既有默认配置，不是本计划定义；不得另设前端默认值、指数退避、抖动或开关。
 
@@ -164,7 +159,7 @@ INVALID_CREDENTIAL 的合并语义、重新申请及停止边界见 §15.4，不
 6. begin 新尝试、终端重建及终端失败按协议清稳定状态。反复绑定后立刻 OUTPUT_GAP 必须耗尽，不能每次绑定恢复预算。
 7. 同一用户任务内 HTTP 失败、WS 未绑定失败、绑定后故障共用预算。手动开始的新任务有新预算，但必须经过用户刷新、再次点击及旧任务收尾，不得在后台伪造用户动作。
 
-人工恢复的首次失败若属当前冻结契约的可重试类型，同样使用新任务预算及原代次；UI显示失败及等待。不可重试或预算耗尽后为任务最终失败。等待中想重新查询，须先显式停止再刷新，不并行启动第二条链。默认每段未重新获得稳定资格的预算最多10次自动尝试，初始用户尝试另计；新连接真正稳定后可再次获得一次重置资格，不是长期任务永远只能重置一次。BLOCKER未裁决前不进入实现。
+人工恢复的首次失败若属当前冻结契约的可重试类型，同样使用新任务预算及原代次；UI显示失败及等待。不可重试或预算耗尽后为任务最终失败。等待中想重新查询，须先显式停止再刷新，不并行启动第二条链。默认每段未重新获得稳定资格的预算最多10次自动尝试，初始用户尝试另计；新连接真正稳定后可再次获得一次重置资格，不是长期任务永远只能重置一次。实施仍须另获编码授权。
 
 ### 7.2 BIND_BUSY的签发、消费和代次
 
@@ -199,7 +194,7 @@ INVALID_CREDENTIAL 的合并语义、重新申请及停止边界见 §15.4，不
 | SESSION_NOT_FOUND | 标记不存在/已结束，禁止恢复；不从 SQLite 或旧 props 复活 |
 | 查询失败或响应非法 | 展示查询失败，候选为空；禁止用旧快照或自算代次恢复 |
 | 本地收到 closed | 保留终端尾输出及结束原因，禁止恢复已关闭 Session |
-| 本地收到taken_over或Close4001（当前冻结基线；BLOCKER-PROTOCOL未决） | 当前§4.5要求停止；裸4001不伪造为收到taken_over业务消息。保留提示/状态查询，不引入4001输出缺口解释、兼容分支或接管入口；阻塞未裁决不编码 |
+| 本地收到taken_over或Close4001 | 按协议§4.5停止当前连接和自动恢复；裸4001不伪造为已收到taken_over业务消息。保留提示/状态查询，不引入输出缺口解释、兼容分支或接管入口 |
 | 身份失效、退出意图未完成、标签销毁中 | 禁止刷新/启动恢复；按 §13 处理 |
 
 CONNECTED行仅允许发起受严格校验的普通请求，不允许在CONNECTED签发或提交attach。Prepare忙未签发、Attach忙未消费，后续原代次新申请见§7.2；INVALID_CREDENTIAL不代表可以采用新代次，见§15.4。不会主动关闭原设备、替换 Binding 或使用 takeover。当前标签本来仍在线时不显示这个等待入口，防止重复创建本地客户端。
@@ -212,13 +207,13 @@ CONNECTED行仅允许发起受严格校验的普通请求，不允许在CONNECTE
 
 协议要求的自动诊断刷新与此显式刷新分开：诊断结果只展示，不自动生成可供手动恢复消费的候选。用户仍须亲自刷新并再次点击，满足两次动作约束。
 
-## 9. API 契约：全部复用，无新增或修改
+## 9. API 契约：复用接口，补充凭证超时下发字段
 
-实际代码 `session.View.Generation` 的 JSON 名称已经是 binding_generation；SessionView TypeScript 也已有该字段。详情通过 Manager.Get 获取当前内存快照。无需新增字段、接口、错误码、迁移或配置。
+实际代码 `session.View.Generation` 的 JSON 名称已经是 binding_generation；SessionView TypeScript 也已有该字段，详情通过 Manager.Get 获取当前内存快照。Session及凭证请求/响应字段、API路径、错误码和数据库结构均不变。本次唯一DTO设计增量是 /api/auth/me.client_settings.credential_timeout，对应新增配置 http.credential_timeout；当前代码尚未下发该字段，详见§9.2。
 
 | 接口 | 请求 | 成功及用途 |
 |---|---|---|
-| GET /api/auth/me | 有效 Cookie | 200，expires_at 与 client_settings，提供既有终端限制 |
+| GET /api/auth/me | 有效 Cookie | 200，expires_at与client_settings；设计补充credential_timeout，其余字段不变 |
 | GET /api/sessions/{id} | 无业务请求体，有效 Cookie | 200，SessionView；人工查询及终止后诊断 |
 | POST /api/sessions/{id}/takeover | `{"mode":"attach","expected_generation":G}` | 200，credential、expires_at；路径名称不表示启用 takeover |
 | GET /ws/sessions/{id} | Cookie、合法 Origin、容量准入 | HTTP/1.1 Upgrade 后发送 `{"type":"bind","credential":"…","requested_start_offset":P}` |
@@ -253,6 +248,15 @@ binding_generation 是服务端当前绑定代次，非负 JS 安全整数，初
 详情路由 `backend/internal/httpapi/sessions.go:37–44` 在protected认证后调用Manager.Get。`session.go:182–210` 的Find/Get拒绝已移除或CLOSED，Get再持Session锁调用viewLocked，所以CONNECTING、CONNECTED、DISCONNECTED、CLOSING都能返回当前内存快照；CLOSED返回SESSION_NOT_FOUND/HTTP404，不从SQLite读旧代次。响应发出后状态仍会变化；remaining_seconds=0不保证可绑定，Prepare/Attach复查期限。
 
 现有 `frontend/src/api/management.ts:66–84` 只检查信封，最终返回body.data as T；`TerminalPane.vue:66–72` 的inspect没有AbortSignal、序号或字段校验，仅更新提示。因此§9所要求的详情运行时校验是未来增量，不能称已存在。当前没有人工候选闭环，不能声称已观察到错误自动换代；但迟到响应可覆盖提示，未来直接复用props/旧候选会有风险。§8.3要求刷新开始清候选，失败或响应丢失不得回退旧快照；只有字段及身份校验通过才保存候选，最终仍由服务端裁决。取消与定时分别见§15.3、§6.3。
+
+### 9.2 client_settings 的最终来源与实现差距
+
+| 字段 | 配置唯一来源 | 类型/单位/默认值 | 用途及当前实现状态 |
+|---|---|---|---|
+| credential_timeout | http.credential_timeout | 正整数秒，默认5；JSON number | 浏览器凭证POST本地等待；当前Config、Settings DTO和前端读取尚未增加，未来需一起实现 |
+| bind_timeout | websocket.bind_timeout | 正整数秒，默认5；JSON number | 服务端升级后首条完整bind期限；继续原样下发，不能用作HTTP期限 |
+
+其余client_settings字段保持核心§11.2既有定义，除credential_timeout外不新增字段。前端从/me读取并校验正安全整数及计时器范围，不自行推算、不用另一字段兜底。绑定凭证HTTP的请求参数和成功响应仍为原契约，不在凭证响应中新加超时值；详情GET不新增超时字段。
 
 ## 10. 前端任务状态、结果和 Promise（I2）
 
@@ -376,7 +380,7 @@ tracker 接入协议 readySince/updateReady/consumeStability；回调完成才�
 
 ### 15.1 明确错误 code
 
-下表以当前冻结协议§4.4和§7 retryCodes为唯一依据；不接受另一版本的小写别名或retryable字段。BLOCKER-PROTOCOL仍未关闭，下表是当前基线的准确记录，不授权编码。现有第三阶段客户端尚无自动循环。
+下表以协议§4.4和§7 retryCodes为依据；不引入其他版本的错误码或retryable字段。关闭码及重试分类经本次确认保持不变；现有第三阶段客户端尚无自动循环，本计划不授权编码。
 
 | 分类 | code | 动作 |
 |---|---|---|
@@ -388,11 +392,13 @@ tracker 接入协议 readySince/updateReady/consumeStability；回调完成才�
 | 其他明确 HTTP 业务错误 | 如 INVALID_REQUEST、SERVER_UNAVAILABLE、STORAGE_ERROR | 不在协议 retryCodes 中则停止；保留原 code，不因 5xx/429 就一律重试 |
 | HTTP 传输失败或无法完成响应解析 | 按协议产生本地 NETWORK_ERROR；可识别的契约字段校验失败为协议错误 | 前者有限预算，后者停止；用户主动取消始终为停止，不包装成网络重试 |
 
+浏览器错误可观察性：原生WebSocket API在Upgrade被服务端拒绝时，不向JavaScript暴露完整HTTP状态码和JSON错误响应体。即使服务端返回CONNECTION_LIMIT_REACHED，onerror也不能据此直接识别该code；客户端可能只能观察到NETWORK_ERROR，仍按原有限预算恢复，不推测业务原因。凭证POST使用fetch，明确HTTP code仍按上表解析分类。新增凭证本地期限到达而任务未停止时，沿用参考循环的NETWORK_ERROR路径；用户主动取消/stop/dispose始终停止，不转成重试。不得增加错误码、额外探测接口或改变预算。
+
 ### 15.2 Close code 回退
 
 已收到明确业务终止结果时不由后续Close覆盖。当前协议§4.4:158、§4.5:175–177、§7:752–755规定：无业务结果时1006、1011、1012、1013、4002可有限重试；1000、4001停止并保留有限队列；1008、1009及其他未列码不自动重试。`backend/internal/websocket/protocol.go:68–84`将OUTPUT_GAP映射为4002；`frontend/src/terminal/client.ts:198–200`对1000/4001保留队列，但尚无自动循环。
 
-**BLOCKER-PROTOCOL仍未解决**：第二轮原要求“4001按output_gap恢复”与当前冻结原文冲突，本次仅保存核查及阻塞记录，不迁移码表，也不兼容两义。taken_over按明确业务消息处理；裸4001只按当前契约停止，不伪造taken_over消息或Session状态。1000同样不能证明SSH已关闭，必要时用详情确认。
+taken_over按明确业务消息处理；4001保持其taken_over关闭语义，停止连接和自动恢复，不伪造已收到业务消息或Session状态。1000停止自动恢复，但不能单凭该码证明SSH已关闭，必要时用详情确认。4002保持OUTPUT_GAP含义并允许有限恢复，不兼容另一套解释。
 
 1008 同时承载可重试和不可重试业务错误，没有明确 code 就不能猜成 BIND_BUSY。CLIENT_OVERLOAD 主动 close(4003) 后由本地原因决定有限恢复；不能把任意收到的 4003 自动纳入原生 close 重试集合。浏览器只调用允许的 1000 或 3000–4999 关闭码。
 
@@ -400,7 +406,7 @@ tracker 接入协议 readySince/updateReady/consumeStability；回调完成才�
 
 协调器负责立即停输入、停止该任务并完成通道/排空收尾；Pane 接收带任务身份的终止结果，对 SESSION_NOT_FOUND/SESSION_NOT_READY 各终止任务至多发起一次诊断 GET，不递归重试查询、不轮询。
 
-详情请求由Pane单独持有AbortController、查询序号、loading/error/snapshot；发起前等待任务收尾，检查标签尚在、无新任务/退出意图。删除上一版GET复用bind_timeout的规定：当前只有服务端request_timeout，浏览器没有详情独立期限；生命周期取消可以明确，有限本地等待不能凭空保证，见§6.3 BLOCKER-HTTP。失败仅显示结果并等待用户刷新，不用首条bind超时替代HTTP期限。
+详情请求由Pane单独持有AbortController、查询序号、loading/error/snapshot；发起前等待任务收尾，检查标签尚在、无新任务/退出意图。提供用户主动取消和组件生命周期取消，不建立本地自动超时计时器；不能复用credential_timeout或bind_timeout。服务端request_timeout不是浏览器本地完成保证。取消时同步使查询身份和候选失效，晚到结果不得覆盖新状态；失败仅显示结果并等待用户刷新。
 
 结果只有在查询序号、Pane 生命周期、触发任务身份及认证状态都仍匹配时才能更新展示。用户显式刷新可取消并替代诊断查询；旧 finally 不能清新请求 loading。GET 返回 SESSION_NOT_FOUND 即记录不存在，不因同名错误再次 GET。SESSION_NOT_READY 后查到 DISCONNECTED 也只展示，不继续恢复。
 
@@ -421,13 +427,13 @@ tracker 接入协议 readySince/updateReady/consumeStability；回调完成才�
 | CONNECTING/CLOSING、离线到期：80–84；计数耗尽131–133 → SESSION_NOT_READY | SESSION_NOT_READY / 1008；Prepare为HTTP409 | 否，停止并诊断查询 | 否 | 按查询状态处理，关闭/到期不能靠旧快照恢复 |
 | 已移除/CLOSED：session.go:182–210 → SESSION_NOT_FOUND；Upgrade路由先Find | SESSION_NOT_FOUND为协议允许码；当前常见HTTP404，已取得目标的Attach可能返回NOT_READY | 否，停止并诊断查询 | 否 | 展示不存在/结束，不恢复 |
 
-表内binding.go和session.go分别指 `backend/internal/session/binding.go` 和 `backend/internal/session/session.go`。当前INVALID_CREDENTIAL本来就合并多种原因，服务端没有可供前端区分的字段；“过期/消费/不存在”不得编造成不同重试路径。另一版本的invalid_bind在当前协议/实现无定义，不能与INVALID_CREDENTIAL建立别名；当前§4.4:157明确的是有限重新申请，并非无限重试。BLOCKER-PROTOCOL记录对先前相反要求的未决处置，不授权引入另一版本规则或新增子错误。
+表内binding.go和session.go分别指 `backend/internal/session/binding.go` 和 `backend/internal/session/session.go`。当前INVALID_CREDENTIAL本来就合并多种原因，服务端没有可供前端区分的字段；“过期/消费/不存在”不得编造成不同重试路径。另一版本的invalid_bind在当前协议/实现无定义，不能与INVALID_CREDENTIAL建立别名；当前§4.4:157明确的是有限重新申请，并非无限重试。本次已确认沿用该映射，不引入另一版本规则或新增子错误；Upgrade前错误的浏览器可见性限制见§15.1，表中列出服务端可能返回的错误不等于原生WS事件都能读到业务code。
 
 ## 16. 并发场景及具体裁决
 
 | 两个竞争操作 | 裁决点 / 必须结果 |
 |---|---|
-| error与close、缺口与终端错误 | 当前attempt幂等结束；明确业务结果不被后续Close覆盖；4001/4002仅按§15.2当前冻结依据记录，BLOCKER未裁决不实现另一套映射 |
+| error与close、缺口与终端错误 | 当前attempt幂等结束；明确业务结果不被后续Close覆盖；4001停止、4002有限恢复，严格按§15.2处理，不猜其他映射 |
 | 自动重试与人工恢复 | Pane 人工动作锁 + 旧任务 stop 完成；禁止以第二个 run 覆盖当前任务 |
 | 重复状态刷新与响应乱序 | 新查询取消旧查询并推进序号；仅最后响应可发布，旧快照不能成为候选 |
 | 重复人工点击 | 首次 await 前消费候选并设置动作锁；后续点击不重置预算、不发第二请求 |
@@ -463,13 +469,13 @@ tracker 接入协议 readySince/updateReady/consumeStability；回调完成才�
 
 ## 18. 测试计划（本轮不执行）
 
-以下为未来测试计划；BLOCKER-PROTOCOL与BLOCKER-HTTP需先人工裁决，不能将另一版本预期混入当前协议测试。优先扩展现有测试文件，新增文件仅在职责清晰时使用既有测试工具；不为测试升级依赖。测试必须调用实际 TerminalClient/tracker/Manager/WS 实现。可控时钟、TerminalPort 和 fetch/WS 替身用于固定交错，真实网络专项不能用 mock Reader 代替。
+以下为未来获准编码后的测试计划；按已确认的独立凭证HTTP期限和现有关闭码规则验证，不能混入其他版本预期。优先扩展现有测试文件，新增文件仅在职责清晰时使用既有测试工具；不为测试升级依赖。测试必须调用实际 TerminalClient/tracker/Manager/WS 实现。可控时钟、TerminalPort 和 fetch/WS 替身用于固定交错，真实网络专项不能用 mock Reader 代替。
 
 ### 18.1 自动恢复和预算
 
 - 普通断网恢复，Session ID、SSH Connection/Shell 数不增加。
 - 多次 error/close/OUTPUT_GAP/终端失败同时触发，只有一条有效任务和一个当前 socket。
-- 逐项覆盖§15 retryCodes、停止码和Close回退；1008无业务code不猜重试。当前基线OUTPUT_GAP/4002有限恢复、裸4001停止、taken_over业务消息停止；明确业务结果不被后续Close覆盖。BLOCKER-PROTOCOL未决，不改成4001缺口测试。
+- 逐项覆盖§15 retryCodes、停止码和Close回退；1008无业务code不猜重试。当前基线OUTPUT_GAP/4002有限恢复、裸4001停止、taken_over业务消息停止；明确业务结果不被后续Close覆盖。不把4001改成缺口测试；Upgrade拒绝只暴露通用失败时按NETWORK_ERROR有限恢复，不能断言onerror可直接读取服务端HTTP业务码。
 - 验证/me参数与Config一致、类型/单位/默认10次5秒30秒及读取链；初次之外最多N次自动尝试，间隔从settle完成后起算，HTTP与WS失败共同计数。
 - 历史收到但 write 未回调时不稳定；历史处理完成并保持 stable_time 后下一断线重置一次。
 - 一次稳定之后连续 HTTP 失败不能重复重置；每次绑定立刻缺口必须耗尽；耗尽后不再联网。
@@ -484,7 +490,7 @@ tracker 接入协议 readySince/updateReady/consumeStability；回调完成才�
 - 查询 CONNECTED 后发普通 attach 得到 BIND_BUSY，不替换；预算内旧端自然解除且代次未变可恢复。
 - 两凭证同代次竞争只一个成功，失败允许 INVALID_CREDENTIAL/BIND_CONFLICT；不能自动取赢家代次。
 - 查询响应乱序、连续刷新、连续恢复点击、旧查询 finally、任务切换：候选和 UI 不被旧结果覆盖。
-- 查询中关闭标签/登出/stop、响应丢失、晚到成功/失败均不能启动连接或修改当前状态；覆盖SessionView运行时校验及失败不能沿用旧props/候选。HTTP本地超时用例待BLOCKER-HTTP裁决，不暂借bind_timeout。
+- 查询中关闭标签/登出/stop、响应丢失、晚到成功/失败均不能启动连接或修改当前状态；覆盖SessionView运行时校验及失败不能沿用旧props/候选。详情GET不安装本地超时计时器；用户取消、关闭标签或组件销毁必须abort且隔离晚到结果。
 - 查询失败清候选，失败任务结束后可重新显式查询再恢复；诊断查询不自动启用人工候选。
 
 ### 18.3 stop / dispose 和 Promise
@@ -494,8 +500,9 @@ tracker 接入协议 readySince/updateReady/consumeStability；回调完成才�
 - 旧任务 finally 不清新任务状态，旧通知不覆盖新 UI；停止后不继续发送输入/resize。
 - 重复 stop/dispose 幂等；dispose 后 connect/run 拒绝，排空超时/异常不创建新实例。
 - 一次连接 Promise 在完整前缀结束，长期 Promise 仍在运行；busy 已清，尺寸适配正常，远端关闭按钮可操作。
-- 绑定失败和用户取消时两个Promise分别按职责结束；长期重试不悬挂首次连接反馈。HTTP未知网络等待的本地期限待BLOCKER-HTTP裁决，不宣称所有故障均已有自动超时。
-- 分层验证§6.3起止/取消：HTTP服务端预算、升级首bind、Attach gate、单次写、Ping/Pong、共享关闭截止、xterm drain、客户端前缀等待。凭证HTTP/详情GET本地期限先裁决后测试，不任意相加。
+- 绑定失败和用户取消时两个Promise分别按职责结束；长期重试不悬挂首次连接反馈。凭证POST按credential_timeout取消，任务仍有效时沿用网络失败有限预算；详情GET无本地自动期限，只验证显式/生命周期取消，不宣称所有请求都有自动超时。
+- 分层验证§6.3起止/取消：HTTP服务端预算、凭证POST本地期限、升级首bind、Attach gate、单次写、Ping/Pong、共享关闭截止、xterm drain、客户端前缀等待，不任意相加。
+- 独立设置credential_timeout与bind_timeout为不同测试值，断言POST仅随前者、服务端首bind仅随后者变化；这不是改变默认值。验证缺项默认、正整数/溢出及JS计时器边界、/me独立下发、前端不回退旧字段。Abort后即使服务端已签发或响应晚到也不能创建旧任务WS；本轮只列测试、不执行。
 
 ### 18.4 登出和远端关闭
 
@@ -537,7 +544,7 @@ tracker 接入协议 readySince/updateReady/consumeStability；回调完成才�
 
 ## 19. 验收标准与交付门槛
 
-- [ ] BLOCKER-PROTOCOL、BLOCKER-HTTP获得明确人工裁决，相关章节和测试预期一致后再授权编码；保存文档不视为解除阻塞。
+- [ ] 落实已确认的独立credential_timeout配置、/me下发和浏览器计时，bind_timeout职责不变；详情GET只有主动/生命周期取消。历史阻塞已解除，实施仍须另获编码授权。
 
 - [ ] B1 两次用户动作闭环可用，查询绝不自动恢复；代次来自详情，服务端校验不可绕过。
 - [ ] I1 所有异步窗口 stop 有效，dispose 不可逆；旧任务/查询/终端回调不污染新状态。
@@ -548,17 +555,17 @@ tracker 接入协议 readySince/updateReady/consumeStability；回调完成才�
 - [ ] 重试有限，稳定资格一次消费，持续缺口不能无限重置，所有错误分类及 Close 回退符合协议。
 - [ ] SSH 保留、唯一有效 Binding、凭证消费、任务退出、名额及缓存释放均有实际断言。
 - [ ] 100 轮故障/回收、Race、前端测试及真实 SSH/浏览器验收有可复核结果，未验环境明确列出。
-- [ ] 无列表/跨设备打开/takeover/主动替换能力，无新 API/配置/数据库结构或依赖。
+- [ ] 无列表/跨设备打开/takeover/主动替换能力；仅增加已批准的http.credential_timeout及client_settings同名字段，无新接口、其他配置、数据库结构或依赖。
 - [ ] 实施报告记录最终 Git、命令/环境/结果、修复、复用接口和未完成项；未经授权不提交、不进入第五阶段。
 
 ## 20. 实施顺序、输入输出与依赖
 
-前置门槛：先处理§21两项BLOCKER；下表保留实施依赖，不授权跳过人工裁决进入任何第四阶段编码。
+前置门槛：本轮设计修订完成后仍须明确编码授权。后续先打通新配置默认值/校验、/me下发及前端读取，再让恢复协调器使用独立凭证期限；其余步骤依赖保持不变。
 
 | 步骤 | 输入与依赖 | 涉及文件（根目录相对路径） | 输出/关键行为 | 验收 |
 |---|---|---|---|---|
-| 1 后端边界复核 | 本计划、第三阶段代码、最新 Git | backend/internal/session、server/session.go、sshclient/terminal.go、websocket、cmd/server/run.go | 确认资源所有者、准入/关闭点和已有测试；只列真实差距 | 无新服务端状态/接口；锁序与名额边界可追踪 |
-| 2 前端任务和停止契约 | 步骤1、§10–11 | frontend/src/terminal/client.ts、TerminalPane.vue、既有前端测试 | 长短 Promise、同步停止、任务身份、结构化通知和取消所有者 | stop 空 controller 窗口、重复取消、旧通知隔离通过 |
+| 1 后端边界与已批准配置 | 本计划、第三阶段代码、最新Git、核心§7/§11.2 | backend/internal/session、server/session.go、sshclient/terminal.go、websocket、cmd/server/run.go；config、httpapi/management.go、config.example.yaml | 复核资源边界；未来编码落实http.credential_timeout默认值/校验与/me下发 | 无新状态/接口；新字段来源独立，锁序与名额边界可追踪 |
+| 2 前端任务和停止契约 | 步骤1、§6.3/§9.2/§10–11 | frontend/src/terminal/client.ts、output.ts的ClientSettings、TerminalPane.vue、既有前端测试 | 新字段读取/校验及凭证定时器；长短Promise、同步停止、任务身份、通知和取消所有者 | 两期限独立，stop空controller窗口、重复取消、旧通知隔离通过 |
 | 3 自动协调与有限预算 | 步骤2、协议 §7 | client.ts、output.ts 的稳定资格入口、前端测试 | 单任务循环、错误分类、次数/间隔、原代次保护 | 首次/自动次数、稳定一次消费、冲突停止通过 |
 | 4 输出专项完善 | 步骤3、现有 tracker/Buffer | output.ts、终端 factory、buffer.go 及相关测试 | drain/重建/回调隔离与恢复循环完整衔接 | 边界字节、队列、持续缺口、超时和旧回调通过 |
 | 5 详情与人工闭环 | 步骤2–4、现有详情 API | frontend/src/api/sessions.ts、TerminalPane.vue、client.ts、前端及 HTTP 测试 | 独立可取消详情请求、候选、两次动作、新任务预算、I3诊断 | 查询不联网恢复、服务端竞态拒绝、重复点击/乱序通过 |
@@ -579,24 +586,23 @@ tracker 接入协议 readySince/updateReady/consumeStability；回调完成才�
 | I4 | §12.3前缀/resize/回放/输入时序、监听、可见性和焦点 | 否；保持协议 resize 可先于回放完成 |
 | I5 | §13退出意图、立即停止、并行撤销、失败分类与重试 | 否；保持核心 logout 成功/失败边界 |
 
-### 21.1 第二轮六项核查与修订
+### 21.1 本轮设计修订结果
 
-| 本轮问题 | 修订位置和状态 |
+| 项目 | 最终决定与位置 |
 |---|---|
-| 自动恢复算法/参数 | §2.1、§7.1、§9.1补当前冻结原文与完整代码链；三个参数和算法确实存在，不新增默认值 |
-| Close4001 | §8、§15.2、§16、§18保持当前冻结4001停止/4002缺口，记录与先前审查要求的冲突；BLOCKER-PROTOCOL未解除 |
-| INVALID_CREDENTIAL | §6、§7.2、§8、§15.4、§18对应实际子因/身份/代次/忙状态；不建立invalid_bind别名；相关冲突仍待人工处置 |
-| 超时分层 | §6.3列字段/默认值/层/起止/取消/实现；§15.3删除GET复用bind_timeout；凭证HTTP及详情本地期限有BLOCKER-HTTP |
-| API字段 | §9.1列DTO/取值、四态/CLOSED行为及前端校验和陈旧快照风险；不改API |
-| BIND_BUSY | §7.2、§15.4、§16、§18明确签发前忙/提交前忙、未消费、新凭证、原代次、Detach不增代及耗尽人工闭环 |
+| 配置与客户端下发 | 核心§7/§11.2新增http.credential_timeout→client_settings.credential_timeout，正整数秒、默认5；本计划§6.3/§9.2区分设计与代码现状 |
+| 协议参考实现 | ClientSettings增加credential_timeout，prepareCredential定时器改读它；bind_timeout及WS前缀等待算式不变 |
+| 详情GET | §6.3/§15.3明确用户主动和组件生命周期取消，无本地自动期限、不增加字段 |
+| 关闭码与错误分类 | §8/§15/§18沿用4001停止、4002有限恢复及原retryCodes；补充Upgrade失败不能直接读取HTTP业务code的限制 |
+| 其他阶段设计 | 人工恢复、Promise、stop/dispose、代次、有限预算、输出、登出和资源所有权保持原样；不进入第五阶段 |
 
-### 21.2 尚待人工确认的设计阻塞
+### 21.2 已解决的历史审查问题与实现待办
 
-- **BLOCKER-PROTOCOL：尚未解决。** 当前HEAD四份冻结文档是唯一协议依据：协议§7为恢复协调器、OUTPUT_GAP→4002、裸4001停止、INVALID_CREDENTIAL明确有限重新申请。先前第二轮审查要求所引另一版本的章节和语义与之冲突。最小处置是由人工明确纠正该冲突要求并决定是否关闭此阻塞；本次仅保存证据及待确认状态，不能将“唯一依据已指定”自动认定为“BLOCKER已解决”。不混用另一版本、不迁移码表、不增加兼容路径。
-- **BLOCKER-HTTP：尚未解决。** 当前凭证HTTP以bind_timeout计时，冻结参考代码同样如此，但第二轮要求禁止此复用；详情GET没有独立浏览器期限，上一版复用无依据。最小候选为服务端保留request_timeout、浏览器仅保留显式/生命周期取消并承认无本地自动完成期限；该候选未采纳，凭证流程采用它需人工批准偏离当前冻结参考代码。若必须有独立期限，也须先人工确认契约，不能新增字段、隐藏默认值或硬编码。本轮不裁决方案。
+- **BLOCKER-HTTP：已解决。** 用户已确认以独立http.credential_timeout控制凭证POST本地等待，避免与WS首条绑定期限混用；默认5秒、经/me独立下发、超时Abort不保证服务端停止。详情GET保留无本地定时超时设计，只支持主动/生命周期取消。原“取消凭证本地期限”等候选不再适用，不需要再次裁决。
+- **BLOCKER-PROTOCOL：已解决。** 用户已确认采用当前协议：4001为taken_over并停止恢复，4002为OUTPUT_GAP并有限恢复，1000停止，1006/1011/1012/1013按原预算恢复；无invalid_bind或retryable字段。历史相反审查意见不再作为设计要求，不迁移或兼容另一套码表。
 
-原B1/I1/I2/I4/I5职责划分保留；I3查询所有者与取消已定义，但HTTP定时保证待裁决。原审查项表是保留的设计内容，不覆盖本轮阻塞。第三阶段stop窗口、详情字段校验、自动/人工恢复仍待未来编码；本轮未修复代码、未运行测试，历史结果不替代第四阶段验收。
+当前无上述未决设计问题。新增配置/默认值/校验、/me字段、前端读取和定时器尚未在代码实现，详情取消及原有第四阶段功能也仍是未来任务；这属于实现待办而非待确认设计。当前严格配置解析尚不接受新http组，不能宣称文档配置已可部署。本轮不运行测试、不修复代码，历史验证不替代未来验收。
 
-本轮仅保存本文件；四份冻结设计、第三阶段报告、代码、配置、API、数据库结构与用户已有修改均不改变，不做Git写操作。保存授权不等于编码或解除BLOCKER的授权。
+本轮仅修改核心需求、WebSocket协议和本计划三份文档。架构、阶段指南、历史报告、代码、实际配置文件、数据库和用户文件内容保持不变；不暂存、提交或推送。设计阻塞解除不等于编码授权。
 
-本轮结论：仍存在设计阻塞，暂不能进入编码。文档保存后停止，等待人工审查及明确裁决。
+本轮结论：设计文档修订完成，两个历史BLOCKER均已解除，可以提交人工审查。停止于文档交付，等待明确的第四阶段编码授权。
