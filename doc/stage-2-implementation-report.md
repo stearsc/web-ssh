@@ -254,6 +254,8 @@ probe 为 32 随机字节 Base64URL，索引只存哈希；绑定独立登录、
    SSH 连接测试成功：webssh_test@172.17.0.1:22222
    ```
 
+8. 重启 Web SSH Compose 容器后，管理员重新登录，服务器详情仍显示新 Host Key 指纹 `SHA256:trVJwt/QI31fv0m4QMWC+/8fs0euxz0KIAvuPWpf0tM`。再次点击测试连接，SSH 测试直接成功，没有再次要求确认 Host Key。本步骤单独验证了已确认的 Host Key 信任状态在 Web SSH Compose 容器重启后仍然持久化保留。
+
 本次用户实测确认了密钥变化提示、人工确认及确认后真实 SSH 密码认证的闭环。既有接口协议为 HTTP 409 / `HOST_KEY_CONFIRMATION_REQUIRED` / `reason: key_changed`（见第 5 节）；本次成功流程未提供网络响应抓包，不将上述 HTTP 状态、业务码及全部探测字段写成额外抓包验证结果。
 
 ### 11.4 诊断功能实际观察
