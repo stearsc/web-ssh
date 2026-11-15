@@ -20,6 +20,8 @@ import (
 	"github.com/stearsc/web-ssh/backend/internal/database"
 	"github.com/stearsc/web-ssh/backend/internal/httpapi"
 	servers "github.com/stearsc/web-ssh/backend/internal/server"
+	"github.com/stearsc/web-ssh/backend/internal/session"
+	browser "github.com/stearsc/web-ssh/backend/internal/websocket"
 	"github.com/stearsc/web-ssh/backend/web"
 )
 
@@ -51,7 +53,6 @@ func run(ctx context.Context, c config.Config, logger *slog.Logger) error {
 	if err != nil {
 		return fail(err)
 	}
-	admin.OnRevoke(managed.Revoke)
 	if err := database.EndPreviousSessions(startup, db, time.Now()); err != nil {
 		return fail(err)
 	}
@@ -66,8 +67,11 @@ func run(ctx context.Context, c config.Config, logger *slog.Logger) error {
 	if err != nil {
 		return fail(err)
 	}
+	sessions := session.New(ctx, db, managed, c, logger)
+	sockets := browser.New(c, logger)
+	admin.OnRevoke(func(id string) { managed.Revoke(id); sessions.Revoke(id); sockets.Revoke(id) })
 	cancel() // 启动完成即释放启动计时器，不让它伴随长期服务。
-	return serve(ctx, c, db, assets, listener, logger, &httpapi.Management{Auth: admin, Servers: managed, Config: c, Logger: logger})
+	return serve(ctx, c, db, assets, listener, logger, &httpapi.Management{Auth: admin, Servers: managed, Sessions: sessions, Websocket: sockets, Config: c, Logger: logger})
 }
 
 // serve 拥有本阶段的 HTTP 和 DB 退出顺序。后续资源在此应用入口接入，
@@ -109,6 +113,7 @@ func serve(ctx context.Context, c config.Config, db *sql.DB, assets fs.FS, liste
 		}()
 	}
 	server := &http.Server{
+		ConnContext:       browser.ConnContext,
 		ReadHeaderTimeout: time.Duration(c.Server.ReadHeaderTimeout) * time.Second,
 		ReadTimeout:       budget, WriteTimeout: budget,
 		BaseContext: func(net.Listener) context.Context { return workCtx },
@@ -146,6 +151,16 @@ func serve(ctx context.Context, c config.Config, db *sql.DB, assets fs.FS, liste
 	// 清理上下文独立于已取消的应用/请求上下文，所有清理共享绝对截止时间。
 	shutdown, cancel := context.WithTimeout(context.Background(), time.Duration(c.Server.ShutdownTimeout)*time.Second)
 	defer cancel()
+	if len(management) > 0 {
+		if management[0].Sessions != nil {
+			deadline, _ := shutdown.Deadline()
+			management[0].Sessions.StopAt(deadline)
+		}
+		if management[0].Websocket != nil {
+			deadline, _ := shutdown.Deadline()
+			management[0].Websocket.Stop(deadline)
+		}
+	}
 	shutdownErr := server.Shutdown(shutdown)
 	if shutdownErr != nil {
 		shutdownErr = errors.Join(shutdownErr, server.Close())
@@ -167,6 +182,20 @@ func serve(ctx context.Context, c config.Config, db *sql.DB, assets fs.FS, liste
 		if active.Load() != 0 {
 			logger.Error("退出期限内仍有业务任务未结束，保留 SQLite 连接至进程退出")
 			return errors.Join(serveErr, shutdownErr, shutdown.Err())
+		}
+	}
+	if len(management) > 0 {
+		if management[0].Sessions != nil {
+			select {
+			case <-management[0].Sessions.Done():
+			case <-shutdown.Done():
+				return errors.Join(serveErr, shutdownErr, shutdown.Err())
+			}
+		}
+		if management[0].Websocket != nil {
+			if err := management[0].Websocket.Wait(shutdown); err != nil {
+				return errors.Join(serveErr, shutdownErr, err)
+			}
 		}
 	}
 	dbErr := db.Close()

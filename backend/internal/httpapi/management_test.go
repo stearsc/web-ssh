@@ -14,13 +14,14 @@ import (
 	"testing"
 	"testing/fstest"
 
+	"golang.org/x/crypto/ssh"
+
 	"github.com/stearsc/web-ssh/backend/internal/auth"
 	"github.com/stearsc/web-ssh/backend/internal/config"
 	secret "github.com/stearsc/web-ssh/backend/internal/crypto"
 	servers "github.com/stearsc/web-ssh/backend/internal/server"
 	"github.com/stearsc/web-ssh/backend/internal/sshclient"
 	"github.com/stearsc/web-ssh/backend/internal/testutil"
-	"golang.org/x/crypto/ssh"
 )
 
 type envelope[T any] struct {
@@ -46,7 +47,7 @@ func api(t *testing.T) (http.Handler, *Management, *bytes.Buffer) {
 	a.OnRevoke(s.Revoke)
 	logs := &bytes.Buffer{}
 	logger := slog.New(slog.NewTextHandler(logs, nil))
-	m := &Management{a, s, cfg, logger}
+	m := &Management{Auth: a, Servers: s, Config: cfg, Logger: logger}
 	return m.Handler(NewHandler(fstest.MapFS{"index.html": {Data: []byte("Web SSH")}}, func() bool { return true }, logger), func() bool { return true }), m, logs
 }
 func call(t *testing.T, h http.Handler, method, path, body string, cookie *http.Cookie, origin string) *httptest.ResponseRecorder {

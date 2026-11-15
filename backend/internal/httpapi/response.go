@@ -62,7 +62,7 @@ func WriteError(w http.ResponseWriter, err error, logger *slog.Logger) {
 	status := 500
 	message := "服务暂时异常"
 	switch code {
-	case InvalidRequest:
+	case InvalidRequest, "INVALID_SIZE":
 		status = 400
 		message = "请求格式或参数不正确"
 	case MessageTooLarge:
@@ -83,15 +83,27 @@ func WriteError(w http.ResponseWriter, err error, logger *slog.Logger) {
 	case "PERMISSION_DENIED":
 		status = 403
 		message = "请求来源或操作权限不符"
-	case "LOGIN_RATE_LIMIT", "LOGIN_SESSION_LIMIT", "HOST_KEY_PROBE_LIMIT":
+	case "LOGIN_RATE_LIMIT", "LOGIN_SESSION_LIMIT", "HOST_KEY_PROBE_LIMIT", "SESSION_LIMIT", "CREDENTIAL_LIMIT", "CONNECTION_LIMIT_REACHED":
 		status = 429
 		message = "请求或有效凭证数量已达上限，请稍后重试"
+	case "SESSION_NOT_FOUND":
+		status = 404
+		message = "SSH 会话不存在或已关闭"
 	case "SERVER_NOT_FOUND":
 		status = 404
 		message = "服务器不存在或已删除"
 	case "SERVER_HAS_ACTIVE_SESSIONS":
 		status = 409
 		message = "服务器仍有活动会话，请先关闭相关会话"
+	case "SESSION_NOT_READY":
+		status = 409
+		message = "SSH 会话当前不能绑定"
+	case "BIND_BUSY":
+		status = 409
+		message = "SSH 会话已有在线操作端"
+	case "BIND_CONFLICT":
+		status = 409
+		message = "SSH 会话绑定代次已变化，请查询状态"
 	case "SERVER_CONFIG_CHANGED", "INVALID_PROBE":
 		status = 409
 		message = "服务器配置或探测凭证已变化，请重新测试"
@@ -101,7 +113,7 @@ func WriteError(w http.ResponseWriter, err error, logger *slog.Logger) {
 	case "SSH_CONNECT_TIMEOUT":
 		status = 504
 		message = "SSH 连接测试超时"
-	case "SSH_CONNECT_FAILED":
+	case "SSH_CONNECT_FAILED", "SSH_PTY_FAILED", "SSH_SHELL_FAILED":
 		status = 502
 		message = "无法建立 SSH 连接"
 	case "SSH_AUTH_FAILED":

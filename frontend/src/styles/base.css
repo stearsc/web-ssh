@@ -413,3 +413,60 @@ textarea {
     padding: 16px 18px;
   }
 }
+
+/* 标签切换只改变可见性，终端实例保持；工作区高度交由容器决定。 */
+.terminal-tabs {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--line);
+  padding: 5px;
+}
+.terminal-tabs button {
+  white-space: nowrap;
+  border-color: transparent;
+}
+.terminal-tabs button.selected {
+  background: var(--hover);
+  border-color: var(--line);
+}
+.terminal-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+.terminal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+.terminal-actions .mono {
+  overflow-wrap: anywhere;
+  margin-right: auto;
+}
+.connection-state {
+  color: var(--secondary);
+}
+.terminal-actions button {
+  min-height: 29px;
+  padding: 4px 7px;
+  font-size: 12px;
+}
+.terminal-host {
+  flex: 1;
+  min-height: 100px;
+  min-width: 0;
+  padding: 8px;
+  overflow: hidden;
+}
+.terminal-host .xterm {
+  height: 100%;
+}

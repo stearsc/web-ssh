@@ -1,7 +1,6 @@
 package sshclient
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"net"
@@ -9,9 +8,10 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/crypto/ssh"
+
 	secret "github.com/stearsc/web-ssh/backend/internal/crypto"
 	"github.com/stearsc/web-ssh/backend/internal/fault"
-	"golang.org/x/crypto/ssh"
 )
 
 // Snapshot 仅由短期任务持有，任务返回后释放，不进入长期 Session。
@@ -26,7 +26,13 @@ type Observed struct {
 	Algorithm, Fingerprint string
 }
 
-func Test(ctx context.Context, snapshot Snapshot, cipher *secret.Cipher, timeout time.Duration) (*Observed, error) {
+// dial 的认证配置仅由本次调用持有；返回对象不保存密码或信任快照。
+type transport struct {
+	raw    net.Conn
+	client *ssh.Client
+}
+
+func dial(ctx context.Context, snapshot Snapshot, cipher *secret.Cipher, timeout time.Duration) (*transport, *Observed, error) {
 	d := diagnostic(ctx)
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -37,11 +43,16 @@ func Test(ctx context.Context, snapshot Snapshot, cipher *secret.Cipher, timeout
 	if err != nil {
 		d.classify(err)
 		if ctx.Err() != nil {
-			return nil, fault.Error("SSH_CONNECT_TIMEOUT")
+			return nil, nil, fault.Error("SSH_CONNECT_TIMEOUT")
 		}
-		return nil, fault.Error("SSH_CONNECT_FAILED")
+		return nil, nil, fault.Error("SSH_CONNECT_FAILED")
 	}
-	defer conn.Close()
+	success := false
+	defer func() {
+		if !success {
+			conn.Close()
+		}
+	}()
 	d.update(func(r *DiagnosticRecord) { r.TCPConnected = true; r.LastCheckpoint = "tcp_connected" })
 	// context 取消主动关闭底层连接，覆盖无法接收 context 的 SSH 握手/认证阻塞。
 	closed := make(chan struct{})
@@ -55,37 +66,16 @@ func Test(ctx context.Context, snapshot Snapshot, cipher *secret.Cipher, timeout
 	if err := conn.SetDeadline(deadline); err != nil {
 		d.checkpoint("set_deadline_failed")
 		d.classify(err)
-		return nil, fault.Error("SSH_CONNECT_FAILED")
+		return nil, nil, fault.Error("SSH_CONNECT_FAILED")
 	}
 	if key, err := ssh.ParsePublicKey(snapshot.PublicKey); err == nil {
 		d.update(func(r *DiagnosticRecord) { r.TrustedFingerprint = ssh.FingerprintSHA256(key) })
 	}
-	observed := (*Observed)(nil)
-	trusted := false
+	verifier := &hostVerifier{key: append([]byte(nil), snapshot.PublicKey...), diagnostic: d}
 	authStarted := false
-	cfg := &ssh.ClientConfig{User: snapshot.Username, HostKeyCallback: func(_ string, _ net.Addr, key ssh.PublicKey) error {
-		d.update(func(r *DiagnosticRecord) {
-			r.HostKeyCallbackCount++
-			r.LastCheckpoint = "host_key_callback"
-			r.ObservedKeyType = safeAlgorithm(key.Type())
-			r.ObservedFingerprint = ssh.FingerprintSHA256(key)
-		})
-		if len(snapshot.PublicKey) > 0 && bytes.Equal(snapshot.PublicKey, key.Marshal()) {
-			d.update(func(r *DiagnosticRecord) { r.HostKeyDecision = "match" })
-			trusted = true
-			return nil
-		}
-		observed = &Observed{append([]byte(nil), key.Marshal()...), key.Type(), ssh.FingerprintSHA256(key)}
-		d.update(func(r *DiagnosticRecord) {
-			r.HostKeyDecision = "first_trust"
-			if len(snapshot.PublicKey) > 0 {
-				r.HostKeyDecision = "changed"
-			}
-		})
-		return errHostKeyConfirmation
-	}, Auth: []ssh.AuthMethod{ssh.PasswordCallback(func() (string, error) {
+	cfg := &ssh.ClientConfig{User: snapshot.Username, HostKeyCallback: verifier.check, Auth: []ssh.AuthMethod{ssh.PasswordCallback(func() (string, error) {
 		d.update(func(r *DiagnosticRecord) { r.PasswordCallbackEntered = true; r.LastCheckpoint = "password_callback" })
-		if !trusted {
+		if !verifier.isTrusted() {
 			return "", errors.New("Host Key 尚未校验")
 		}
 		authStarted = true
@@ -105,23 +95,27 @@ func Test(ctx context.Context, snapshot Snapshot, cipher *secret.Cipher, timeout
 		cfg.AuthCallback = d.observeAuth
 	}
 	d.checkpoint("ssh_handshake_started")
-	client, _, _, err := ssh.NewClientConn(conn, address, cfg)
+	client, channels, requests, err := ssh.NewClientConn(conn, address, cfg)
+	// NewClientConn 复制 ClientConfig；清空共享 Auth 切片，释放其副本持有的认证闭包。
+	clear(cfg.Auth)
 	cfg.Auth = nil
+	observed := verifier.observation()
 	d.classify(err)
 	if observed != nil {
-		return observed, nil
+		return nil, observed, nil
 	}
 	if err != nil {
 		if ctx.Err() != nil {
-			return nil, fault.Error("SSH_CONNECT_TIMEOUT")
+			return nil, nil, fault.Error("SSH_CONNECT_TIMEOUT")
 		}
-		if n, ok := err.(net.Error); ok && n.Timeout() {
-			return nil, fault.Error("SSH_CONNECT_TIMEOUT")
+		var networkError net.Error
+		if errors.As(err, &networkError) && networkError.Timeout() {
+			return nil, nil, fault.Error("SSH_CONNECT_TIMEOUT")
 		}
 		if authStarted && strings.Contains(err.Error(), "unable to authenticate") {
-			return nil, fault.Error("SSH_AUTH_FAILED")
+			return nil, nil, fault.Error("SSH_AUTH_FAILED")
 		}
-		return nil, fault.Error("SSH_CONNECT_FAILED")
+		return nil, nil, fault.Error("SSH_CONNECT_FAILED")
 	}
 	d.checkpoint("ssh_authenticated")
 	if algorithms, ok := client.(ssh.AlgorithmsConnMetadata); ok {
@@ -131,13 +125,24 @@ func Test(ctx context.Context, snapshot Snapshot, cipher *secret.Cipher, timeout
 			r.NegotiatedKEX = safeAlgorithm(a.KeyExchange)
 		})
 	}
-	if err := client.Close(); err != nil {
-		d.checkpoint("close_failed")
-		d.classify(err)
+	if err := conn.SetDeadline(time.Time{}); err != nil {
+		client.Close()
+		return nil, nil, fault.Error("SSH_CONNECT_FAILED")
+	}
+	success = true
+	return &transport{raw: conn, client: ssh.NewClient(client, channels, requests)}, nil, nil
+}
+
+func Test(ctx context.Context, snapshot Snapshot, cipher *secret.Cipher, timeout time.Duration) (*Observed, error) {
+	t, observed, err := dial(ctx, snapshot, cipher, timeout)
+	if err != nil || observed != nil {
+		return observed, err
+	}
+	closeErr := t.client.Close()
+	_ = t.client.Wait()
+	if closeErr != nil {
 		return nil, fault.Error("SSH_CONNECT_FAILED")
 	}
-	// 不创建 Client/Session/Channel，不申请 PTY 或 Shell；等待 SSH 传输退出。
-	_ = client.Wait()
-	d.checkpoint("connection_closed")
+	diagnostic(ctx).checkpoint("connection_closed")
 	return nil, nil
 }

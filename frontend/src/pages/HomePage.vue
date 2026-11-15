@@ -8,11 +8,53 @@ import {
   type ServerView,
   type Probe,
 } from '../api/management'
-import { logout } from '../stores/auth'
+import { logout, identity } from '../stores/auth'
+import { createSession, type SessionView } from '../api/sessions'
+import TerminalPane from '../components/terminal/TerminalPane.vue'
 import ThemeButton from '../components/layout/ThemeButton.vue'
 import Modal from '../components/layout/Modal.vue'
 import ServerForm from '../components/server/ServerForm.vue'
 import HostKeyDialog from '../components/server/HostKeyDialog.vue'
+const tabs = ref<SessionView[]>([])
+const activeTab = ref('')
+const probeAction = ref<'test' | 'connect'>('test')
+function removeTab(id: string): void {
+  tabs.value = tabs.value.filter((tab) => tab.id !== id)
+  if (activeTab.value === id) activeTab.value = tabs.value.at(-1)?.id ?? ''
+}
+async function connectServer(id = selected.value?.id): Promise<void> {
+  if (!id || busy.value || !identity.value) return
+  busy.value = true
+  notice.value = ''
+  probe.value = null
+  try {
+    const settings = identity.value.client_settings
+    const session = await createSession(
+      id,
+      Math.min(80, settings.max_cols),
+      Math.min(24, settings.max_rows),
+      operations.signal,
+    )
+    if (operations.signal.aborted) return
+    tabs.value.push(session)
+    activeTab.value = session.id
+    sidebar.value = false
+  } catch (error) {
+    if (operations.signal.aborted) return
+    const found = confirmation(error)
+    if (found) {
+      probeTarget.value = id
+      probeAction.value = 'connect'
+      probe.value = found
+    } else notice.value = message(error)
+  } finally {
+    busy.value = false
+  }
+}
+function retryProbe(): void {
+  if (probeAction.value === 'connect') void connectServer(probeTarget.value)
+  else void testServer(probeTarget.value)
+}
 const router = useRouter()
 const items = ref<ServerView[]>([])
 const selected = ref<ServerView | null>(null)
@@ -91,6 +133,7 @@ async function choose(item: ServerView): Promise<void> {
     )
     if (generation !== selectionGeneration || operations.signal.aborted) return
     selected.value = view
+    activeTab.value = ''
     if (matchMedia('(max-width: 720px)').matches) sidebar.value = false
   } catch (error) {
     if (!operations.signal.aborted) notice.value = message(error)
@@ -147,6 +190,7 @@ async function testServer(id = selected.value?.id): Promise<void> {
     const found = confirmation(error)
     if (found) {
       probeTarget.value = id
+      probeAction.value = 'test'
       probe.value = found
     } else notice.value = message(error)
   } finally {
@@ -165,7 +209,8 @@ async function confirmed(): Promise<void> {
     )
     if (selected.value?.id === id) selected.value = view
     await load()
-    await testServer(id)
+    if (probeAction.value === 'connect') await connectServer(id)
+    else await testServer(id)
   } catch (error) {
     if (!operations.signal.aborted) notice.value = message(error)
   }
@@ -266,10 +311,34 @@ async function signOut(): Promise<void> {
       <button @click="load">刷新列表</button>
     </aside>
     <main class="main">
-      <section v-if="selected" class="server-detail">
+      <nav v-if="tabs.length" class="terminal-tabs" aria-label="终端标签">
+        <button :class="{ selected: !activeTab }" @click="activeTab = ''">
+          服务器
+        </button>
+        <button
+          v-for="tab in tabs"
+          :key="tab.id"
+          :class="{ selected: activeTab === tab.id }"
+          @click="activeTab = tab.id"
+        >
+          {{ tab.name }} · {{ tab.id.slice(-4) }}
+        </button>
+      </nav>
+      <TerminalPane
+        v-for="tab in tabs"
+        :key="tab.id"
+        v-show="activeTab === tab.id"
+        :session="tab"
+        :active="activeTab === tab.id"
+        @closed="removeTab(tab.id)"
+      />
+      <section v-if="selected && !activeTab" class="server-detail">
         <div class="detail-heading">
           <h1>{{ selected.name }}</h1>
           <div class="actions">
+            <button class="primary" :disabled="busy" @click="connectServer()">
+              连接终端
+            </button>
             <button :disabled="busy" @click="testServer()">
               {{ busy ? '处理中…' : '测试连接' }}</button
             ><button @click="edit(selected)">编辑</button
@@ -303,7 +372,7 @@ async function signOut(): Promise<void> {
           <dd>{{ new Date(selected.updated_at).toLocaleString() }}</dd>
         </dl>
       </section>
-      <div v-else class="empty-workspace">
+      <div v-else-if="!activeTab" class="empty-workspace">
         <button @click="sidebar = true">选择服务器</button
         ><button @click="edit(null)">添加服务器</button>
       </div>
@@ -319,9 +388,10 @@ async function signOut(): Promise<void> {
       v-if="probe"
       :server-id="probeTarget"
       :probe="probe"
+      :purpose="probeAction"
       @close="probe = null"
       @confirmed="confirmed"
-      @retry="testServer(probeTarget)"
+      @retry="retryProbe"
     />
     <Modal
       v-if="deleting && selected"

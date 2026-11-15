@@ -6,20 +6,25 @@ import (
 	"net/http"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/stearsc/web-ssh/backend/internal/auth"
 	"github.com/stearsc/web-ssh/backend/internal/config"
 	"github.com/stearsc/web-ssh/backend/internal/fault"
 	servers "github.com/stearsc/web-ssh/backend/internal/server"
+	"github.com/stearsc/web-ssh/backend/internal/session"
 	"github.com/stearsc/web-ssh/backend/internal/sshclient"
+	browser "github.com/stearsc/web-ssh/backend/internal/websocket"
 )
 
 type Management struct {
-	Auth    *auth.Service
-	Servers *servers.Service
-	Config  config.Config
-	Logger  *slog.Logger
+	Sessions  *session.Manager
+	Websocket *browser.Service
+	Auth      *auth.Service
+	Servers   *servers.Service
+	Config    config.Config
+	Logger    *slog.Logger
 }
 type LoginInput struct {
 	Password string `json:"password"`
@@ -84,6 +89,9 @@ func (m *Management) success(w http.ResponseWriter, status int, data any) {
 func (m *Management) Handler(fallback http.Handler, ready func() bool) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/", fallback)
+	if m.Sessions != nil && m.Websocket != nil {
+		m.sessionRoutes(mux)
+	}
 	mux.HandleFunc("POST /api/auth/login", func(w http.ResponseWriter, r *http.Request) {
 		in := LoginInput{}
 		if err := m.decode(w, r, &in, false); err != nil {
@@ -238,7 +246,7 @@ func (m *Management) Handler(fallback http.Handler, ready func() bool) http.Hand
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		if r.Method != "GET" && r.Method != "HEAD" {
+		if (r.Method != "GET" && r.Method != "HEAD") || strings.HasPrefix(r.URL.Path, "/ws/") {
 			// Origin 仅来自固定配置，不受 Host 或代理转发首部影响。
 			if len(r.Header.Values("Origin")) != 1 || r.Header.Get("Origin") != m.Config.Server.PublicOrigin {
 				WriteError(w, fault.Error("PERMISSION_DENIED"), m.Logger)

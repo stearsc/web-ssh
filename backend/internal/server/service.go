@@ -12,38 +12,41 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/crypto/ssh"
+
 	"github.com/stearsc/web-ssh/backend/internal/auth"
 	"github.com/stearsc/web-ssh/backend/internal/config"
 	secret "github.com/stearsc/web-ssh/backend/internal/crypto"
 	"github.com/stearsc/web-ssh/backend/internal/database"
 	"github.com/stearsc/web-ssh/backend/internal/fault"
-	"golang.org/x/crypto/ssh"
 )
 
 type State struct {
 	mu                   sync.Mutex
 	record               Record
 	version              uint64
+	occupied             int64
 	deleted, unavailable bool
 }
 type Service struct {
-	mu         sync.Mutex
-	states     map[string]*State
-	db         *sql.DB
-	cipher     *secret.Cipher
-	transact   database.Transaction
-	now        func() time.Time
-	timeout    time.Duration
-	probesMu   sync.Mutex
-	probes     map[[32]byte]*probe
-	probeTTL   time.Duration
-	probeLimit int64
+	mu             sync.Mutex
+	states         map[string]*State
+	db             *sql.DB
+	cipher         *secret.Cipher
+	transact       database.Transaction
+	now            func() time.Time
+	timeout        time.Duration
+	connectTimeout time.Duration
+	probesMu       sync.Mutex
+	probes         map[[32]byte]*probe
+	probeTTL       time.Duration
+	probeLimit     int64
 	// 此检查在服务器锁内调用。阶段 3 的名额预占必须接入同一个同步边界。
 	active func(string) bool
 }
 
 func New(ctx context.Context, db *sql.DB, cipher *secret.Cipher, cfg config.Config) (*Service, error) {
-	s := &Service{states: make(map[string]*State), db: db, cipher: cipher, transact: database.TransactionFor(db), now: time.Now, timeout: time.Duration(cfg.Server.RequestTimeout) * time.Second, probes: make(map[[32]byte]*probe), probeTTL: time.Duration(cfg.Ssh.HostKeyProbeTtl) * time.Second, probeLimit: cfg.Ssh.HostKeyProbeLimit, active: func(string) bool { return false }}
+	s := &Service{states: make(map[string]*State), db: db, cipher: cipher, transact: database.TransactionFor(db), now: time.Now, timeout: time.Duration(cfg.Server.RequestTimeout) * time.Second, probes: make(map[[32]byte]*probe), connectTimeout: time.Duration(cfg.Ssh.ConnectTimeout) * time.Second, probeTTL: time.Duration(cfg.Ssh.HostKeyProbeTtl) * time.Second, probeLimit: cfg.Ssh.HostKeyProbeLimit, active: func(string) bool { return false }}
 	rows, err := db.QueryContext(ctx, "SELECT "+columns+" FROM servers")
 	if err != nil {
 		return nil, err
@@ -334,7 +337,7 @@ func (s *Service) Delete(ctx context.Context, login *auth.Session, id string) er
 		return err
 	}
 	defer release()
-	if s.active(id) {
+	if st.occupied > 0 || s.active(id) {
 		return fault.Error("SERVER_HAS_ACTIVE_SESSIONS")
 	}
 	result := s.transact(ctx, func(tx *sql.Tx) error {

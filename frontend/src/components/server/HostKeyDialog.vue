@@ -2,7 +2,11 @@
 import { ref, onBeforeUnmount } from 'vue'
 import { request, message, type Probe } from '../../api/management'
 import Modal from '../layout/Modal.vue'
-const props = defineProps<{ serverId: string; probe: Probe }>()
+const props = defineProps<{
+  serverId: string
+  probe: Probe
+  purpose?: 'test' | 'connect'
+}>()
 const emit = defineEmits<{ close: []; confirmed: []; retry: [] }>()
 const busy = ref(false)
 const error = ref('')
@@ -68,10 +72,17 @@ async function confirm(): Promise<void> {
       <p v-if="error" role="alert" class="error">{{ error }}</p>
     </div>
     <div class="dialog-footer">
-      <button :disabled="busy" @click="emit('retry')">重新测试</button
+      <button :disabled="busy" @click="emit('retry')">
+        {{ purpose === 'connect' ? '重新连接' : '重新测试' }}</button
       ><button @click="emit('close')">取消</button
       ><button class="primary" :disabled="busy" @click="confirm">
-        {{ busy ? '确认中…' : '确认信任并测试' }}
+        {{
+          busy
+            ? '确认中…'
+            : purpose === 'connect'
+              ? '确认信任并连接'
+              : '确认信任并测试'
+        }}
       </button>
     </div>
   </Modal>
