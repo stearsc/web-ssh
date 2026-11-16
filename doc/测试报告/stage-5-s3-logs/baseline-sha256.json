@@ -1,0 +1,9 @@
+{
+  "backend/internal/websocket/connection.go": "a63b02b8efdf4bd24bf932226ee1676f3f3218572c250293fa24816b38d36adf",
+  "backend/internal/websocket/protocol.go": "7fce655627145988683fcc22c114aca0d9efd967858d5dc8758005e84fa2ab46",
+  "backend/internal/websocket/connection_test.go": "af3a7945ee36bdc83a733f08e4548c99eae1d5d4a1ae70c4d5ca44da855e7e94",
+  "backend/internal/httpapi/sessions_test.go": "32892071cc319cbbfe81d57722345f99f82ead5fc24d278c92348090f6088447",
+  "backend/internal/session/binding.go": "6b16a63265dd0617595ea1a1518744c1c8c15667c1d1af4b4300efcf66f22835",
+  "backend/internal/session/session.go": "422b27f8cbd209b341ec91a5d8bc4919dad0b2422adf6ee0ebacfe08da4bd730",
+  "doc/stage-5-implementation-plan.md": "568598b5c589f613ae2dd4a14db92e7e8aee55c20e07399cc4cdbe9ca5b5f570"
+}

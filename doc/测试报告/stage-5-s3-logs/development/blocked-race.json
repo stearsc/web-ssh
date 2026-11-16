@@ -1,0 +1,13 @@
+{"Time":"2026-11-17T01:21:05.396174825+08:00","Action":"start","Package":"github.com/stearsc/web-ssh/backend/internal/websocket"}
+{"Time":"2026-11-17T01:21:05.4122455+08:00","Action":"run","Package":"github.com/stearsc/web-ssh/backend/internal/websocket","Test":"TestS3W04RealBlockedWriterTakeover"}
+{"Time":"2026-11-17T01:21:05.4122671+08:00","Action":"output","Package":"github.com/stearsc/web-ssh/backend/internal/websocket","Test":"TestS3W04RealBlockedWriterTakeover","Output":"=== RUN   TestS3W04RealBlockedWriterTakeover\n"}
+{"Time":"2026-11-17T01:21:09.694482721+08:00","Action":"output","Package":"github.com/stearsc/web-ssh/backend/internal/websocket","Test":"TestS3W04RealBlockedWriterTakeover","Output":"    takeover_test.go:864: 缓存偏移未达到 4194304，实际 3014663\n"}
+{"Time":"2026-11-17T01:21:09.801857554+08:00","Action":"output","Package":"github.com/stearsc/web-ssh/backend/internal/websocket","Test":"TestS3W04RealBlockedWriterTakeover","Output":"--- FAIL: TestS3W04RealBlockedWriterTakeover (4.39s)\n"}
+{"Time":"2026-11-17T01:21:09.801886928+08:00","Action":"fail","Package":"github.com/stearsc/web-ssh/backend/internal/websocket","Test":"TestS3W04RealBlockedWriterTakeover","Elapsed":4.39}
+{"Time":"2026-11-17T01:21:09.801939095+08:00","Action":"run","Package":"github.com/stearsc/web-ssh/backend/internal/websocket","Test":"TestS3W06SmallBufferAndShutdown"}
+{"Time":"2026-11-17T01:21:09.801944235+08:00","Action":"output","Package":"github.com/stearsc/web-ssh/backend/internal/websocket","Test":"TestS3W06SmallBufferAndShutdown","Output":"=== RUN   TestS3W06SmallBufferAndShutdown\n"}
+{"Time":"2026-11-17T01:21:09.84041621+08:00","Action":"output","Package":"github.com/stearsc/web-ssh/backend/internal/websocket","Test":"TestS3W06SmallBufferAndShutdown","Output":"--- PASS: TestS3W06SmallBufferAndShutdown (0.04s)\n"}
+{"Time":"2026-11-17T01:21:09.840437199+08:00","Action":"pass","Package":"github.com/stearsc/web-ssh/backend/internal/websocket","Test":"TestS3W06SmallBufferAndShutdown","Elapsed":0.04}
+{"Time":"2026-11-17T01:21:09.840502911+08:00","Action":"output","Package":"github.com/stearsc/web-ssh/backend/internal/websocket","Output":"FAIL\n"}
+{"Time":"2026-11-17T01:21:09.849001959+08:00","Action":"output","Package":"github.com/stearsc/web-ssh/backend/internal/websocket","Output":"FAIL\tgithub.com/stearsc/web-ssh/backend/internal/websocket\t4.453s\n"}
+{"Time":"2026-11-17T01:21:09.849019412+08:00","Action":"fail","Package":"github.com/stearsc/web-ssh/backend/internal/websocket","Elapsed":4.453}

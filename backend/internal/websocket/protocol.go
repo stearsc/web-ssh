@@ -67,6 +67,8 @@ func decode(data []byte, dst any) error {
 }
 func closeCode(reason string) int {
 	switch reason {
+	case "taken_over":
+		return 4001
 	case "closed":
 		return 1000
 	case "MESSAGE_TOO_LARGE":
@@ -112,5 +114,11 @@ type errorMessage struct {
 type closedMessage struct {
 	Type    string `json:"type"`
 	Reason  string `json:"reason"`
+	Message string `json:"message"`
+}
+
+// taken_over 只从独立终止槽由唯一 Writer 发送。
+type takenOverMessage struct {
+	Type    string `json:"type"`
 	Message string `json:"message"`
 }

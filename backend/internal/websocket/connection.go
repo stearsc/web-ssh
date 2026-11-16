@@ -21,7 +21,21 @@ type operation struct {
 	data       []byte
 	cols, rows int
 }
+
+// 测试同步点默认 nil；安装后不可修改，读取指针受 Connection.mu 保护。
+type connectionHooks struct {
+	beforeRegister   func(*session.CommitResult)
+	beforeAdmission  func()
+	beforeSession    func()
+	admitted         func(string)
+	beforeWrite      func(string)
+	beforeRead       func()
+	waitingOperation func()
+	beforeExecute    func()
+}
+
 type Connection struct {
+	hooks                             *connectionHooks
 	deadlineStamp                     atomic.Int64
 	writeFailures                     atomic.Int64
 	deadlineChanged                   chan struct{}
@@ -72,21 +86,7 @@ func (c *Connection) terminate(reason string, applicationDeadline time.Time) {
 		c.mu.Unlock()
 		return
 	}
-	// 先撤销操作权限，再发布终止；网络通知不承担权限撤销职责。
-	if c.binding != nil {
-		c.target.Detach(c.binding)
-	}
-	c.reason = reason
-	c.deadline = time.Now().Add(time.Duration(c.service.cfg.Websocket.CloseTimeout) * time.Second)
-	if !applicationDeadline.IsZero() && applicationDeadline.Before(c.deadline) {
-		c.deadline = applicationDeadline
-	}
-	c.deadlineStamp.Store(c.deadline.UnixNano())
-	if c.pingCancel != nil {
-		c.pingCancel()
-	}
-	c.cancel()
-	close(c.terminated)
+	c.terminateLocked(reason, applicationDeadline)
 	accepted := c.accepted
 	c.mu.Unlock()
 	c.signal()
@@ -94,6 +94,45 @@ func (c *Connection) terminate(reason string, applicationDeadline time.Time) {
 		c.raw.Close()
 	}
 }
+
+// 调用方已持 c.mu；首因必须先于任何 Binding/context 取消固定。
+func (c *Connection) terminateLocked(reason string, applicationDeadline time.Time) {
+	c.reason = reason
+	c.deadline = time.Now().Add(time.Duration(c.service.cfg.Websocket.CloseTimeout) * time.Second)
+	if !applicationDeadline.IsZero() && applicationDeadline.Before(c.deadline) {
+		c.deadline = applicationDeadline
+	}
+	c.deadlineStamp.Store(c.deadline.UnixNano())
+	if c.binding != nil {
+		c.target.Detach(c.binding)
+	}
+	if c.pingCancel != nil {
+		c.pingCancel()
+	}
+	c.cancel()
+	close(c.terminated)
+}
+
+// 只用于 Done/旧权限准入失败。真实 Read/Write/Ping 故障不调用此分流。
+func (c *Connection) finishBindingExit(b *session.Binding, fallback string) {
+	c.mu.Lock()
+	if c.reason == "" {
+		state := c.target.BindingDisposition(b)
+		if state == session.BindingSuperseded {
+			fallback = "taken_over"
+		}
+		c.terminateLocked(fallback, time.Time{})
+	}
+	c.mu.Unlock()
+	c.signal()
+}
+
+func (c *Connection) testHooks() *connectionHooks {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.hooks
+}
+
 func (c *Connection) run() {
 	go c.supervise()
 	var workers sync.WaitGroup
@@ -189,6 +228,9 @@ func (c *Connection) readMessage() (ws.MessageType, []byte, error) {
 func (c *Connection) reader() {
 	defer c.Terminate("NETWORK_ERROR")
 	for {
+		if hooks := c.testHooks(); hooks != nil && hooks.beforeRead != nil {
+			hooks.beforeRead()
+		}
 		kind, data, err := c.readMessage()
 		if err != nil {
 			return
@@ -214,6 +256,9 @@ func (c *Connection) reader() {
 			if err != nil {
 				c.Terminate(err.Error())
 				return
+			}
+			if hooks := c.testHooks(); hooks != nil && hooks.beforeRegister != nil {
+				hooks.beforeRegister(result)
 			}
 			if !c.registerBinding(result) {
 				return
@@ -247,12 +292,16 @@ func (c *Connection) reader() {
 			}
 			op.cols, op.rows = *msg.Cols, *msg.Rows
 		}
+		if hooks := c.testHooks(); hooks != nil && hooks.waitingOperation != nil {
+			hooks.waitingOperation()
+		}
 		timer := time.NewTimer(time.Duration(c.service.cfg.Session.OperationWaitTimeout) * time.Second)
 		select {
 		case c.operations <- op:
 			timer.Stop()
 		case <-b.Done():
 			timer.Stop()
+			c.finishBindingExit(b, "NETWORK_ERROR")
 			return
 		case <-c.ctx.Done():
 			timer.Stop()
@@ -275,7 +324,23 @@ func (c *Connection) registerBinding(result *session.CommitResult) bool {
 		c.target.Detach(b)
 		return false
 	}
-	c.binding = b
+	c.binding = b // 即使已经失效，也登记清理归属；Writer 始终重新做锁内准入。
+	state := c.target.BindingDisposition(b)
+	if state == session.BindingSuperseded {
+		c.terminateLocked("taken_over", time.Time{})
+		c.mu.Unlock()
+		c.signal()
+		return false
+	}
+	if state != session.BindingCurrent {
+		c.mu.Unlock()
+		// Close/Revoke 已撤权但可能仍在回收 SSH；等待原生命周期发布终止，
+		// 不让 Reader defer 抢成 NETWORK_ERROR，也不提前伪造 closed。
+		result.FinishDisplaced()
+		<-c.terminated
+		c.target.Detach(b)
+		return false
+	}
 	c.nextPing = time.Now().Add(time.Duration(c.service.cfg.Websocket.PingInterval) * time.Second)
 	c.mu.Unlock()
 	c.signal()
@@ -288,8 +353,15 @@ func (c *Connection) execute() {
 		case <-c.ctx.Done():
 			return
 		case op := <-c.operations:
+			if hooks := c.testHooks(); hooks != nil && hooks.beforeExecute != nil {
+				hooks.beforeExecute()
+			}
 			if err := c.target.Execute(op.binding, op.data, op.cols, op.rows); err != nil {
-				c.Terminate(err.Error())
+				if err.Error() == "BIND_CONFLICT" || err.Error() == "INPUT_BACKPRESSURE" {
+					c.finishBindingExit(op.binding, err.Error())
+				} else {
+					c.Terminate(err.Error())
+				}
 				return
 			}
 		}
@@ -314,12 +386,13 @@ func (c *Connection) NotifyStatus() {
 	}
 }
 func (c *Connection) writer() {
-	prefix := 0
-	replayed := 0
+	prefix, replayed := 0, 0
 	var cursor uint64
 	for {
-		var data []byte
-		kind := ws.MessageText
+		hooks := c.testHooks()
+		if hooks != nil && hooks.beforeAdmission != nil {
+			hooks.beforeAdmission()
+		}
 		c.mu.Lock()
 		if c.reason != "" {
 			reason, deadline := c.reason, c.deadline
@@ -330,19 +403,91 @@ func (c *Connection) writer() {
 		b := c.binding
 		if b == nil {
 			c.mu.Unlock()
-			<-c.wake
+			select {
+			case <-c.wake:
+			case <-c.terminated:
+			}
 			continue
 		}
-		// 每个完整消息边界优先检查到期心跳，输出通知不能重置到期时间。
-		if !time.Now().Before(c.nextPing) {
-			ctx, cancel := context.WithTimeout(context.Background(), time.Duration(c.service.cfg.Websocket.PongTimeout)*time.Second)
-			c.pingCancel = cancel
-			c.mu.Unlock()
-			err := c.conn.Ping(ctx)
+		var data []byte
+		var event any
+		var selectionError error
+		var pingCtx context.Context
+		var pingCancel context.CancelFunc
+		label := ""
+		kind := ws.MessageText
+		if hooks != nil && hooks.beforeSession != nil {
+			hooks.beforeSession()
+		}
+		state := c.target.WithSendAdmission(b, func() {
+			// c.mu → Session.mu；Buffer.Read 内部仅短取 Buffer.mu。
+			if !time.Now().Before(c.nextPing) {
+				pingCtx, pingCancel = context.WithTimeout(context.Background(), time.Duration(c.service.cfg.Websocket.PongTimeout)*time.Second)
+				c.pingCancel = pingCancel
+				return
+			}
+			if prefix == 0 {
+				event = bindSuccess{"bind_success", b.Generation, b.Replay.Start, b.Replay.End, b.Cols, b.Rows}
+				prefix = 1
+				cursor = b.Replay.End
+				label = "prefix"
+			} else if prefix == 1 && b.Replay.Start > b.Replay.Requested {
+				event = historyTruncated{"history_truncated", b.Replay.Requested, b.Replay.Start, b.Replay.End, b.Replay.Start - b.Replay.Requested}
+				prefix = 2
+				label = "prefix"
+			} else {
+				prefix = 2
+				select {
+				case event = <-c.controls:
+					label = "status"
+				default:
+				}
+				if event == nil {
+					kind = ws.MessageBinary
+					if replayed < len(b.Replay.Data) {
+						end := min(len(b.Replay.Data), replayed+int(c.service.cfg.Websocket.OutputChunkSize))
+						data = b.Replay.Data[replayed:end]
+						replayed = end
+						label = "history"
+					} else {
+						b.Replay.Data = nil
+						data, selectionError = c.target.Buffer().Read(cursor, int(c.service.cfg.Websocket.OutputChunkSize))
+						cursor += uint64(len(data))
+						if len(data) > 0 {
+							label = "live"
+						}
+					}
+				}
+			}
+			// 唯一 Writer 的局部不可变项即唯一在途项；此处仍同时持有两把锁。
+			if label != "" && hooks != nil && hooks.admitted != nil {
+				hooks.admitted(label)
+			}
+		})
+		nextPing := c.nextPing
+		c.mu.Unlock()
+		if state != session.BindingCurrent {
+			if state == session.BindingSuperseded {
+				c.finishBindingExit(b, "taken_over")
+				continue
+			}
+			// 无效但非接管：原 Close/Revoke 负责终止发布，不能抢先发 closed。
+			select {
+			case <-c.wake:
+			case <-c.terminated:
+			}
+			continue
+		}
+		if selectionError != nil {
+			c.Terminate(selectionError.Error())
+			continue
+		}
+		if pingCtx != nil {
+			err := c.conn.Ping(pingCtx)
 			if err == nil {
 				c.pings.Add(1)
 			}
-			cancel()
+			pingCancel()
 			c.mu.Lock()
 			c.pingCancel = nil
 			c.nextPing = time.Now().Add(time.Duration(c.service.cfg.Websocket.PingInterval) * time.Second)
@@ -352,51 +497,18 @@ func (c *Connection) writer() {
 			}
 			continue
 		}
-		var event any
-		if prefix == 0 {
-			event = bindSuccess{"bind_success", b.Generation, b.Replay.Start, b.Replay.End, b.Cols, b.Rows}
-			prefix = 1
-			cursor = b.Replay.End
-		} else if prefix == 1 && b.Replay.Start > b.Replay.Requested {
-			event = historyTruncated{"history_truncated", b.Replay.Requested, b.Replay.Start, b.Replay.End, b.Replay.Start - b.Replay.Requested}
-			prefix = 2
-		} else {
-			prefix = 2
-			select {
-			case event = <-c.controls:
-			default:
-			}
-			if event == nil {
-				kind = ws.MessageBinary
-				if replayed < len(b.Replay.Data) {
-					end := min(len(b.Replay.Data), replayed+int(c.service.cfg.Websocket.OutputChunkSize))
-					data = b.Replay.Data[replayed:end]
-					replayed = end
-				} else {
-					b.Replay.Data = nil
-					var err error
-					data, err = c.target.Buffer().Read(cursor, int(c.service.cfg.Websocket.OutputChunkSize))
-					if err != nil {
-						c.mu.Unlock()
-						c.Terminate(err.Error())
-						continue
-					}
-					cursor += uint64(len(data))
-				}
-			}
-		}
 		if event != nil {
 			var err error
 			data, err = json.Marshal(event)
 			if err != nil {
-				c.mu.Unlock()
 				c.Terminate("INTERNAL_ERROR")
 				continue
 			}
 		}
-		nextPing := c.nextPing
-		c.mu.Unlock() // 此消息已准入，终止之后至多允许当前一次写完成。
 		if len(data) > 0 {
+			if hooks != nil && hooks.beforeWrite != nil {
+				hooks.beforeWrite(label)
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), time.Duration(c.service.cfg.Websocket.WriteTimeout)*time.Second)
 			err := c.conn.Write(ctx, kind, data)
 			cancel()
@@ -411,6 +523,7 @@ func (c *Connection) writer() {
 		case <-c.wake:
 		case <-c.target.Buffer().Changed():
 		case <-timer.C:
+		case <-c.terminated:
 		}
 		timer.Stop()
 	}
@@ -419,7 +532,9 @@ func (c *Connection) finish(reason string, deadline time.Time) {
 	code := closeCode(reason)
 	if reason != "NETWORK_ERROR" && time.Now().Before(deadline) {
 		var event any = errorMessage{"error", reason, "终端连接已结束：" + reason}
-		if strings.HasPrefix(reason, "closed:") {
+		if reason == "taken_over" {
+			event = takenOverMessage{"taken_over", "此会话已由其他连接接管"}
+		} else if strings.HasPrefix(reason, "closed:") {
 			event = closedMessage{"closed", strings.TrimPrefix(reason, "closed:"), "SSH 会话已关闭"}
 			code = 1000
 		}
