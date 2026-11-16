@@ -119,6 +119,7 @@ export class TerminalClient {
   private changed: (connected: boolean) => void
   private notify: (state: RecoveryState) => void
   private allowed: () => boolean
+  private received: () => void
   private socket: WebSocket | null = null
   private controller: AbortController | null = null
   private finish:
@@ -142,6 +143,7 @@ export class TerminalClient {
     changed: (connected: boolean) => void,
     notify: (state: RecoveryState) => void = () => {},
     allowed: () => boolean = () => true,
+    received: () => void = () => {},
   ) {
     this.sessionId = id
     this.generation = generation
@@ -150,6 +152,7 @@ export class TerminalClient {
     this.changed = changed
     this.notify = notify
     this.allowed = allowed
+    this.received = received
     this.output = new TerminalOutputTracker(
       create,
       settings,
@@ -448,6 +451,7 @@ export class TerminalClient {
         try {
           if (event.data instanceof ArrayBuffer) {
             this.output.binary(new Uint8Array(event.data))
+            this.received()
             return
           }
           if (typeof event.data !== 'string')
@@ -484,6 +488,7 @@ export class TerminalClient {
             this.flushSize()
             task.connected({ connected: true, code: '', message: '' })
           }
+          this.received()
         } catch (error) {
           const overload =
             error instanceof ClientFailure && error.kind === 'overload'

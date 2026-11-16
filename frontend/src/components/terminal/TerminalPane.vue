@@ -28,6 +28,8 @@ const notice = ref('')
 const connectionNotice = ref('')
 const lastConnectionDiagnostic = ref('')
 const connected = ref(false)
+const networkOnline = ref(navigator.onLine)
+const awaitingNetworkConfirmation = ref(!navigator.onLine)
 const busy = ref(false)
 const remoteBusy = ref(false)
 const closeRequested = ref(false)
@@ -60,6 +62,32 @@ let localCols = props.session.current_cols
 let localRows = props.session.current_rows
 const live = (): boolean =>
   !disposed && !logoutPending.value && identity.value !== null
+// 网络事件仅影响展示，不终止 socket、不启动或重置恢复任务。
+function networkOffline(): void {
+  networkOnline.value = false
+  awaitingNetworkConfirmation.value = true
+}
+function networkRestored(): void {
+  if (!networkOnline.value) awaitingNetworkConfirmation.value = true
+  networkOnline.value = true
+}
+function confirmNetworkConnection(): void {
+  if (live() && networkOnline.value && connected.value)
+    awaitingNetworkConfirmation.value = false
+}
+const connectionLabel = computed(() => {
+  if (ended.value) return '会话已结束'
+  if (phase.value === 'stopping') return '正在停止'
+  if (['idle', 'stopped', 'disposed'].includes(phase.value)) return '未连接'
+  if (!networkOnline.value) return '网络已断开，等待网络恢复'
+  if (retryLabel.value) return retryLabel.value
+  if (awaitingNetworkConfirmation.value)
+    return '网络已恢复，等待连接确认'
+  if (phase.value === 'replaying') return '正在回放'
+  if (connected.value) return '已连接'
+  if (phase.value === 'preparing') return '正在申请连接凭证'
+  return '正在连接'
+})
 function stoppedState(state: RecoveryState): void {
   if (disposed || state.taskId !== client?.taskId) return
   phase.value = state.phase
@@ -173,6 +201,8 @@ async function closeRemote(): Promise<void> {
 function dispose(): Promise<void> {
   if (disposeTask) return disposeTask
   disposed = true
+  window.removeEventListener('offline', networkOffline)
+  window.removeEventListener('online', networkRestored)
   recovery.value?.invalidate()
   resize?.disconnect()
   theme?.disconnect()
@@ -186,6 +216,9 @@ async function closeLocal(): Promise<void> {
   emit('closed')
 }
 onMounted(() => {
+  window.addEventListener('offline', networkOffline)
+  window.addEventListener('online', networkRestored)
+  networkOnline.value = navigator.onLine
   try {
     if (!identity.value || !host.value)
       throw new Error('登录状态或终端配置不可用')
@@ -246,12 +279,14 @@ onMounted(() => {
       (value) => {
         connected.value = value
         if (value && live()) {
+          confirmNetworkConnection()
           client?.resize(localCols, localRows)
           void layout()
         }
       },
       stoppedState,
       () => live() && !closeRequested.value,
+      confirmNetworkConnection,
     )
     recovery.value = new SessionRecovery(
       props.session.id,
@@ -303,16 +338,7 @@ onBeforeUnmount(() => {
       <span class="mono"
         >{{ session.username }}@{{ session.host }}:{{ session.port }}</span
       >
-      <span class="connection-state">{{
-        retryLabel ||
-        (phase === 'replaying'
-          ? '正在回放'
-          : connected
-            ? '已连接'
-            : phase === 'stopping'
-              ? '正在停止'
-              : '未连接')
-      }}</span>
+      <span class="connection-state">{{ connectionLabel }}</span>
       <button
         :disabled="
           !detail.canRecover || closeRequested || ended || logoutPending
@@ -369,7 +395,16 @@ onBeforeUnmount(() => {
       class="notice connection-diagnostic"
       role="status"
     >
-      最近一次连接异常（历史记录）：{{ lastConnectionDiagnostic }}
+      <span>最近一次连接异常（历史记录）：{{ lastConnectionDiagnostic }}</span>
+      <button
+        type="button"
+        class="dismiss-diagnostic"
+        aria-label="关闭历史连接提示"
+        title="关闭历史连接提示"
+        @click="lastConnectionDiagnostic = ''"
+      >
+        ×
+      </button>
     </p>
     <p v-if="notice" class="notice" role="status">{{ notice }}</p>
     <Modal v-if="closing" title="关闭 SSH 会话？" @close="closing = false">
@@ -390,3 +425,19 @@ onBeforeUnmount(() => {
     </Modal>
   </section>
 </template>
+
+<style scoped>
+.connection-diagnostic {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.connection-diagnostic > span {
+  min-width: 0;
+}
+.dismiss-diagnostic {
+  flex-shrink: 0;
+  padding: 0 8px;
+}
+</style>
