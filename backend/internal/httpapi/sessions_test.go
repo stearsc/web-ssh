@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -93,6 +95,78 @@ func TestSessionsHTTPWebsocketAndLogoutRace(t *testing.T) {
 		return r.Cookies()[0]
 	}
 	cookie := login()
+	list := func(t *testing.T, path string, cookie *http.Cookie, wantStatus int, wantCode string) []session.View {
+		t.Helper()
+		// Read-only GET follows existing authentication without requiring Origin.
+		w := call(t, h.Config.Handler, "GET", path, "", cookie, "")
+		if w.Code != wantStatus || w.Header().Get("Cache-Control") != "no-store" || !strings.HasPrefix(w.Header().Get("Content-Type"), "application/json") {
+			t.Fatalf("list response: %d %v %s", w.Code, w.Header(), w.Body.String())
+		}
+		var top map[string]json.RawMessage
+		if err := json.Unmarshal(w.Body.Bytes(), &top); err != nil || len(top) != 3 || top["message"] == nil || top["data"] == nil || string(top["code"]) != wantCode {
+			t.Fatalf("list envelope: %s (%v)", w.Body.String(), err)
+		}
+		if wantStatus != http.StatusOK {
+			if string(top["data"]) != "{}" {
+				t.Fatalf("error data: %s", top["data"])
+			}
+			return nil
+		}
+		if string(top["message"]) != `"success"` {
+			t.Fatalf("success message: %s", top["message"])
+		}
+		var data map[string]json.RawMessage
+		if err := json.Unmarshal(top["data"], &data); err != nil || len(data) != 1 || data["items"] == nil || string(data["items"]) == "null" {
+			t.Fatalf("list data: %s (%v)", top["data"], err)
+		}
+		var rows []map[string]json.RawMessage
+		if err := json.Unmarshal(data["items"], &rows); err != nil {
+			t.Fatal(err)
+		}
+		fields := strings.Fields("id server_id name host port username status created_at disconnected_at last_attached_at offline_expires_at remaining_seconds binding_generation current_cols current_rows")
+		for _, row := range rows {
+			if len(row) != len(fields) {
+				t.Fatalf("unexpected/sensitive fields: %v", row)
+			}
+			for _, field := range fields {
+				if row[field] == nil {
+					t.Fatalf("missing field %s", field)
+				}
+			}
+		}
+		var items []session.View
+		if err := json.Unmarshal(data["items"], &items); err != nil {
+			t.Fatal(err)
+		}
+		return items
+	}
+	t.Run("list empty", func(t *testing.T) {
+		if items := list(t, "/api/sessions", cookie, 200, "0"); len(items) != 0 {
+			t.Fatal(items)
+		}
+	})
+	t.Run("list unauthorized", func(t *testing.T) {
+		list(t, "/api/sessions", nil, 401, `"AUTH_REQUIRED"`)
+		list(t, "/api/sessions", &http.Cookie{Name: "web_ssh_auth", Value: "invalid"}, 401, `"AUTH_REQUIRED"`)
+		list(t, "/api/sessions?server_id=invalid", nil, 401, `"AUTH_REQUIRED"`)
+		// This independent login has never been used by another request or Binding.
+		value, expired, _, err := admin.Login(t.Context(), "admin-secret")
+		if err != nil {
+			t.Fatal(err)
+		}
+		expired.Expires = time.Now().Add(-time.Second)
+		list(t, "/api/sessions", &http.Cookie{Name: "web_ssh_auth", Value: value}, 401, `"AUTH_REQUIRED"`)
+	})
+	t.Run("list strict query", func(t *testing.T) {
+		for _, query := range []string{
+			"server_id=", "server_id", "server_id=bad", "server_id=" + strings.Repeat("A", 32),
+			"server_id=" + strings.Repeat("a", 31), "server_id=" + strings.Repeat("a", 33),
+			"server_id=" + strings.Repeat("a", 32) + "&server_id=" + strings.Repeat("a", 32),
+			"status=CONNECTED", "page=1", "limit=5", "sort=id", "server_id=%ZZ", "server_id=a;b",
+		} {
+			t.Run(query, func(t *testing.T) { list(t, "/api/sessions?"+query, cookie, 400, `"INVALID_REQUEST"`) })
+		}
+	})
 	port := remote.Port()
 	status, data, _ := request("POST", "/api/servers", server.Input{Name: "terminal", Host: "127.0.0.1", Port: &port, Username: "tester", Password: "ssh-secret"}, cookie)
 	if status != 201 {
@@ -116,6 +190,32 @@ func TestSessionsHTTPWebsocketAndLogoutRace(t *testing.T) {
 	}
 	var view session.View
 	json.Unmarshal(data, &view)
+	t.Run("list active and filtered", func(t *testing.T) {
+		for _, path := range []string{"/api/sessions", "/api/sessions?server_id=" + sv.ID} {
+			items := list(t, path, cookie, 200, "0")
+			if len(items) != 1 || items[0].ID != view.ID || items[0].Status != "DISCONNECTED" || items[0].ServerID != sv.ID || items[0].Generation != 0 {
+				t.Fatalf("list: %+v", items)
+			}
+			// Detail and list share the same safe DTO; remaining seconds is sampled independently.
+			expected := view
+			expected.RemainingSeconds = items[0].RemainingSeconds
+			if !reflect.DeepEqual(items[0], expected) {
+				t.Fatalf("list/detail mismatch: %+v / %+v", items[0], expected)
+			}
+		}
+		if items := list(t, "/api/sessions?server_id="+strings.Repeat("f", 32), cookie, 200, "0"); len(items) != 0 {
+			t.Fatal(items)
+		}
+		other := login()
+		items := list(t, "/api/sessions", other, 200, "0")
+		if len(items) != 1 || items[0].ID != view.ID {
+			t.Fatal("independent admin login cannot list", items)
+		}
+		if status, _, _ := request("POST", "/api/auth/logout", map[string]any{}, other); status != 200 {
+			t.Fatal(status)
+		}
+		list(t, "/api/sessions", other, 401, `"AUTH_REQUIRED"`)
+	})
 	route := "/api/sessions/" + view.ID
 	for _, invalid := range []map[string]any{{"mode": "attach"}, {"mode": "attach", "expected_generation": nil}, {"expected_generation": 0}} {
 		if status, _, _ = request("POST", route+"/takeover", invalid, cookie); status != 400 {
@@ -198,6 +298,14 @@ func TestSessionsHTTPWebsocketAndLogoutRace(t *testing.T) {
 	if status, _, _ = request("DELETE", route, map[string]any{}, cookie); status != 200 {
 		t.Fatal(status)
 	}
+	t.Run("list excludes closed", func(t *testing.T) {
+		if items := list(t, "/api/sessions", cookie, 200, "0"); len(items) != 0 {
+			t.Fatal(items)
+		}
+		if items := list(t, "/api/sessions?server_id="+sv.ID, cookie, 200, "0"); len(items) != 0 {
+			t.Fatal(items)
+		}
+	})
 	if remote.Shells.Load() != 1 {
 		t.Fatal("重新绑定新建 Shell")
 	}

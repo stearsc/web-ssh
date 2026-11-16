@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"log/slog"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -209,6 +210,44 @@ func (m *Manager) Get(id string) (View, error) {
 	}
 	return s.viewLocked(), nil
 }
+
+// List returns per-Session snapshots, not a globally atomic snapshot of the list.
+func (m *Manager) List(serverID string) []View {
+	m.mu.Lock()
+	sessions := make([]*Session, 0, len(m.sessions))
+	for _, s := range m.sessions {
+		sessions = append(sessions, s)
+	}
+	m.mu.Unlock()
+
+	// Never hold the index lock while acquiring a Session lock. References remain
+	// valid after removal; CLOSED is checked when each row is copied.
+	type row struct {
+		view          View
+		createdMillis int64
+	}
+	rows := make([]row, 0, len(sessions))
+	for _, s := range sessions {
+		s.mu.Lock()
+		if s.status != "CLOSED" && (serverID == "" || s.target.ID == serverID) {
+			rows = append(rows, row{view: s.viewLocked(), createdMillis: s.created.UnixMilli()})
+		}
+		s.mu.Unlock()
+	}
+	// Match the API's millisecond precision before breaking ties by ID.
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].createdMillis != rows[j].createdMillis {
+			return rows[i].createdMillis < rows[j].createdMillis
+		}
+		return rows[i].view.ID < rows[j].view.ID
+	})
+	items := make([]View, 0, len(rows))
+	for _, r := range rows {
+		items = append(items, r.view)
+	}
+	return items
+}
+
 func (m *Manager) Close(id, reason string) {
 	s, e := m.Find(id)
 	if e == nil {

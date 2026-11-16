@@ -2,11 +2,17 @@ package httpapi
 
 import (
 	"net/http"
+	"net/url"
 
 	"github.com/stearsc/web-ssh/backend/internal/auth"
 	"github.com/stearsc/web-ssh/backend/internal/fault"
 	"github.com/stearsc/web-ssh/backend/internal/server"
+	"github.com/stearsc/web-ssh/backend/internal/session"
 )
+
+type SessionList struct {
+	Items []session.View `json:"items"`
+}
 
 type sessionInput struct {
 	Cols int `json:"cols"`
@@ -18,6 +24,19 @@ type attachInput struct {
 }
 
 func (m *Management) sessionRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /api/sessions", m.protected(func(w http.ResponseWriter, r *http.Request, _ *auth.Session) error {
+		query, err := url.ParseQuery(r.URL.RawQuery)
+		if err != nil {
+			return fault.Error("INVALID_REQUEST")
+		}
+		for key, values := range query {
+			if key != "server_id" || len(values) != 1 || !idPattern.MatchString(values[0]) {
+				return fault.Error("INVALID_REQUEST")
+			}
+		}
+		m.success(w, http.StatusOK, SessionList{Items: m.Sessions.List(query.Get("server_id"))})
+		return nil
+	}))
 	mux.HandleFunc("POST /api/servers/{id}/sessions", m.protected(func(w http.ResponseWriter, r *http.Request, login *auth.Session) error {
 		var in sessionInput
 		if e := m.decode(w, r, &in, false); e != nil {
