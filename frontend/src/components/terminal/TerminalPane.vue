@@ -25,6 +25,8 @@ const props = defineProps<{ session: SessionView; active: boolean }>()
 const emit = defineEmits<{ closed: [] }>()
 const host = ref<HTMLElement>()
 const notice = ref('')
+const connectionNotice = ref('')
+const lastConnectionDiagnostic = ref('')
 const connected = ref(false)
 const busy = ref(false)
 const remoteBusy = ref(false)
@@ -65,7 +67,11 @@ function stoppedState(state: RecoveryState): void {
     state.phase === 'retry_wait'
       ? `等待自动恢复 ${state.attempt}/${state.max}`
       : ''
-  if (state.message && live()) notice.value = state.message
+  if (live()) {
+    connectionNotice.value = state.message
+    if (state.phase === 'retry_wait')
+      lastConnectionDiagnostic.value = state.message
+  }
   revision.value++
   if (state.phase === 'stopped') {
     if (state.code === 'closed') {
@@ -125,7 +131,6 @@ async function connect(): Promise<void> {
   try {
     const result = await client?.connect()
     if (!live()) return
-    if (result && !result.connected) notice.value = result.message
     if (result?.connected) await layout(true)
   } catch (error) {
     if (live()) notice.value = message(error)
@@ -356,6 +361,16 @@ onBeforeUnmount(() => {
     </p>
     <p v-if="detail.error" class="notice" role="alert">{{ detail.error }}</p>
     <div ref="host" class="terminal-host" />
+    <p v-if="connectionNotice" class="notice" role="status">
+      {{ connectionNotice }}
+    </p>
+    <p
+      v-if="connected && lastConnectionDiagnostic"
+      class="notice connection-diagnostic"
+      role="status"
+    >
+      最近一次连接异常（历史记录）：{{ lastConnectionDiagnostic }}
+    </p>
     <p v-if="notice" class="notice" role="status">{{ notice }}</p>
     <Modal v-if="closing" title="关闭 SSH 会话？" @close="closing = false">
       <div class="dialog-body">
