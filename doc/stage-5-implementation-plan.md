@@ -1,10 +1,10 @@
 # Web SSH 第五阶段详细实施计划
 
 - 编写日期：2026-11-16。
-- 状态：完整审查稿；只完成设计和文档，未开始第五阶段编码。§21 的推荐方案仍为 `待用户裁决`，不能视为冻结规则或编码授权。
+- 状态：第二轮修订审查稿；D1、D2、D3 的 A 方案已由用户在本轮明确确认。Binding终止和Writer准入设计已修订，等待人工复审；未开始编码。
 - 阶段：会话管理与跨设备接管。
-- 实际检查基线：分支 `codex/第四阶段`，HEAD `8dc739d90034abb16bd60009d21e3af944654c7e`；开始时工作区与暂存区干净。
-- 本轮只新增本文件。不修改业务代码、四份冻结设计、第四阶段计划和历史报告，不安装依赖，不提交、推送或执行分支整合。
+- 首轮代码检查基线：`8dc739d90034abb16bd60009d21e3af944654c7e`。第二轮文档基线：分支 `codex/第五阶段`，HEAD `56ed63809ae8b7420362301bb768a610a2caa166`；本轮开始已有用户修改 `luan-qi-ba-zao.txt` 和未跟踪 `web-ssh-stage5.zip`，暂存区为空，均原样保护。
+- 本轮只修订本文件。不修改业务代码、冻结设计、第四阶段计划和历史报告，不安装依赖，不提交、推送或执行分支整合。首轮文档已按此前授权提交；该授权不用于本轮修订。
 - 用户本次确认：第四阶段、UI 状态提示残留修复及最新部署真实环境验证已经完成。第四阶段报告仍是当时“本地完成、生产待验”的历史记录；本计划不擅自改写它，也不将用户确认扩大为第五阶段已验收。
 
 ## 1. 阶段目标、非目标与交付边界
@@ -15,11 +15,11 @@
 
 非目标：历史会话归档/重命名、分页或排序 API、服务端状态过滤参数、重启恢复、跨进程协调、屏幕快照、Redis/消息队列、轮询服务、新状态管理库、依赖升级、全套第六阶段视觉和移动端改版。关闭本地标签、关闭远端 Session、主动接管是三项独立操作。
 
-本计划的执行性是：冻结部分给出实现与验收步骤；冻结文档未规定的产品选择给出可执行推荐分支及替代方案，待裁决后才能执行受影响步骤。文档完整不等于所有产品选项已经批准。
+本计划按冻结契约及用户本轮确认的D1–D3 A方案给出实施与验收步骤；终止竞态和发送准入修订仍须人工复审。产品选择已确认不等于编码已获授权。
 
 ## 2. 完整阅读依据、术语与权威边界
 
-本轮直接分段读完以下 Markdown 文件的全部内容，而非仅使用摘要；原型只检查会话页面、标签及相关交互代码。代码用于定位实现差距，不覆盖设计。
+首轮编写直接分段读完下列Markdown全文，原型检查会话页面、标签及相关交互代码；第二轮定向复核当前Binding.Done/end、Detach、Reader、Writer、Terminate与架构§3.1，并按用户指出的问题修订。代码用于定位实现差距，不覆盖设计。
 
 | 文档 | 实际读取范围与本阶段重点 |
 |---|---|
@@ -36,7 +36,7 @@
 
 本地查询序号、任务 ID、页面生命周期标识、terminalEpoch 均不是 binding_generation。列表/详情中的 generation 只是某次查询快照；自动任务只接受自己校验通过的 bind_success 更新代次。
 
-**标记规则：**“冻结”表示上述文档已规定；“实施细化”表示在既有契约内落实的代码职责；“推荐，待用户裁决 Dn”表示新增产品选择。下文涉及 Dn 的流程、图和测试均是对应推荐方案的条件式执行计划，不能跳过 §21 的决定记录。未发现四份冻结文档之间新的实质冲突；两个历史 BLOCKER 不重新开启。
+**标记规则：**“冻结”表示原权威文档已规定；“实施细化”表示计划在既有契约内落实的代码职责；“用户已确认 Dn=A”仅指本轮用户明确选择的D1–D3，依据见§21。内部接口伪代码仍是供复审的实施设计，不冒充已实现代码或新增用户裁决。两个历史BLOCKER不重新开启。
 
 ## 3. 当前实现、第五阶段接入点与差异
 
@@ -114,13 +114,13 @@ Manager.List 在管理器索引锁内复制稳定 Session 引用，马上释放�
 
 ## 6. 前端列表、刷新和请求所有权
 
-以下刷新策略采用 **推荐 D1，待用户裁决**；取消、迟到响应隔离和快照非权威的约束必须满足。
+以下刷新策略采用 **用户已确认 D1=A**；取消、迟到响应隔离和快照非权威的约束必须满足。
 
 ### 6.1 页面与刷新触发
 
 在 HomePage 内提供独立“会话管理”视图，切换视图不卸载既有终端 Pane；保留 `/` 与 `/login` 路由，不为了列表重建整个 HomePage。列表组件与终端标签集合分别维护。
 
-| 触发 | 推荐行为 |
+| 触发 | 已确认行为（D1=A） |
 |---|---|
 | 首次进入/再次打开会话管理 | GET 一次，带当前 server_id；首次显示 loading，成功为空显示明确空态 |
 | 手动刷新、切换服务器筛选 | 取消旧 GET、序号递增、发新 GET；状态筛选只在本地计算 |
@@ -129,7 +129,7 @@ Manager.List 在管理器索引锁内复制稳定 Session 引用，马上释放�
 | 连续刷新 | 最新请求胜出；同一个同步事件批次可用一个 microtask 合并；不追加请求队列/周期轮询 |
 | 离开列表视图/卸载/登出/认证失效 | 同步撤销列表发布身份并 Abort；移除 visibility listener；不把取消当网络错误 |
 
-显示“最近查询”的状态、代次和时间。推荐保留旧行作为明确标记的历史快照，loading/error 单独显示；失败时不伪造空集合。只读列表可继续展示旧行，但所有接管都需新详情及确认；关闭由独立确认和幂等服务端裁决。状态筛选提供全部及四种活动态，不把 CONNECTING/CLOSING 合并成离线。剩余时间首版显示服务端返回值及查询时刻，不加全局倒计时或到零自动删除；后续若显示倒计时，也不能赋予准入权。
+显示“最近查询”的状态、代次和时间。按D1=A保留旧行作为明确标记的历史快照，loading/error 单独显示；失败时不伪造空集合。只读列表可继续展示旧行，但所有接管都需新详情及确认；关闭由独立确认和幂等服务端裁决。状态筛选提供全部及四种活动态，不把 CONNECTING/CLOSING 合并成离线。剩余时间首版显示服务端返回值及查询时刻，不加全局倒计时或到零自动删除；后续若显示倒计时，也不能赋予准入权。
 
 ### 6.2 请求状态最小结构
 
@@ -137,7 +137,7 @@ Manager.List 在管理器索引锁内复制稳定 Session 引用，马上释放�
 
 列表解析验证 data.items 是数组，逐项复用 SessionView 校验，并检查每项 id 格式、ID 不重复；拒绝非法整体响应而非偷偷丢行。列表查询不写 TerminalClient.generation，不创建 SessionRecovery.candidate，不通过列表状态停止/启动终端。
 
-列表 GET 推荐与详情 GET 一样只支持主动/生命周期取消，不引入新的本地定时期限（D1）。凭证 POST 独立使用 credential_timeout；bind_timeout 不用于列表或详情。
+列表 GET 按D1=A与详情 GET 一样只支持主动/生命周期取消，不引入新的本地定时期限（D1）。凭证 POST 独立使用 credential_timeout；bind_timeout 不用于列表或详情。
 
 ### 6.3 时序图 1：列表加载、刷新、关闭竞争
 
@@ -197,67 +197,195 @@ HTTP protected 负责登录/Origin、mode 两值与 expected_generation 必填�
 
 WS Service 负责 Cookie/Origin 后升级名额，未绑定/关闭中同样计数。Reader 严格读取首条 bind，mode 从哈希凭证中读；Session 提交入口负责操作门、再次准入和快照；Writer 负责成功前缀与输出；Supervisor 负责绝对期限强关；连接收尾者最后归还 slot。
 
-### 7.3 唯一锁序与提交伪代码
+### 7.3 原子撤权、Connection 终止与取消的分离
 
-冻结架构 §3.1：**远端操作串行门 → 登录读锁 → Session 状态锁 → OutputBuffer 锁 → 绑定凭证索引锁**，只取需要的子序列。索引初查可在 Session 锁下短取凭证锁、释放后再拿 Buffer；不能持凭证锁反向拿 Buffer。Prepare 为登录读锁 → Session 锁 → 凭证锁。普通 Detach/Close 不等操作门。Manager 索引锁与 Session 锁不嵌套。
+冻结架构 §3.1 的事务锁序保持：**远端操作串行门 → 登录读锁 → Session.mu → OutputBuffer.mu → 凭证索引锁**，只取需要的子序列。凭证初查可在 Session 锁下短取索引锁并释放，再取 Buffer；不持凭证索引锁反向获取 Buffer。Prepare 使用登录读锁 → Session 锁 → 凭证锁；普通 Detach/Close 不等待操作门；Manager 索引锁与 Session 锁不嵌套。
 
-以下是事务职责伪代码，不是新增业务源码；涉及网络、回调、通知和等待的部分都在释放全部事务锁及操作门后执行：
+第二轮修订删除原提交伪代码中的 `old.cancel()`。必须区分以下五件事：
+
+| 时刻 | 同步边界与事实 |
+|---|---|
+| ① 原子逻辑撤权 | Session 提交临界区将 old.active=false、记录仅用于内部识别的 `superseded` 标记，并发布新 Binding/G+1；不取消 old context、不调用 old.end；旧 SSH 操作与普通发送准入立即失效 |
+| ② 旧 Connection 确定终止原因 | 释放操作门及全部事务锁后，经旧 Connection 的统一 Terminate 入口，在旧 Connection.mu 内检查首因；尚无原因时固定 taken_over 与关闭绝对截止 |
+| ③ 取消旧 Binding context | 仍持该 Connection.mu，在已固定原因之后调用 Session.Detach(old)：按对象身份撤权并取消旧 context；取消可能唤醒 Reader/执行器，但它们不能越过该 Connection.mu 覆盖原因 |
+| ④ 终止槽发布与 Writer 唤醒 | 在同一 Connection 临界区固定独立终止槽的原因/截止，取消在途 Ping 和 Connection 工作 context、发布 terminated；解锁后唤醒唯一 Writer。终止消息不走普通控制队列，不在此处写网络 |
+| ⑤ 物理回收 | Writer 在锁外按预算结束已准入项、至多发送一次最终 taken_over 和 Close 4001；Supervisor 到期强关，收尾者等待全部任务后归还 slot |
+
+②是 Connection 首终止原因的确定点；④是完整终止请求对收尾任务的发布点。两者之间一直持 Connection.mu；先记录原因再 Detach，不表示在撤权之前发网络通知。takeover 的撤权已经在①完成，其他 Terminate 路径也必须在④发布前完成 Detach。`superseded` 不是第二个 Connection 终止槽，不能覆写已经确定的真实故障首因。
+
+#### 7.3.1 提交和锁外交接伪代码
 
 ```text
 Prepare(login, sessionID, mode, expected):
-  校验 mode 与 expected；从 Manager 取稳定 Session 引用并释放索引锁
-  登录读锁 -> Session锁
-  检查应用接入、登录/到期、状态、离线期限、expected
-  attach 且已有绑定 => BIND_BUSY；takeover 不因占用拒绝
-  生成随机凭证；凭证索引锁内清过期/检查容量/存哈希及mode
-  释放锁；只返回 credential/expires_at
+  校验mode/expected；从Manager取得引用并释放索引锁
+  登录读锁 -> Session.mu；检查应用/登录/状态/期限/代次
+  attach且已有绑定 => BIND_BUSY；takeover允许CONNECTED/DISCONNECTED
+  凭证索引锁内清过期/容量检查/存哈希与mode；释放所有锁
+  返回credential/expires_at；原Binding/context/期限均不变
 
 CommitCandidate(ctx, login, token, P):
-  校验凭证编码及P安全整数
-  在 operation_wait_timeout 内取得操作门；失败 => BIND_BUSY
-  登录读锁 -> Session锁
-  短取凭证索引锁读记录并释放；检查存在/TTL/登录归属/目标/mode
-  检查状态/离线期限/expected；attach不能替换当前Binding
-  若代次耗尽：退出当前锁与操作门后请求幂等Close(counter_exhausted)，拒绝
-  OutputBuffer锁：P>E拒绝；复制唯一稳定[S=max(P,A),E)快照
-  凭证索引锁：再次确认记录完全一致、存在、未过期
-  再查登录绝对到期、离线期限、准入及候选ctx
-  任何失败 => 释放快照/锁/门；不由本次失败改变旧Binding或消费仍有效凭证
-  唯一提交点（仍在同一Session临界区）：
-    消费本凭证并失效该Session其他凭证
-    保存 old；old非空则 active=false，在同一Session锁内记录接管失效原因
-    再取消旧Binding上下文以撤销尚未准入操作；这里不得调用end回调
-    generation加一；新建不可变代次的新Binding
-    发布新Binding；CONNECTED；更新last_attached_at；清离线期限
-    非阻塞标记元数据dirty
-  释放凭证锁/Buffer锁/Session锁/登录锁/操作门
-  返回明确成功结果及 old 的收尾责任（不能因后续取消丢失old）
+  校验token/P；有期限取得操作门
+  登录读锁 -> Session.mu
+  短取凭证索引锁初查并释放；检查归属/目标/mode/TTL/代次/状态
+  OutputBuffer.mu内校验P并复制唯一[S,E)快照
+  凭证索引锁内再次核对记录/TTL/登录到期/离线期限/候选ctx
+  校验失败：释放快照、所有锁和门；不消费仍有效凭证、不改旧Binding
+  代次耗尽：退出同步边界后幂等Close(counter_exhausted)，拒绝绑定
+  唯一提交点（Session.mu仍持有）：
+    消费本凭证，失效该Session其他凭证
+    old = s.binding
+    若old非空：old.active=false；old.superseded=true
+    禁止old.cancel()、old.end()、获取任何Connection.mu
+    generation++；创建并发布新Binding；置CONNECTED；更新接入时间/清期限
+    非阻塞标记metadata dirty
+  释放凭证锁、Buffer锁、Session锁、登录锁、操作门
+  返回CommitResult{newBinding, displacedBinding: old}
 
-WS提交后交接（不持Session事务锁）：
-  在当前Connection短调度锁中检查该候选是否已终止
-  若仍可用：登记新Binding、设置心跳并唤醒新Writer
-  否则：锁外Detach新Binding并按既有终止路径收尾，绝不回滚old
-  无论新连接能否启动：锁外向old提交taken_over并启动其统一终止
-  旧通知不等待送达；新端不等待旧Close/slot归还
+提交结果的唯一收尾所有者（WS Reader；所有成功提交后的分支都必须执行）：
+  安装必执行的锁外收尾：old非空则old.end("taken_over")
+  在新Connection.mu内检查是否已有终止原因
+  可用则登记newBinding、设置心跳，解锁后唤醒新Writer
+  已终止则解锁后Detach(newBinding)，不发布可用连接、不回滚old
+  执行old的锁外收尾，不等待通知送达、Close或旧slot释放
 ```
 
-新端 Writer 在自己的首次应用发送前按顺序发送 bind_success、必要时一次 history_truncated、稳定快照、连续实时块。bind_success 必须 G+1，输入等前缀完整且 processedOffset≥E；resize 可在成功绑定后同步。提交后至成功前缀之间发生终止可直接终止，不强制先发送成功消息。
+提交结果不能由候选 ctx 取消而遗失，也不能因新 Writer 启动/登记失败提前返回而跳过旧端收尾。新 Binding 尚未登记到 Connection 时就再次被接管，仍由其登记流程与§7.4准入校验拒绝失效对象；不能只凭 `c.reason==""` 认定该 Binding 可发送。
 
-### 7.4 现有交接窗口和旧发送准入
+#### 7.3.2 统一终止入口与五种竞争
 
-不能在 Session 锁里调用旧 `Binding.end`：当前回调通向 Connection.Terminate，后者又调用 Detach 获取 Session 锁，会重入/倒序。事务只撤销权限、保存旧引用；通知与关闭必须移到锁外。旧端通知采用独立终止槽，普通控制队列满也不能吞掉终止请求。重复终止第一原因获胜，不覆写已经发生的网络/关闭/登出原因。
+```text
+Connection.Terminate(reason, optionalApplicationDeadline):
+  Lock(c.mu)
+  若c.reason已存在：仅按既有规则收紧截止（如有），Unlock；返回
+  c.reason = reason                       // 首终止原因确定点
+  固定min(now+close_timeout, 应用剩余期限)，保存独立终止槽数据
+  若c.binding非空：
+    Session.Detach(c.binding)             // c.mu -> Session.mu
+      old.active=false；old.cancel()
+      只有s.binding==old且s.status==CONNECTED时才清当前Binding/设离线期限
+      不改old.superseded，不调用Connection回调
+  取消已登记Ping context与Connection工作context
+  发布terminated/截止变更信号（非阻塞、一次性），不写网络
+  Unlock(c.mu)
+  唤醒唯一Writer；未完成Upgrade的底层关闭沿用现有锁外路径
+```
 
-提交点到旧终止槽提交之间，旧 Execute 必须以 Binding 身份重新检查 active；旧 Writer 的普通消息准入也需识别失效，不能只依赖稍后的通知。沿用现有 Connection 短调度锁保护“检查终止→选择一项”的结构，通过短的 Binding 有效性检查与 Session 提交同步，不能在锁外检查后无保护选新项。当前 terminate 已存在 Connection 调度锁 → Detach/Session锁的调用方向；实现不得新增反向 Session锁 → Connection锁路径，不另造全局锁序。涉及 Buffer 仍遵守 Session → Buffer 子序列。
+当前代码在同一个 `c.mu` 内先 Detach 再写 reason，本就能阻挡同时进入该锁的 defer；真正缺口是**提交路径在锁外通知之前自行取消 old context**。计划将顺序进一步显式化为“先固定原因、再 Detach 取消、最后发布终止”，避免将来把取消挪出受保护范围。不能通过增设 sleep、假定 Reader 调度较慢或强制覆盖 NETWORK_ERROR 修复。
 
-正常接管应优先由明确的接管失效原因进入旧终止槽；若取消执行器、旧读错误与通知交错，须保证不会把接管丢成无人收尾的取消。可在 Binding 的 Session 锁保护状态中保留终止原因，失效检查返回该原因，锁外统一 Terminate；它只是既有终止原因的内部传递，不新增协议/状态。独立故障已经先获终止权时允许其原因获胜，权限与回收断言仍不可放宽。单次已经准入的旧 WS Write 可有限完成，此后不再开始普通输出；旧端本地已接收队列可排空。
+| 情况 | 精确结果 |
+|---|---|
+| 正常提交 | 提交仅置无效/superseded，old.Done尚未由takeover关闭；锁外old.end进入Terminate，在c.mu内固定taken_over后Detach取消。新Binding早已有效，旧端收尾不影响它 |
+| Reader等待Binding.Done | 当前reader只在输入槽等待分支select b.Done，普通readMessage阻塞不是等待b.Done；前者被Detach取消唤醒后退出，defer需取得c.mu，看到taken_over后无操作；后者由Writer关闭/底层强关解除，迟到defer同样无操作 |
+| Reader defer与old.end同时竞争 | 正常由这次takeover取消引起的defer不能先于原因确定：取消在该原因确定后的同一c.mu内。若由另一合法路径取消而先唤醒，且该旧Binding已被标记superseded，按下述失效退出分流先提交taken_over再return；不可在测试里伪造无归属的提前cancel后仍声称遵守此顺序 |
+| 真实网络故障已经先确定原因 | Terminate(NETWORK_ERROR)先持c.mu确定首因并Detach；随后old.end不得覆盖。若原端已离线，takeover按最新状态/原代次校验可提交；若已取到旧引用才发生故障，迟到收尾也只作用旧对象 |
+| 旧Binding替换后迟到Detach | 只将旧对象active=false并取消其context；s.binding!=old，因此不清新Binding、不改generation/CONNECTED/新离线期限。重复Detach幂等 |
 
-输入在途与候选提交共用操作门：输入先获准则完成唯一调用后释放门；接管等待超时仅结束候选，不先撤销旧端；若 SSH 操作超时，按既有规则关闭 Session。Close 可绕过门先撤销权限并关闭底层 SSH 来解除阻塞。
+**补齐失效退出分流，避免另一条内部错误抢先：** 提交到old.end之间，旧执行器仍可能取得操作门，然后因Binding无效而返回；旧Writer也可能先发现无效；Revoke/Sweep预先捕获的旧引用还可能晚到Detach。只移除提交内cancel不足以覆盖这些情况。
+
+- Session在自身锁内以对象身份/不可变代次验证；若拒绝原因是已标记superseded，向WS返回明确的**内部失效处置**（如`BindingSuperseded`枚举），与普通BIND_CONFLICT/输入背压错误分开。此值绝不作为新的API错误或WS error.code发出，只转换为已有 `Terminate("taken_over")`。
+- Reader在`b.Done()`分支、执行器在取消或准入拒绝分支，先于return/defer调用一个短的 `finishBindingExit(b, fallback)`；它在c.mu保护首因，再按c.mu→Session.mu读取该旧对象的superseded。已确定首因即返回；superseded则固定taken_over，否则按既有合法退出原因处理。内部复用不重复取c.mu的`terminateLocked`，其取消/发布步骤与上面完全一致；取完Session锁后释放，再调用该内部过程中的Detach，禁止重入Session锁。
+- Writer发现superseded时释放发送准入使用的Session锁和Connection锁，再经统一Terminate入口提交taken_over；重新竞争c.mu时如真实故障已确定首因，保留故障。
+- 真正的readMessage错误、TCP失联、Ping失败和已准入Write失败仍走原实际故障入口，不因superseded标记一概改写为接管。正常结束分支先提交具体处置，随后`defer c.Terminate("NETWORK_ERROR")`只是幂等兜底，不承担从Binding取消推断网络故障的职责。
+
+失效退出适配的最小伪代码（仅内部取消/准入拒绝调用，真实网络错误不调用它）：
+
+```text
+finishBindingExit(b, fallback):
+  Lock(c.mu)
+  若c.reason已确定：Unlock(c.mu)；return
+  Lock(s.mu)
+  superseded = (b属于该Session且b.superseded)  // 只读传入旧对象，不替换为s.binding
+  Unlock(s.mu)
+  reason = superseded ? "taken_over" : fallback
+  terminateLocked(reason)                   // 已持c.mu，不再获取c.mu
+    先固定reason/截止，再Detach(c.binding)，取消并发布终止槽
+  Unlock(c.mu)；唤醒Writer
+
+Reader输入槽等待：
+  select:
+    operations入队：继续读取
+    b.Done：finishBindingExit(b, 原取消退出原因)；return
+    c.ctx.Done：return                       // 该context只在已确定终止后取消
+    输入等待超时：按既有INPUT_BACKPRESSURE终止
+  defer Terminate(NETWORK_ERROR)             // 所有明确终止之后的幂等兜底
+
+旧Execute准入拒绝/等待取消：
+  完成自身门和登录/Session锁的释放
+  若是内部BindingSuperseded或Binding取消：finishBindingExit(原b, 原错误码)
+  若是实际SSH故障：按原Session.Close/错误路径处理，不假冒接管
+```
+
+`terminateLocked`中调用Detach前已释放上一次读取处置的s.mu，仍保留c.mu，因此既不重入Session锁，也不会让另一终止请求插入并覆盖原因。实际连接的归属通过原Binding所属Session/不可变所属WS关系保证，不允许把其他连接的Binding传给适配器。内部处置仅补齐取消/旧权限拒绝的分类，不能把业务错误表中的所有BIND_CONFLICT或INPUT_BACKPRESSURE全局改成taken_over。
+
+最小内部接口建议：`Binding.end func(string)`仍足以把已有taken_over原因送到所属Connection，无需新增对外接口或改变回调签名；需要调整其调用时点和统一终止实现。Session需提供受锁保护的内部失效处置读取/准入返回值，WS需一个共用的`terminateLocked`及失效退出适配，避免直接访问另一包私有字段。旧Connection尚未登记Binding时，end可先固定reason但无对象可Detach；原提交Reader在返回后的登记拒绝分支必须Detach其持有的新Binding，再完成工作任务。这一交接责任由CommitResult明确，不能把end当成已完成所有资源回收。所有名称是内部伪代码建议，未修改业务源码。
+
+### 7.4 Writer 的精确发送准入与锁顺序
+
+#### 7.4.1 发送准入点
+
+**选择并标记下一条普通应用消息，是发送准入点。** 必须同时持有该连接的 `Connection.mu` 与所属 `Session.mu`，完成“终止状态检查→当前Binding身份/active/代次/CONNECTED验证→选定单个不可变发送项→标记该项已准入”。不能返回一个bool、释放Session锁后再选消息。
+
+范围包括成功前缀、历史块、实时块、普通status等控制消息；控制队列入队不是发送准入，不得因为status早已排队就绕过替换后的校验。最终taken_over/closed/error来自独立终止槽，旧Binding已经无效也允许唯一Writer按预算发送，不走普通准入检查。
+
+```text
+Writer下一步：
+  Lock(c.mu)
+  若已有终止原因：取一次最终终止项/截止，Unlock；走锁外finish；return
+  b = c.binding
+  若b为空：Unlock；可取消地等待wake/terminated；重新开始
+  Lock(s.mu)                             // 顺序c.mu -> s.mu
+  检查s.binding==b、b.active、s.generation==b.Generation、s.status==CONNECTED
+  若无效：
+    复制b的内部失效处置；Unlock(s.mu)；Unlock(c.mu)
+    若superseded：调用统一Terminate(taken_over)，重新开始
+    否则等待已有关闭/撤销流程发布终止，不自行发送closed或继续普通输出
+    等待必须可由wake/terminated/连接ctx解除，不持锁、不自旋
+  若到期Ping优先：
+    在当前短同步边界登记唯一Ping及cancel；Unlock(s.mu)；Unlock(c.mu)
+    锁外Ping；失败进入统一终止；不同时准入普通消息；重新开始
+  从固定前缀、普通控制FIFO或输出中选择至多一项：
+    前缀/控制：非阻塞选取并复制具名消息值
+    回放：从该Binding不可变快照取得一个有界块及下一游标值
+    实时：保持c.mu与s.mu，Buffer.Read内部获取OutputBuffer.mu
+          在同一Buffer临界区检查连续性并复制一个有界块，然后释放Buffer锁
+  若取块失败：释放s.mu/c.mu后经统一终止处理；不准入普通消息
+  若无消息：释放s.mu/c.mu后按现有缓存唤醒/心跳/终止机制等待
+  item = 单个不可变发送描述（含所属Binding及代次、kind、payload、下一游标）
+  标记item为唯一已准入项                  // 线性化点，仍同时持c.mu和s.mu
+  Unlock(s.mu)；Unlock(c.mu)
+  锁外JSON编码（如需要）及唯一一次网络Write，使用既有写入/关闭期限
+  结束后清该项/更新本Writer游标；失败经统一终止，成功返回循环重新取两把锁
+```
+
+实际可由Session提供狭窄的 `WithSendAdmission(b, selectOne)` 内部方法：调用方已持c.mu，方法持s.mu校验并执行一次有界内存选择回调后才释放。回调只能选/复制/标记一项，可按顺序调用Buffer.Read；不拿c.mu、不取操作门/登录锁/Manager锁、不执行Terminate/Detach/网络/阻塞队列等待。API不得把Session锁泄漏给任意调用者，不能设计成`IsActive()`返回后由调用方无锁选择。`inFlight`可由唯一Writer的局部项表达，是否显式存字段由实现决定，但准入与完成必须有可测试的同步点。
+
+新端Writer发布与旧端通知之间不保证调度先后，因此普通消息检查必须覆盖新Binding也已被再次替换的情况。没有有效Binding而在等待SSH完成关闭时，不能提前发送closed；只有原Session回收流程确认SSH关闭后才提交该终止消息。已准入项可以在takeover提交后才真正调用Write，它仍是**提交前准入**的一项，不得据实际发送时间误判为提交后新准入；单Writer执行完它之前不能预取第二项。
+
+#### 7.4.2 两种严格先后
+
+- Writer先完成准入：持s.mu选定并标记item，释放后takeover才可取得同一s.mu并提交。允许这唯一在途项按既有write_timeout/关闭总期限完成；后续循环重新锁内校验旧Binding失败，普通消息计数不再增加。
+- takeover先提交：Writer即使先拿到c.mu，只要尚未拿s.mu并完成准入，随后就看到旧Binding失效；不得出队/选择/标记任何新的普通消息，只转终止处置。两者同时竞争s.mu的结果只能是这两种，不存在检查与选择之间的可插入提交窗口。
+
+#### 7.4.3 锁顺序与无环论证
+
+| 路径 | 实际嵌套顺序 | 明确禁止 |
+|---|---|---|
+| takeover提交 | 操作门 → 登录读锁 → Session.mu → OutputBuffer.mu → 凭证索引锁 | 持任何事务锁/门调用old.end、获取Connection.mu或写网络 |
+| Writer普通发送准入 | Connection.mu → Session.mu → 必要时OutputBuffer.mu | Session有效检查后提前释放锁再选项；持锁Write/Ping/Close/等待任务 |
+| Terminate/失效退出适配 | Connection.mu → Session.mu（Detach或短读处置；分别取锁，不重入） | 持Session锁再获取Connection.mu；调用公开Terminate导致Connection锁重入 |
+| SSH输出追加 | 仅OutputBuffer.mu；释放后非阻塞通知 | 持Buffer锁取Session/Connection锁 |
+| 普通Detach/Session Close | 仅Session及其规定的子锁；回调在释放后执行 | Session.mu → Connection.mu |
+| 连接登记和旧通知 | 新Connection短锁释放后，再调用旧end获取旧Connection.mu | 同时持两条Connection.mu；新连接锁跨旧端通知 |
+
+Connection.mu是现有WS调度锁，本次把已有 `Connection.mu→Detach/Session.mu` 的方向用于发送准入；不是在架构事务链中插入新的反向锁。Writer所用Session→Buffer是架构§3.1允许的子序列，且不向前取操作门/登录锁。提交方从不等待Connection.mu，Terminate/Writer都只按Connection→Session方向等待；Buffer持有者不反向取锁，因此这些路径没有锁等待环。Supervisor仍不获取这些锁，到期直接关闭底层net.Conn。短锁竞争可能延迟调度，但不等待Reader/Writer网络或Close完成，不把新端成功绑定到旧端通知送达上。
+
+输入在途与提交继续共用操作门；Writer普通输出准入不额外取得该门。旧已准入SSH调用先完成再允许接管，尚未准入项通过active/身份检查拒绝；context取消只是停止等待/清理手段，不再承担提交点撤权的唯一责任。
 
 ## 8. Takeover 前端完整流程
 
 ### 8.1 所有者和启动模型
 
-推荐 D2/D3（待裁决）：HomePage 保存 `Session ID → 唯一 Pane/正在准备的记录`，在首次 await 前预占目标操作；Pane 拥有唯一 client/tracker/recovery，另持主动动作的查询/确认状态，所有动作共用一个本地互斥意图，不增加恢复循环。候选详情与 SessionRecovery 的人工 attach 候选分别存储并互相失效。
+用户已确认 D2=A、D3=A：HomePage 保存 `Session ID → 唯一 Pane/正在准备的记录`，在首次 await 前预占目标操作；Pane 拥有唯一 client/tracker/recovery，另持主动动作的查询/确认状态，所有动作共用一个本地互斥意图，不增加恢复循环。候选详情与 SessionRecovery 的人工 attach 候选分别存储并互相失效。
 
 新建 Session 的 Pane 仍按创建 DTO 首次 attach。列表打开已有 Session 的 Pane 必须是“未自动连接”的候选模式，mount 本身不调用 connect；用户确认时只启动一次 takeover。可以先建立不可操作的待接管标签以容纳唯一 Client，成功前缀后转为正常标签；不能成功后再创建另一个 Client 把候选 WS 搬过去。失败保留该 Pane 和原因供查询/关闭，不自动创建另一个标签（D3）。
 
@@ -267,7 +395,7 @@ WS提交后交接（不持Session事务锁）：
 
 1. 用户点某行“打开/主动接管”；HomePage 按 Session ID 查当前页 tabs、panes 及待创建记录，预占操作，绝不按服务器名称去重。
 2. 已有在线 Pane 按 D2 优先定位，结束本次列表动作，不发 takeover；已有恢复/停止 Pane 走 §11 的显式流程。无 Pane 按 D3 建立唯一待接管 Pane，默认不联网。
-3. 主动接管准备阶段，封闭原人工候选；若存在旧任务，显式停止并等待 client.stop、发送与 drain 收尾后才继续。取消确认前是否停止旧任务按 D2 明示，不能悄悄暂停在线端。
+3. 主动接管准备阶段，封闭原人工候选；若存在旧任务，显式停止并等待 client.stop、发送与 drain 收尾后才继续。按D2=A，恢复中任务在用户点击“停止恢复并准备接管”时先停止，之后取消确认也不自动复活；在线端只定位，不悄悄暂停。
 4. 用可取消详情 GET 获取完整 SessionView。检查任务、Pane、页面和登录身份；展示 Session 快照目标、状态、代次、离线期限。CONNECTING/CLOSING/NOT_FOUND 禁止接管；CONNECTED/DISCONNECTED 才可确认。GET 无本地自动超时。
 5. 用户单独确认“主动接管；当前操作端将停止”。确认框不是列表刷新自动生成的授权。确认前不申请凭证；刷新详情或目标变化使旧确认候选失效，不自动确认新代次。
 6. 确认处理器首次 await 前消费候选、锁住动作；复查旧任务收尾与登录；以详情代次启动该 Pane 唯一任务，第一次 POST mode=takeover。
@@ -279,7 +407,7 @@ WS提交后交接（不持Session事务锁）：
 
 同实例复用先 drain 再读取 processedOffset；新设备、新页面、新 xterm 或排空失败重建从 0。无论已有 Pane 与否，都不得使用另一设备、列表或服务端发送游标作偏移。
 
-### 8.3 时序图 2：没有已有 Pane 的主动接管（D3 推荐）
+### 8.3 时序图 2：没有已有 Pane 的主动接管（D3=A 已确认）
 
 ```mermaid
 sequenceDiagram
@@ -305,9 +433,9 @@ sequenceDiagram
         API-->>C: credential/expires_at
         C->>S: Upgrade后首条bind(P)
         Note over S: 详见图4：门→登录读锁→Session→Buffer→凭证锁
-        S->>S: 唯一提交，旧失效，新G+1
+        S->>S: 唯一提交，旧失效但不cancel，新G+1
         S->>W: 锁外登记新Binding并唤醒
-        S->>O: 锁外提交taken_over，不等待送达
+        S->>O: 锁外统一终止：先定taken_over，再Detach取消并发布终止槽
         W-->>C: bind_success与必要截断前缀
         C-->>P: 首次连接成功；同一Pane继续回放
         P->>H: 聚焦并标记列表需刷新
@@ -316,7 +444,7 @@ sequenceDiagram
     end
 ```
 
-### 8.4 时序图 3：当前页已有 Pane（D2 推荐）
+### 8.4 时序图 3：当前页已有 Pane（D2=A 已确认）
 
 ```mermaid
 sequenceDiagram
@@ -352,44 +480,62 @@ sequenceDiagram
 
 ## 9. Binding 提交、终止与资源生命周期
 
-### 9.1 时序图 4：新 WebSocket 提交成功
+### 9.1 时序图 4：提交、旧 Writer 准入与原因确定
 
 ```mermaid
 sequenceDiagram
-    participant N as 候选WS Reader
-    participant G as Session操作门
-    participant L as 登录对象
-    participant S as Session
-    participant B as OutputBuffer
-    participant K as 凭证索引
-    participant W as 新连接Writer
-    participant O as 旧连接终止入口
-    N->>G: 有期限取得门（等待旧在途SSH完成）
-    N->>L: 登录读锁并检查有效
-    N->>S: Session状态锁
-    N->>K: 短取锁初查凭证、释放
-    N->>S: 核对mode/代次/状态/离线期限
-    N->>B: 缓存锁，校验P并复制[S,E)
-    N->>K: 凭证索引锁，再查TTL/记录
-    N->>S: 再查登录到期/离线期限/ctx
-    Note over S,K: 唯一提交：消费/失效凭证、old.active=false、G+1、新Binding、CONNECTED、清期限
-    N->>K: 解锁
-    N->>B: 解锁
-    N->>S: 解锁
-    N->>L: 释放读锁
-    N->>G: 释放门
-    N->>W: 连接短锁登记并唤醒新Writer
-    N->>O: 提交taken_over，统一终止（不等网络）
-    par 新端输出
-        W-->>N: bind_success/必要截断/一次回放/实时输出
-    and 旧端清理
-        O->>O: 撤销旧通道、取消Ping、固定关闭期限
-        O->>O: Writer通知/Close，Supervisor到期raw.Close
+    participant N as 候选WS提交者
+    participant G as 操作门和登录读锁
+    participant S as Session.mu
+    participant B as Buffer及凭证索引
+    participant W as 旧Writer
+    participant O as 旧Connection.mu与终止槽
+    participant R as 旧Reader
+    participant U as 旧浏览器
+    participant V as 新Writer及浏览器
+    N->>G: 有期限取得门，再取得登录读锁
+    alt 旧Writer先准入
+        W->>O: 获取旧Connection.mu
+        W->>S: 获取Session.mu并验证旧Binding
+        W->>B: 必要时仅取Buffer锁复制一块后释放
+        W->>W: 持Connection与Session锁选择并标记唯一item
+        W->>S: 释放Session.mu
+        W->>O: 释放Connection.mu
+        Note over W: 锁外执行已准入Write，可以跨越随后提交
+        N->>S: 随后取得Session.mu
+    else 提交者先持Session锁
+        N->>S: 取得Session.mu
+        Note over W,S: Writer即便持Connection.mu也须等待Session锁，尚未准入
     end
-    Note over N,O: 物理连接可共存；逻辑Binding只有新端；旧slot等全部任务完成
+    N->>B: 短查凭证并释放，再取Buffer快照及凭证锁复查
+    Note over N,B: 验证登录/模式/状态/代次/TTL/离线期限/offset/ctx
+    N->>S: 唯一提交：old无效且superseded，新Binding和G+1
+    Note over S,R: 不取消old context，不调用Connection回调
+    N->>B: 释放凭证与Buffer锁
+    N->>S: 释放Session.mu
+    N->>G: 释放登录读锁和操作门
+    N->>V: 新Connection短锁登记，锁外唤醒新Writer
+    W->>O: 下次普通发送取得Connection.mu
+    W->>S: Session锁内发现old已失效，不选任何普通项
+    W->>S: 释放Session.mu
+    W->>O: 释放Connection.mu
+    Note over W,O: Writer可先提交taken_over；与old.end共用同一首因入口
+    N->>O: 锁外old.end(taken_over)
+    alt 尚无独立故障首因
+        O->>O: 持Connection.mu先固定taken_over和截止
+        O->>S: Detach(old)，仅取消旧context，不影响新Binding
+        S-->>R: old.Done唤醒（若正在等待该分支）
+        O->>O: 发布独立终止槽，取消Ping，解锁唤醒Writer
+        R->>O: 迟到defer NETWORK_ERROR，看到已有原因而返回
+        W-->>U: taken_over和Close 4001
+    else 真实故障已先确定终止原因
+        O->>O: 保留首因，不覆盖为taken_over
+    end
+    V->>V: 独立发送成功前缀和回放，不等旧端通知送达
+    Note over O,R: Supervisor强关及全部worker回收后才归还旧slot
 ```
 
-图中 W 到 N 的返回代表通过候选连接向新浏览器发送，不是第二个 Reader 或应用 Writer。更早的 Session Close/登录撤销可使新端直接进入终止，仍不得恢复旧端。
+旧Reader、旧Writer与浏览器是三个独立参与者；§12.5图8补充浏览器本地停止和排空。若Writer先发现superseded，其锁外Terminate可先于old.end固定taken_over；后者幂等。真实read/write/Ping故障先固定首因则保留。提交先持Session锁的分支中，Writer不得在拿到锁后再发送普通消息。新Binding在登记前已失效时按§7.3/7.4收尾，不保证一定发成功前缀。
 
 ### 9.2 时序图 5：提交前失败，旧 Binding 保持
 
@@ -427,7 +573,7 @@ sequenceDiagram
 |---|---|
 | 候选凭证 | Manager 提交消费/Session其他凭证失效、登录撤销、到期扫描或退出清理；前端 Abort 无远端撤销保证 |
 | 候选快照 | 提交前失败即释放；成功交新 Writer；终止释放未发送数据，允许一次在途数据完成 |
-| 旧 Binding | 提交点即逻辑失效；旧回调仅作用该对象，永不复活或改写新代次 |
+| 旧 Binding | 提交点仅逻辑失效/superseded，不cancel；锁外统一终止先定原因再Detach取消，旧回调仅作用该对象，永不复活或改写新代次 |
 | 新 Binding | 已提交但前缀写失败时只 Detach 新对象，若仍当前则 DISCONNECTED；不恢复旧端、不重建 SSH |
 | WS/Reader/Writer/执行器/Ping/定时器 | 各连接统一终止；取消在途Ping；Supervisor不等调度锁或Close，绝对截止强关底层net.Conn |
 | WS slot | Service 的连接收尾者等待 workers、Supervisor 全部完成后一次归还；Close发起、taken_over送达、Session移除均不能提前归还 |
@@ -451,9 +597,9 @@ sequenceDiagram
 | C05 takeover 与离线自动关闭 | Sweep在Session锁内复查DISCONNECTED、无Binding、期限；提交重新检查当前期限 | 截止前提交先清期限，旧扫描不能关闭；到期后即便Sweep尚未运行也NOT_READY；Sweep先进入CLOSING则拒绝。不能通过过期前签发延长期限 | 到期由Session reaper释放；候选自行收尾；不得自动重试延长保留；列表可短暂显示过时剩余时间，提交才权威 |
 | C06 takeover 与管理员登出 | 同一次登录的写锁撤销，与提交/Prepare登录读锁互斥；写锁释放后扫描凭证/Binding/所有WS | 撤销/冻结先则AUTH_REQUIRED或因凭证清除而失败；提交先则新绑定被撤销扫描找到并Detach。旧端与新端不同登录时，只撤销被登出的登录；旧端登出不能拆掉另一次登录的新Binding | 只关闭该登录浏览器通道，不直接Close SSH。已签发凭证失效；不自动恢复退出任务。不同登录的新端可能继续CONNECTED；同登录新端转离线，物理连接待回收 |
 | C07 Upgrade成功但首bind失败 | Service登记slot；Reader首bind期限/格式/大小校验；进入事务后仍有完整复查 | 非法首消息/超时/非法偏移/过期/归属错给对应INVALID_MESSAGE/BIND_TIMEOUT/INVALID_OFFSET/INVALID_CREDENTIAL/PERMISSION_DENIED等；全部提交前失败不替换旧端 | 候选快照如已产生则释放；Supervisor/收尾者回收slot。协议明确可重试错误才原预算attach，其他停止；旧逻辑Binding保持，候选物理清理 |
-| C08 新候选校验前旧输入在途 | 旧Execute与提交用同一操作门；准入持登录读锁/Session锁，网络在这些短锁外执行但保留门 | 旧输入先准入：唯一SSH调用结束后候选才可提交；门等待超时BIND_BUSY且旧端保持；SSH操作超时关闭Session。候选先提交：旧排队输入/resize再准入失败或取消 | 不撤回已准入效果、不补发未执行输入；执行器清理待执行槽，WS回收仍等执行器；短时物理共存但无双逻辑操作权 |
-| C09 旧Reader阻塞（含半帧头） | 提交不等待Reader；旧端逻辑失效在Session锁；终止短锁/绝对期限Supervisor独立 | 新端可成功；旧Reader不妨碍提交。taken_over可能发出但不能依赖其读取/Close回应；期限到raw.Close解除阻塞 | 旧reader/writer/executor/supervisor退出后归还slot；SSH持续读取；被接管端不自动抢回，物理旧端可滞留至预算 |
-| C10 旧Writer阻塞/Close握手阻塞 | 提交不持网络锁、不等旧写；短发送准入与失效同步；Supervisor独立 | 已准入的一次旧Write可结束，后续普通输出禁止；终止通知可能写失败，不能回滚新端；CloseNow不能抢断已开始Close | 取消Ping、共用close_timeout并在到期raw.Close；收尾后归还slot，不能用“通知未发出”保留权限；新端恢复按自身预算 |
+| C08 新候选校验前旧输入在途 | 旧Execute与提交用同一操作门；准入持登录读锁/Session锁，网络在这些短锁外执行但保留门 | 旧输入先准入：唯一SSH调用结束后候选才可提交；门等待超时BIND_BUSY且旧端保持；SSH操作超时关闭Session。候选先提交：旧排队输入/resize再准入失败，以内部superseded处置进入taken_over，不误先发BIND_CONFLICT | 不撤回已准入效果、不补发未执行输入；执行器清理待执行槽，WS回收仍等执行器；短时物理共存但无双逻辑操作权 |
+| C09 旧Reader阻塞（含半帧头） | 提交不等待Reader；旧端逻辑失效在Session锁；终止短锁/绝对期限Supervisor独立 | 新端可成功；提交不cancel旧context，Terminate先定原因再取消，Done退出不误抢NETWORK_ERROR。taken_over可能发出但不能依赖其读取/Close回应；期限到raw.Close解除阻塞 | 旧reader/writer/executor/supervisor退出后归还slot；SSH持续读取；被接管端不自动抢回，物理旧端可滞留至预算 |
+| C10 旧Writer阻塞/Close握手阻塞 | 提交不持网络锁、不等旧写；短发送准入与失效同步；Supervisor独立 | 按§7.4双锁临界区已准入的一次旧Write可结束；提交先完成则普通输出/status零新准入；终止通知可能写失败，不能回滚新端；CloseNow不能抢断已开始Close | 取消Ping、共用close_timeout并在到期raw.Close；收尾后归还slot，不能用“通知未发出”保留权限；新端恢复按自身预算 |
 | C11 旧端正在输出排空 | 服务端单Writer快照/实时调度；客户端单tracker/epoch；终止不进入SSH输出锁等待浏览器 | 提交撤销旧业务准入，旧Writer至多完成在途消息后终止；旧浏览器收到taken_over/4001保留有限已接受队列排空。若原本已停恢复/排空，新意图须等待stop完成 | 服务端释放旧快照余量，不清Session Buffer；客户端write_drain_timeout到则按tracker规则重建或dispose，不联网；新端不等旧排空；物理/画面收尾可滞后 |
 | C12 提交成功但bind_success写失败 | Session提交已完成，Writer网络写在锁外；新端Terminate仅按新Binding身份Detach | 新端若仍当前转DISCONNECTED，generation保持G+1；若又被下一次合法接管则旧新端Detach不能影响更后Binding；原端不复活 | 凭证已消费；新WS资源正常收尾；未收到新代次的客户端用G attach冲突停止，收到G+1的可有限attach；通知和逻辑状态暂不同 |
 | C13 旧Detach、WS Close、输出/执行器清理迟到 | Session锁检查对象身份/active/不可变代次；客户端task/socket/epoch隔离 | 旧Detach只失效旧对象，不清新Binding/期限；旧WS Close是浏览器通道关闭，不是Session.Close。旧输出回调不更新新实例；旧执行器不能用当前Binding替换自身身份 | 只释放所属资源一次；不触发新恢复/通知覆盖。显式DELETE与真实SSH故障Close仍合法，不能把它们当“旧回调”忽略；物理旧连接可正在回收 |
@@ -471,9 +617,9 @@ sequenceDiagram
 - 切换服务器、列表和终端时保留 Pane，通过 active/可见性控制 fit/焦点。隐藏组件不能以零尺寸覆盖 PTY，后台恢复不能抢焦点。
 - 浏览器顶层网页标签/窗口属于不同 HomePage，不能靠本页 Map 检测它们。它们与另一浏览器/设备一样由后端 Binding/generation 协调；不承诺全浏览器进程只有一个视图，不新增跨窗口选主或持久化标签恢复。浏览器刷新后通过列表发现，再由用户明确打开。
 
-### 11.2 五类场景（D2/D3 推荐方案，待裁决）
+### 11.2 五类场景（D2=A、D3=A，用户已确认）
 
-| 场景 | 推荐交互与所有权 | 失败、取消及迟到结果 |
+| 场景 | 已确认交互与所有权 | 失败、取消及迟到结果 |
 |---|---|---|
 | A 当前页没有该Session的终端标签 | HomePage同步预占Session ID，建立一个不自动连接的候选Pane；详情→确认→唯一Client首尝试takeover；成功前缀后同一Pane变正常标签并聚焦；连续点击定位同一候选 | 不以成功回调再push第二标签；失败保留停止/有限attach中的原Pane；取消前无WS；用户可关闭候选标签，dispose后迟到结果无效 |
 | B 已有正常连接Pane | 列表“打开”只定位该标签，不从列表直接自我接管，不停止它，不申请凭证。若用户之后显式停止该终端，它按D进入主动流程 | 不存在同页两个Client或候选WS；取消定位不改变连接。若在检查后端状态时其他设备接管，原Pane自行收到终止/代次冲突；列表不能恢复旧任务 |
@@ -481,7 +627,7 @@ sequenceDiagram
 | D 已有停止/被接管/已结束Pane | 停止或taken_over保留的Pane可以显式新详情→确认接管，优先复用原实例及其processedOffset。close已证实或SESSION_NOT_FOUND的Pane仅显示结果/关闭标签，不复活 | 必须先刷新状态；列表快照不能替代。CLOSING/CONNECTING禁用；真正closed不会重用Session ID，不能因列表迟到行清除ended。disposed Pane不可复用，必须等移除完成后方可按A处理一个仍活动的Session |
 | E 旧浏览器仍打开终端 | 在线则接收taken_over/4001，立即禁止输入/自动恢复并有限排空；断网/休眠导致通知丢失时，恢复网络仅原代次attach，冲突停止 | 离线/休眠期间不假设已收到通知。即使INVALID_CREDENTIAL先出现，也仅原代次有限attach，不能取最新代次抢回。页面彻底关闭则无本地任务，后端旧通道按心跳/关闭期限回收 |
 
-B 的推荐是“定位”，不是把主动接管降级为无提示 attach。若希望在线 Pane 也能直接主动重连，须选择 §21 D2 的替代方案并重新验证其停止/确认语义。
+B按已确认D2=A执行“定位”，不触发无提示attach或自我接管；用户之后明确停止再按既定流程准备主动接管。未采用在线直接主动重连的B方案。
 
 ### 11.3 同一目标的关闭与新动作
 
@@ -491,9 +637,9 @@ B 的推荐是“定位”，不是把主动接管降级为无提示 attach。�
 
 ## 12. 关闭、登出、页面退出与任务取消
 
-### 12.1 页面关闭和所有权转移（D3 待裁决）
+### 12.1 页面关闭和所有权转移（D3=A，用户已确认）
 
-推荐以“用户确认启动终端任务”为边界：确认前，管理视图拥有查询/确认动作，离开管理页取消查询/确认并移除未启动候选；确认后任务归该 Pane，管理列表的隐藏/卸载仅取消列表GET，不暗中停止用户已打开的终端。UI明确显示正在接管的目标标签；用户可在Pane停止或关闭标签取消它。
+按D3=A以“用户确认启动终端任务”为边界：确认前，管理视图拥有查询/确认动作，离开管理页取消查询/确认并移除未启动候选；确认后任务归该 Pane，管理列表的隐藏/卸载仅取消列表GET，不暗中停止用户已打开的终端。UI明确显示正在接管的目标标签；用户可在Pane停止或关闭标签取消它。
 
 因此“takeover HTTP 已发出后关闭管理页面”有三种明确情况：仅切回工作区时Pane任务继续；关闭对应终端标签时stop/dispose；离开整个HomePage或关闭浏览器网页时所有Pane同步封闭准入、取消请求/handler并dispose。不能把关闭一个列表组件等同于关闭SSH。
 
@@ -590,10 +736,14 @@ sequenceDiagram
     participant B as 旧浏览器Client
     participant T as 旧tracker/xterm
     participant R as 旧WS Supervisor与收尾者
-    S->>S: Session锁内旧active=false，发布新Binding
+    S->>S: Session锁内旧active=false及superseded，发布新Binding，不cancel
     S->>S: 释放事务锁和操作门
     S->>O: 锁外请求taken_over
-    O->>O: 固定关闭截止，取消Ping，禁止新普通发送
+    O->>O: 持Connection.mu先固定taken_over和关闭截止
+    O->>S: Detach旧对象并cancel，仅按身份操作旧Binding
+    O->>O: 发布独立终止槽、取消Ping，解锁后唤醒Writer
+    Note over S,O: Done唤醒的Reader在原因确定后退出，迟到defer不能覆盖
+    Note over O: 先前普通item可完成；不得再准入新普通项
     O-->>B: taken_over，随后Close 4001
     B->>B: 首因幂等结束，禁输入/resize，停自动恢复，清handlers/timers
     B->>T: settle(true)，有限排空已接受队列
@@ -646,25 +796,25 @@ sequenceDiagram
 
 | 步骤 | 依赖、修改文件与新增文件 | 实现职责 | 本步测试与通过标准 | 本步失败回滚 |
 |---|---|---|---|---|
-| S0 基线与裁决登记 | 依赖人工审查及编码授权；只读所有接入点/既有测试；本步不改业务文件；如获准仅在本计划§21登记裁决 | 核对第四阶段基线和D1–D3结果，确认后续新增文件职责；识别已有用户补丁 | 不把历史测试算新结果；基线命令成功或明确列出已有失败；锁序/任务所有者能对应到代码 | 无业务修改可回滚；若计划登记有误仅撤销本次登记，不改冻结文档 |
+| S0 基线与裁决登记 | 依赖人工审查及编码授权；只读所有接入点/既有测试；本步不改业务文件；复核本计划§21已有D1–D3=A裁决与第二轮复审结果 | 核对第四阶段基线和D1–D3结果，确认后续新增文件职责；识别已有用户补丁 | 不把历史测试算新结果；基线命令成功或明确列出已有失败；锁序/任务所有者能对应到代码 | 无业务修改可回滚；若计划登记有误仅撤销本次登记，不改冻结文档 |
 | S1 活动列表后端 | 依赖S0；修改`backend/internal/session/session.go`、`backend/internal/httpapi/sessions.go`、`backend/internal/httpapi/sessions_test.go`；新增`backend/internal/session/list_test.go` | Manager.List、具名列表响应、严格server_id query、CLOSED过滤、稳定排序、安全View；现有Get/DELETE不变 | U01–U04；HTTP认证、空数组、过滤/排序/字段；并发关闭/接管快照测试可先用已有attach验证，S3补takeover；每行一致，无DB活动查询/锁嵌套 | 撤销List及GET路由与专属测试增量，只移除本步独占list_test.go；保留原详情/DELETE |
 | S2 凭证mode与原子替换事务 | 依赖S0/S1；修改`backend/internal/session/binding.go`、`backend/internal/session/session_test.go`；新增`backend/internal/session/takeover_test.go`；如内部提交结果签名变化，最小同步修改`backend/internal/websocket/connection.go`调用适配 | 存mode，共用准入，扩展同一提交点，交出被替换Binding收尾责任；锁外通知接口，不复制一套Attach；更新既有拒绝takeover的范围断言 | U05–U09、R01–R05；同代次单赢家、提交前旧有效、提交后不回滚、操作门/关闭/登录/TTL竞争；race通过。直调回调测试不代替真实WS | 按本步基线成组撤销mode、准入、提交结果及调用适配；恢复原attach-only范围断言，保留S1；本步不单独部署 |
-| S3 WebSocket终止及交接 | 依赖S2；修改`backend/internal/websocket/connection.go`、`protocol.go`、`connection_test.go`、`backend/internal/httpapi/sessions_test.go`；新增`backend/internal/websocket/takeover_test.go` | taken_over具名DTO/4001、Writer失效准入、提交到Connection登记窗口、旧引用收尾、slot与Supervisor复用 | W01–W06、R06–R08；真实HTTP/WS/SSH验证新旧端消息和操作；Reader/Writer堵塞不阻挡新端、旧slot不早还；失败允许合法首因 | 先撤销本步WS/HTTP测试及实现hunk；若放弃整个接管后端，还须逆序撤销S2，不能保留缺发送链路的公开takeover能力；S1保持 |
+| S3 WebSocket终止及交接 | 依赖S2；修改`backend/internal/websocket/connection.go`、`protocol.go`、`connection_test.go`、`backend/internal/httpapi/sessions_test.go`；新增`backend/internal/websocket/takeover_test.go` | taken_over具名DTO/4001、先定原因再取消、失效退出分流、Writer双锁原子准入、提交登记窗口、slot与Supervisor复用 | W01–W06、R06–R08、T1–T4；真实HTTP/WS/SSH验证新旧端消息和操作；Reader/Writer堵塞不阻挡新端、旧slot不早还；失败允许合法首因 | 先撤销本步WS/HTTP测试及实现hunk；若放弃整个接管后端，还须逆序撤销S2，不能保留缺发送链路的公开takeover能力；S1保持 |
 | S4 列表前端及异步查询 | 依赖S1与D1；修改`frontend/src/api/sessions.ts`、`frontend/src/pages/HomePage.vue`、必要的`frontend/src/styles/base.css`；新增`frontend/src/session/list.ts`、`frontend/src/components/session/SessionManager.vue`、`frontend/tests/session-list.test.mjs` | 列表解析/单请求所有者/序号/Abort、服务器和本地状态筛选、独立管理视图、loading/error/empty；保持Pane挂载；接管按钮此步不开放未完成链路 | U10、F01–F03；乱序、旧finally、卸载/登出、可见刷新、失败保留快照；列表任何刷新无POST/WS；实际组件测试 | 撤销列表组件挂载/样式/API增量，移除仅本步文件；原服务器页/终端与后端列表保留，无依赖清单变化 |
 | S5 Client初始takeover模式 | 依赖S3，推荐在S4后审查；修改`frontend/src/terminal/client.ts`、`frontend/tests/terminal.test.mjs`；无必需新增生产文件 | 初始用户模式、后续固定attach；保持两种Promise/同一任务/预算/offset；明确连接结果和停止原因 | U11、F04；首POST是takeover、所有重试是attach、未知提交不换代；既有attach/4001/4002/稳定预算/drain测试全部通过 | 撤销mode增量及新增测试，保留原connect/run默认attach；不删除旧恢复实现，不引入输出算法变更 |
 | S6 Pane与同页标签协调 | 依赖S4/S5、D2/D3；修改`frontend/src/components/terminal/TerminalPane.vue`、`frontend/src/terminal/recovery.ts`、`frontend/src/pages/HomePage.vue`、`frontend/src/components/session/SessionManager.vue`、`frontend/tests/terminal-pane.test.mjs`；新增`frontend/src/session/takeover.ts`、`frontend/tests/session-takeover.test.mjs` | HomePage唯一ID登记/候选Pane；新的小型主动动作所有者只管详情/确认/取消并调用既有Client；mount模式显式；A–E场景、复用实例、停止旧链、失败保留状态 | F05–F09；重复点击/挂载窗口/在线定位/恢复中接管/失败取消/晚回调；同Session一个Pane/Client，旧任务完成前无新任务；两步人工attach原样通过 | 先撤销UI入口，再撤销Pane启动与所有权增量，移除本步专属控制器/测试；恢复原mounted attach，仅保留创建Session入口，S4列表仍可只读 |
 | S7 关闭/登出/视图退出与列表反馈 | 依赖S6；修改`frontend/src/pages/HomePage.vue`、`components/session/SessionManager.vue`、`components/terminal/TerminalPane.vue`、`session/{list,takeover}.ts`、`api/sessions.ts`及对应前端测试；必要时扩展`frontend/tests/auth.test.mjs`；无必需新增生产文件 | 同目标关闭与接管互斥、DELETE可取消等待、隐藏列表/关闭Pane区分、logoutPending同步封闭新任务、列表失效刷新；复用auth/router，不改认证协议 | F10–F13、B01–B05；DELETE/登出成功与失败/不确定、任务转移、浏览器关闭与迟到响应；只关闭列表不误删SSH，退出后不联网 | 撤销本步退出/关闭/反馈增量；在功能恢复完整前保持新增入口禁用，不回退第四阶段既有logoutPending/stop语义；前序受依赖部分不单独发布 |
 | S8 全集成、真实环境与报告 | 依赖S1–S7及环境授权；扩展上述测试；仅发现有证据缺陷时修改对应责任文件；获准后新增`doc/stage-5-implementation-report.md`，临时浏览器脚本/日志用`/tmp/codex/` | 全量Go/race/前端、真实WS/浏览器、Docker/NPM/SSH验收；记录环境/命令/失败修复/未验项；完成后停止 | §17–20所有门槛；无双有效Binding、无泄漏/旧端抢回、真实场景有证据，不能只靠单测 | 仅撤销本步独立失败修复/测试/报告增量，保留前序审查成果；集成失败不宣称完成、不部署中间补丁；外部环境回滚按事先获准部署方案 |
 
-S0的基线检查无需在本次文档任务运行。若只授权无争议子集，可先S1；D1–D3未裁决时不自行进入相关前端步骤。所有“必要时修改”都以实际失败或接口适配证据为前提，不预先扩大代码范围。
+S0的编码基线检查仍留待获准实施；D1–D3已在本轮确认为A，但本轮仅授权文档修订。所有“必要时修改”都以实际失败或接口适配证据为前提，不预先扩大代码范围。
 
 ## 16. 文件职责和最小改动控制
 
 | 文件/模块 | 预期责任与明确边界 |
 |---|---|
 | `backend/internal/session/session.go` | List与现有生命周期快照；不建SQL列表或第二个Session索引 |
-| `backend/internal/session/binding.go` | mode、唯一准入/提交/失效与旧引用；不发送JSON、不等WS关闭、不创建SSH |
-| `backend/internal/websocket/{connection,protocol}.go` | 既有taken_over消息落实、Writer/提交交接；不拥有SSH生命周期、不提前减slot |
+| `backend/internal/session/binding.go` | mode、唯一提交/失效与旧引用、superseded内部处置、持Session锁的狭窄发送准入接口；不发送JSON、不等WS关闭、不创建SSH |
+| `backend/internal/websocket/{connection,protocol}.go` | taken_over消息、先定原因再取消的统一终止及内部退出适配、Writer双锁选项准入/提交交接；不拥有SSH生命周期、不提前减slot |
 | `backend/internal/httpapi/sessions.go` | 新列表路由、具名响应/query校验；原Prepare请求形状不变 |
 | `frontend/src/api/sessions.ts` | List DTO运行时校验、查询/关闭HTTP包装；不做UI所有权或绑定循环 |
 | `frontend/src/session/list.ts`（建议新增） | 列表请求身份/Abort/快照状态；不拥有任何TerminalClient |
@@ -709,10 +859,57 @@ S0的基线检查无需在本次文档任务运行。若只授权无争议子集
 | R04 | Close、SSH退出、Sweep与提交分别先后；快照准备后到期 | 两种先后均有效，CLOSING不回退/不重设期限；旧扫描不关闭新绑定；首关闭原因保持 |
 | R05 | 同登录Prepare/提交与真实Logout；不同登录旧端退出/新端退出 | 撤销扫描不漏刚发布资源，不误删不同登录Binding；持久化回滚/不确定区分；SSH保留 |
 | R06 | Commit返回后暂停Reader登记，触发Close、Revoke或又一次合法takeover | 即使Connection.binding尚空也收尾已提交Binding；旧引用通知责任不丢失；没有发布已失效的新操作权 |
-| R07 | Writer刚准备下一块/正在Ping，提交替换；旧Reader/执行器同时终止 | 失效后不再准入普通数据，允许既有在途项；正常路径taken_over/4001，独立首因不被覆盖；无锁内网络、死锁 |
+| R07 | 按T3固定Writer已准入、提交已完成、双方同时竞争Session.mu三个交错；按T1交错Reader Done/defer、执行器失效退出与old.end | 准入时同时持Connection.mu/Session.mu，提交后零新增普通准入；只允许提交前唯一item完成；正常taken_over/4001，独立首因按T2保留；结合T4断言身份与资源 |
 | R08 | 列表复制引用后关闭/移除/接管/新建；100轮接管/停止竞争 | 单行一致、无CLOSED行/重复ID/数据竞态；索引/slot/worker/定时器恢复基线，无全局锁阻塞其他Session |
 
 Go必须运行 `go test -race ./...`；受控同步点用于固定交错，生产默认不安装。不要通过调低断言、只sleep或只断言无panic替代权限/完成信号验证。
+
+### 17.2.1 第二轮专项 T1–T4：固定交错与实际证据
+
+四项归入S2的内部准入/处置测试与S3的真实WS集成测试，S8统一回归，不改变S0–S8边界。建议扩展 `backend/internal/session/takeover_test.go`、`backend/internal/websocket/takeover_test.go` 及既有HTTP/WS夹具；本轮只设计测试，未新增测试源码或执行测试。
+
+共用夹具：实际Session Manager、HTTP/1.1 Upgrade、固定coder/websocket、真实环回SSH及输入/resize调用计数。旧端A、新端B分别消费真实WS消息，记录type、普通二进制块、最终控制消息和Close code。同步hook只定位锁/任务交错，不替换真实Reader/Writer/Terminate；生产不安装。记录commit和send-admit事件序号、Binding指针/不可变代次/active、Session状态/期限、远端调用数、Connection.reason及workers/supervisor/done/slot。测试事件保存在有限测试记录中，不增加生产日志中的终端内容。
+
+#### T1：Reader取消与takeover通知竞争
+
+1. 建立A并完成bind/前缀消费，确认一个有效Binding及SSH输入可达。将A Reader固定到两个独立子场景：
+   - **网络读取等待**：Reader已进入下一次readMessage；此处没有直接select Binding.Done。B提交后由统一终止、Writer Close及必要的raw.Close解除读取，检查随后defer的幂等结果。
+   - **Binding.Done等待**：在不持Session操作门、Session锁或Connection锁的测试屏障暂缓旧执行器，填满容量1操作槽，让Reader持有下一条有界输入并已进入 `select operations / b.Done / c.ctx / timer`。不得阻塞一个已经持操作门的SSH调用后又要求takeover立即提交。
+2. 发起B正常takeover，暂停在提交已完成、old.end尚未调用的位置（此子例同时在锁外屏障暂停旧Writer/执行器的失效处理，排除其他合法终止入口先行）：断言old.active=false/superseded、新Binding/G+1已发布，**old.Done尚未由本次提交关闭**，此时不能用提前cancel“制造”新的正常路径。释放该屏障后，在旧Terminate固定taken_over、尚未Detach取消且仍持c.mu的位置确认reason已确定。
+3. 允许Detach取消，令Reader Done分支醒来、失效退出适配与defer尝试进入，同时old.end仍在c.mu内完成终止发布；解除全部屏障。重复捕获的迟到defer NETWORK_ERROR，必须仍为taken_over。
+4. 追加合法迟到Detach子场景：提交后、old.end前，触发一个此前捕获旧Binding的Detach；Done分支通过§7.3.2内部失效退出适配请求taken_over，再执行defer。令适配与old.end同时竞争c.mu，两种获胜次序都固定相同taken_over，不能由普通NETWORK_ERROR或旧执行器BIND_CONFLICT抢先。
+5. 至少100轮有界重复，穿插旧执行器恢复、Writer先发现superseded、正常old.end先到的调度；每轮清理后再下一轮。使用足够的测试配置期限和有限调度容差，不让测试屏障耗尽关闭预算再要求消息必达。
+
+**严格断言：**无独立故障且旧客户端正常读取/响应关闭时，真实线上必须收到一次 `{"type":"taken_over","message":...}` 和Close **4001**，不存在替代它的error NETWORK_ERROR/BIND_CONFLICT，终止后无普通消息。旧未准入输入/resize远端执行次数为0；B输入执行一次、仍是当前Binding、generation不回退、状态CONNECTED/离线期限为空。旧Binding.Done最终关闭；旧worker/监督器全部完成后slot只归还一次，新slot保留；最终关闭B后资源回到基线。普通readMessage场景允许通过既有关闭机制解除，不错误断言cancel Binding本身会直接取消网络读取。
+
+#### T2：旧连接真实网络故障先发生
+
+1. A完成绑定后实际关闭/重置客户端TCP，使用完成信号确认服务端已经在c.mu内确定NETWORK_ERROR并按旧身份Detach；不能只凭客户端发起close推定服务端已经终止。
+2. B对尚活动的同一Session发起takeover，读取实际代次并提交；SSH仍为同一个连接/Shell。额外子场景先完成B Prepare，令A真实故障确定首因后再提交B；以及B已捕获old并提交、但old.end被暂停时，真实故障先固定原因，再放行old.end。
+3. 旧连接物理故障通常无法再收到最终消息，不能要求taken_over/4001必达；检查服务端原因仍为NETWORK_ERROR，不在old.end或失效适配中覆写。
+
+**严格断言：**故障前已收消息与服务端发送记录符合顺序，不伪造故障后的通知送达；旧端无法继续输入；B真实前缀/回放/后续输入正常且远端只执行B一次。新Binding身份/代次/状态/期限不被旧故障或迟到Detach改变，旧资源最终回收、slot一次归还、SSH保留。再用“taken_over先固定、真实故障后到”的对照子例验证首因不变；此对照不保证断网后的通知送达。
+
+#### T3：Writer发送准入与提交竞争
+
+分别以历史二进制块、实时块、普通status控制项作为下一项；成功前缀也执行同一准入规则。终止项另测，不把普通队列入队当作发送准入。
+
+| 固定交错 | 同步点和调度 | 必须断言 |
+|---|---|---|
+| Writer先准入 | Writer已在c.mu+s.mu内选定并标记item，然后释放全部锁，在实际网络Write前暂停；放行B完整提交并完成旧终止原因登记，再恢复该Write | admit序号严格先于commit；只有该一个已准入普通item可在commit后完成，payload不变；实际线上接着taken_over/4001，不能再发第二个普通项。不是要求提交后的普通字节数绝对为0 |
+| takeover先提交 | 暂停旧Writer于取得s.mu之前，允许B提交；再放行Writer，包含Writer已持c.mu但还没取得s.mu的交错 | 检查到失效，不从FIFO/快照/缓存新选取或标记项，commit之后旧普通admit计数增量0；等待c.mu的old.end最终进入或Writer先提交taken_over；无死锁 |
+| 同时竞争s.mu | 两个任务在尚未持s.mu的独立屏障汇合，分别控制两种获锁次序，另做多轮自由竞争；不能让持s.mu的hook等待对方提交而人为死锁 | 每轮只有“admit先于commit并允许该项”或“commit先、无普通admit”两种序列；不存在检查旧active成功、commit插入、再选item的第三种序列 |
+
+**共同断言：**同时记录发送准入序号和真实网络消息顺序，不能仅凭Write开始/返回时间推导准入；旧终止槽不受普通控制队列满影响、最多一次终止消息、仍只有一个应用Writer。锁外在途Write可被真实堵写以验证close_timeout强关；堵写子例允许通知失败，仍检查不再准入和完整资源回收。队列中旧SSH输入/resize不再执行，新端输入计数正常；新Binding身份/G/状态/期限稳定。记录旧slot在worker和Supervisor未完成前仍占用。终止路径与Writer都按c.mu→s.mu，不接受仅“无panic”作为通过。
+
+#### T4：新旧Binding隔离及迟到回调
+
+1. A→B成功接管，记录B的Binding引用、generation、CONNECTED、offline_expires_at为空和SSH远端输入基线；A正常场景已收到taken_over/4001。
+2. 保存A的旧引用/回调，在B持续输入输出时依次及并发释放：旧Detach、Reader Done/迟到defer、Writer已准入Write完成或失败、重复Terminate/Close收尾、取消执行器、旧resize、旧输出通知。所有动作携带A固定Binding，禁止测试回调改从Session读取B再操作。
+3. 追加B也普通断开后的子场景：记录其新离线期限，继续触发A迟到Detach/Close回调，证明不会重新计时或改变generation。随后用户正常attach得到C，再重复A/B旧回调，证明对象隔离可跨多代。
+4. 追加“B提交但Connection.binding尚未登记时就被C接管/关闭”的交接子场景：每个成功结果都履行被替换对象的old.end责任；B登记拒绝或Writer准入失败后Detach自身，不遗漏context取消/资源释放。
+
+**严格断言：**迟到旧事件不改变当前Binding引用、generation、CONNECTED或已记录的离线期限；旧输入/resize远端调用数不增加，当前端测试输入恰一次；旧Writer无新的普通准入、最终消息不串到新WS。每条连接的context、worker、Supervisor、快照和slot按所属对象一次收尾，不清共享Session缓存、不杀SSH；最终显式关闭测试Session后Lease/索引归零。此处“旧Close回调”指旧WS物理关闭/清理，**不包括用户显式DELETE或真实SSH故障的Session.Close**，后两者按C03/C04仍应合法关闭当前Session。
 
 ### 17.3 WebSocket集成
 
@@ -818,7 +1015,7 @@ git diff --cached --name-only
 
 ### 20.1 编码启动门槛
 
-- [ ] 本计划经人工审查；D1–D3选择有明确记录，未把推荐写成冻结事实。
+- [ ] 第二轮修订经人工复审；D1–D3=A已有明确用户裁决记录，不能将该裁决当作编码授权。
 - [ ] 明确编码授权、当前基线及文件保护完成；若仅授权S1则只执行该子集。
 - [ ] 无新的冻结设计冲突；一旦发现实质冲突标记BLOCKER并暂停受影响部分，不改冻结文档绕过。
 
@@ -827,7 +1024,8 @@ git diff --cached --name-only
 - [ ] GET列表严格契约、Manager权威、排序/筛选/空集合/CLOSED/快照并发和敏感字段全部通过。
 - [ ] 列表独立于标签；刷新、取消、迟到响应、卸载/登出、可见性按已裁决方案可测，无后台takeover。
 - [ ] Prepare不替换，提交前失败原端保持，同G唯一成功，凭证mode/归属/TTL/容量与消费正确。
-- [ ] 新旧Binding原子替换，旧操作准入即时失效；已准入SSH调用遵守操作门；提交后失败绝不恢复旧端。
+- [ ] 新旧Binding原子替换，提交不提前cancel；统一终止先确定原因再取消，Reader/执行器失效退出不抢占；T1–T4实测通过。旧操作准入即时失效，已准入SSH调用遵守操作门，提交后失败绝不恢复旧端。
+- [ ] Writer在Connection.mu→Session.mu→必要时Buffer.mu边界内检查并选择/标记单项；与提交在同一Session锁上线性化；锁外Write/Close，提交后无新的旧端普通准入。
 - [ ] 正常taken_over消息/4001送达；丢失通知仍因代次保护不能抢回；INPUT_BACKPRESSURE、OUTPUT_GAP规则不变。
 - [ ] 提交到Connection登记窗口、旧Reader/Writer/Ping/Close阻塞和旧回调均有真实网络/竞态证据；旧slot不提前归还。
 - [ ] A–E全部覆盖；同页重复点击/已有Pane/恢复中接管不创建第二Client或恢复链；失败取消不复活旧任务。
@@ -843,7 +1041,7 @@ git diff --cached --name-only
 
 不得把本计划的测试勾选为已完成，不沿用第四阶段历史测试次数作为第五阶段统计。完成后停止并等待下一步授权；提交、推送、部署及第六阶段不是本计划自动授权。
 
-## 21. 未确定事项、设计选项和待用户裁决
+## 21. 用户裁决、第二轮修订与复审边界
 
 ### 21.1 已冻结，不再征求重新设计
 
@@ -851,28 +1049,30 @@ git diff --cached --name-only
 
 **BLOCKER-PROTOCOL、BLOCKER-HTTP已解决，不重新引入。** 本次未发现需要修改冻结文档的新BLOCKER。当前代码未实现takeover不构成设计冲突；新增的内部mode和taken_over DTO只是落实已定义协议。
 
-### 21.2 待用户裁决的产品选择
+### 21.2 已确认的用户裁决：D1=A、D2=A、D3=A
 
-| ID / 状态 | 缺失规则及实际场景 | 可行方案与影响 | 推荐与受影响步骤 |
-|---|---|---|---|
-| D1 `待用户裁决` | 核心§9/11.4、总体阶段§7.2定义列表但未规定加载/刷新触发与失败展示；管理页后台挂起后快照过时 | A：进入、手动、操作结果、重新可见时按需刷新；序号+Abort，保留明确标注旧快照，GET只有主动/生命周期取消。B：仅进入/手动刷新，代码更少但跨设备状态更易陈旧；操作完成仍应标记旧数据，不能伪报当前状态 | 推荐A，无轮询、无新配置；本地状态过滤四态，剩余时间先显示查询值。§6图1/U10/F01–F03按A设计；S4需裁决 |
-| D2 `待用户裁决` | 核心§6.2/§9、总体阶段§7.2.9只规定“已有标签优先定位”；第四阶段§8/11规定原恢复/stop，未定义主动接管如何接入在线或恢复中的Pane | A：在线只定位；恢复中/停止的原Pane经显式停止准备→详情→确认，复用原Client/tracker，取消/最终失败不自动复活旧任务。B：在线也提供显式主动重连，同样先stop再查询确认、同一Client；会主动中断当前本地连接，失败时本页不能保留原在线任务。第二Pane并行试接管违反单所有者约束，不列为可用默认方案 | 推荐A，最少意外中断并保持既有单任务语义；仍支持停止后主动takeover。§8图3/§11/F06–F08按A设计；S6需裁决。失败后的协议有限attach不可改，不属于此选项 |
-| D3 `待用户裁决` | 核心§9/10、协议§7和第四阶段§4/11未规定无Pane接管的候选UI出现时机、管理视图退出后的操作归属 | A：创建唯一“不自动连接”的候选Pane承载详情/确认，确认后任务归Pane；成功变正常标签，失败保留原因；离开列表只取消未确认动作，已确认任务继续。B：管理视图内详情确认，确认后才挂载候选Pane；需额外处理挂载等待与操作记录转移，减少取消产生的临时标签。两者都不能成功后创建第二Client；关闭整个HomePage均stop/dispose | 推荐A，所有者交接最少且易测试；未启动候选取消时移除，原有Pane绝不因取消而删除。§8图2/§12.1/F05/F12按A设计；S6/S7需裁决 |
+确认依据：用户在本次“第五阶段实施计划第二轮修订”要求§五第1项明确指示：“D1、D2、D3 全部采用 A 方案，正式作为第五阶段已确认的用户裁决。”以下仅据这一明确授权登记，不将其他内部接口建议或未经确认的推荐升级为用户裁决。
 
-上述选项均不改变服务端冻结契约。用户可以一次确认推荐组合，也可选替代；本轮不以沉默当确认，不提前实施。具体CSS、类名和内部函数名为常规实现细节，不是需用户裁决的产品事项。
+| ID / 状态 | 已确认A方案 | 未采用的原B方案及实施落点 |
+|---|---|---|
+| D1 `用户已确认：A` | 进入、手动、操作结果、重新可见时按需刷新；序号+Abort；保留明确标注旧快照；GET仅主动/生命周期取消；无轮询/新配置；状态本地过滤四态、剩余时间先显示查询值 | 不采用仅进入/手动刷新B；落实§6/图1/U10/F01–F03、S4 |
+| D2 `用户已确认：A` | 在线已有Pane只定位；恢复中/停止的原Pane显式停止准备→新详情→确认，复用原Client/tracker；取消/最终失败不自动复活原任务；协议规定的有限attach重试保持 | 不采用在线直接主动重连B，不建立第二Pane/Client；落实§8/图3/§11/F06–F08、S6 |
+| D3 `用户已确认：A` | 建立唯一不自动连接的候选Pane承载详情/确认；确认后任务归Pane，成功成为正常标签，失败保留原因；离开列表取消未确认动作，已确认任务继续；关闭整个HomePage时stop/dispose | 不采用管理视图先确认、再挂载Pane的B；未启动候选取消可移除，原有Pane不因取消删除；落实§8/图2/§12.1/F05/F12、S6/S7 |
+
+当前没有D1–D3待裁决项。上述选择补齐产品交互，不修改服务端冻结契约，也不等于授权编码。具体CSS、类名和内部函数名仍为常规实现细节；§7内部接口及并发伪代码作为本轮修订提交人工复审。
 
 ### 21.3 本次补齐的实施细节
 
-补齐逐对象一致而非全局事务列表快照、查询序号/Abort/finally保护、标签ID预占与挂载入口、同一Client初始mode而后续attach、原恢复任务停止屏障、查询候选与人工attach候选隔离、提交后Reader登记窗口、旧Writer失效准入与锁外通知、关闭/登出/列表卸载所有权、14项竞争处理、8张时序图、9个审查步骤及分层验收矩阵。其中D1–D3所涉及的产品行为明确为推荐，其他内容落实既有约束。
+补齐逐对象一致而非全局事务列表快照、查询序号/Abort/finally保护、标签ID预占与挂载入口、同一Client初始mode而后续attach、原恢复任务停止屏障、查询候选与人工attach候选隔离、提交后Reader登记窗口、旧Writer失效准入与锁外通知、关闭/登出/列表卸载所有权、14项竞争处理、8张时序图、9个审查步骤及分层验收矩阵。D1–D3按本轮明确用户裁决采用A；第二轮新增五个终止时刻的分离、失效退出处置、Writer双锁发送准入与T1–T4固定交错，全部仍待实现验证。
 
 如后续确需修订其他文档，只提出建议并单独获得授权：可补充第四阶段报告的真实环境验收与UI修复记录，更新历史“尚未实现”措辞的状态说明；本轮未修改它们。不得以本计划覆盖冻结协议或新增未批准API。
 
 ### 21.4 本次交付结论
 
 1. 第五阶段详细计划已覆盖任务要求，结构、实现入口、并发处理、文件职责、测试和真实验收均可审查。
-2. 冻结Binding事务、锁序、协议、列表/API、第四阶段恢复和登出语义保持；推荐方案没有冒充已冻结规则。
-3. 仍有D1–D3三项实质性前端交互/所有权选择待用户裁决；没有新发现的冻结设计冲突BLOCKER。
-4. 不建议未裁决、未授权就全面编码。可先审查并确认推荐组合；若明确只授权独立后端列表子集，可先执行S0/S1，其余等待。
+2. 冻结Binding事务、锁序、API/协议字段、错误码/关闭码和第四阶段恢复/登出语义保持。修正的是原计划提前取消及发送准入未明确同步边界的问题，不以修改冻结设计绕过。
+3. D1、D2、D3=A已确认；本次未发现其他必须用户裁决的设计空白或冻结文档冲突BLOCKER。内部失效处置/发送准入接口及交接窗口已给出设计，正确性仍须人工复审及未来T1–T4实测，不能宣称当前业务代码已修复。
+4. 本轮完成后停止，等待人工复审与另行编码授权；不再次要求D1–D3裁决，不因其已确认自行进入编码。S0–S8总体边界和依赖顺序保持，仅细化S2/S3内部职责、接口与测试。
 5. 后续获得编码授权后的第一项业务改动应为S1：在Manager增加只读List及GET /api/sessions，先验证空列表、四活动态/CLOSED、server_id、排序、快照并发与安全DTO，再进入takeover事务。
 
-本次在文档交付后停止，等待人工审查和明确授权；没有开始第五阶段编码。
+本次仅修订指定计划文档，完成后停止等待人工复审；不修改业务代码/冻结文档，不执行commit、push或破坏性Git操作。
