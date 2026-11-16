@@ -210,21 +210,14 @@ func (c *Connection) reader() {
 				return
 			}
 			close(c.bindReceived) // 首条完整 bind 已收到；提交等待使用独立操作预算。
-			b, err = c.target.Attach(c.ctx, c.login, msg.Credential, *msg.Offset, c.Terminate)
+			result, err := c.target.Attach(c.ctx, c.login, msg.Credential, *msg.Offset, c.Terminate)
 			if err != nil {
 				c.Terminate(err.Error())
 				return
 			}
-			c.mu.Lock()
-			if c.reason != "" {
-				c.mu.Unlock()
-				c.target.Detach(b)
+			if !c.registerBinding(result) {
 				return
 			}
-			c.binding = b
-			c.nextPing = time.Now().Add(time.Duration(c.service.cfg.Websocket.PingInterval) * time.Second)
-			c.mu.Unlock()
-			c.signal()
 			continue
 		}
 		op := operation{binding: b}
@@ -270,6 +263,25 @@ func (c *Connection) reader() {
 		}
 	}
 }
+
+// Reader 是提交结果唯一收尾所有者。独立短函数保证所有登记分支及时执行
+// 锁外收尾，不把 defer 延迟到 Reader 整个生命周期结束，也不嵌套新旧连接锁。
+func (c *Connection) registerBinding(result *session.CommitResult) bool {
+	defer result.FinishDisplaced()
+	b := result.NewBinding
+	c.mu.Lock()
+	if c.reason != "" {
+		c.mu.Unlock()
+		c.target.Detach(b)
+		return false
+	}
+	c.binding = b
+	c.nextPing = time.Now().Add(time.Duration(c.service.cfg.Websocket.PingInterval) * time.Second)
+	c.mu.Unlock()
+	c.signal()
+	return true
+}
+
 func (c *Connection) execute() {
 	for {
 		select {

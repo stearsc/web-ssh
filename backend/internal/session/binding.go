@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"sync"
 	"time"
 
 	"github.com/stearsc/web-ssh/backend/internal/auth"
@@ -14,6 +15,7 @@ import (
 
 type credential struct {
 	loginID, sessionID string
+	mode               string
 	expected           uint64
 	expires            time.Time
 }
@@ -28,16 +30,34 @@ type Binding struct {
 	session    *Session
 	login      *auth.Session
 	active     bool // 只在所属 Session 状态锁内访问。
+	superseded bool // 同样由 Session.mu 保护；只表示被替换，不是 Connection 终止原因。
 	ctx        context.Context
 	cancel     context.CancelFunc
 	end        func(string)
+}
+
+// CommitResult 将成功提交后的旧对象收尾责任交给调用方。必须在所有成功分支
+// 调用 FinishDisplaced，且调用时不得持有 Session、操作门或任何 Connection 锁。
+// 仅按指针传递；同一结果的重复收尾不会重复执行回调。
+type CommitResult struct {
+	NewBinding       *Binding
+	DisplacedBinding *Binding
+	finish           sync.Once
+}
+
+func (r *CommitResult) FinishDisplaced() {
+	r.finish.Do(func() {
+		if r.DisplacedBinding != nil {
+			r.DisplacedBinding.end("taken_over")
+		}
+	})
 }
 
 func (b *Binding) Done() <-chan struct{} { return b.ctx.Done() }
 func (b *Binding) Session() *Session     { return b.session }
 func (b *Binding) Expires() time.Time    { return b.login.Expires }
 func (m *Manager) Prepare(login *auth.Session, id, mode string, expected uint64) (CredentialView, error) {
-	if mode != "attach" || expected > MaxCounter {
+	if (mode != "attach" && mode != "takeover") || expected > MaxCounter {
 		return CredentialView{}, fault.Error("INVALID_REQUEST")
 	}
 	s, err := m.Find(id)
@@ -51,7 +71,7 @@ func (m *Manager) Prepare(login *auth.Session, id, mode string, expected uint64)
 	defer release()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err = s.canAttach(expected); err != nil {
+	if err = s.canBind(mode, expected); err != nil {
 		return CredentialView{}, err
 	}
 	raw := make([]byte, 32)
@@ -70,10 +90,13 @@ func (m *Manager) Prepare(login *auth.Session, id, mode string, expected uint64)
 	if int64(len(m.credentials)) >= m.cfg.Session.BindingCredentialLimit {
 		return CredentialView{}, fault.Error("CREDENTIAL_LIMIT")
 	}
-	m.credentials[sha256.Sum256([]byte(token))] = credential{login.ID, id, expected, expires}
+	m.credentials[sha256.Sum256([]byte(token))] = credential{loginID: login.ID, sessionID: id, mode: mode, expected: expected, expires: expires}
 	return CredentialView{token, server.Timestamp(expires)}, nil
 }
-func (s *Session) canAttach(expected uint64) error {
+func (s *Session) canBind(mode string, expected uint64) error {
+	if (mode != "attach" && mode != "takeover") || expected > MaxCounter {
+		return fault.Error("INVALID_REQUEST")
+	}
 	if s.manager.ctx.Err() != nil {
 		return fault.Error("SERVER_SHUTTING_DOWN")
 	}
@@ -86,12 +109,12 @@ func (s *Session) canAttach(expected uint64) error {
 	if expected != s.generation {
 		return fault.Error("BIND_CONFLICT")
 	}
-	if s.binding != nil || s.status == "CONNECTED" {
+	if mode == "attach" && (s.binding != nil || s.status == "CONNECTED") {
 		return fault.Error("BIND_BUSY")
 	}
 	return nil
 }
-func (s *Session) Attach(ctx context.Context, login *auth.Session, token string, offset uint64, end func(string)) (*Binding, error) {
+func (s *Session) Attach(ctx context.Context, login *auth.Session, token string, offset uint64, end func(string)) (*CommitResult, error) {
 	if offset > MaxCounter {
 		return nil, fault.Error("INVALID_OFFSET")
 	}
@@ -99,6 +122,13 @@ func (s *Session) Attach(ctx context.Context, login *auth.Session, token string,
 	if err != nil || len(raw) != 32 || base64.RawURLEncoding.EncodeToString(raw) != token {
 		return nil, fault.Error("INVALID_CREDENTIAL")
 	}
+	// 耗尽路径在全部事务锁和操作门释放后发起幂等关闭。
+	exhausted := false
+	defer func() {
+		if exhausted {
+			s.Close("counter_exhausted")
+		}
+	}()
 	wait, cancel := context.WithTimeout(ctx, time.Duration(s.manager.cfg.Session.OperationWaitTimeout)*time.Second)
 	defer cancel()
 	select {
@@ -125,15 +155,16 @@ func (s *Session) Attach(ctx context.Context, login *auth.Session, token string,
 	if c.loginID != login.ID || c.sessionID != s.id {
 		return nil, fault.Error("PERMISSION_DENIED")
 	}
-	if err = s.canAttach(c.expected); err != nil {
+	if err = s.canBind(c.mode, c.expected); err != nil {
 		return nil, err
 	}
 	if s.generation == MaxCounter {
-		s.closeLocked("counter_exhausted")
+		exhausted = true
 		return nil, fault.Error("SESSION_NOT_READY")
 	}
 	s.buffer.mu.Lock()
 	defer s.buffer.mu.Unlock()
+	// 快照仅为本次调用的局部副本；失败返回不发布或保留它，由 GC 回收。
 	replay, err := s.buffer.snapshot(offset)
 	if err != nil {
 		return nil, fault.Error("INVALID_OFFSET")
@@ -150,17 +181,24 @@ func (s *Session) Attach(ctx context.Context, login *auth.Session, token string,
 	if !m.now().Before(login.Expires) {
 		return nil, fault.Error("AUTH_REQUIRED")
 	}
-	if err = s.canAttach(c.expected); err != nil {
+	if err = s.canBind(c.mode, c.expected); err != nil {
 		return nil, err
 	}
 	if ctx.Err() != nil {
 		return nil, fault.Error("BIND_BUSY")
 	}
-	// 唯一提交点：attach 从不替换有效 Binding，其他同代次凭证同时失效。
+	// 唯一提交点：持有门 → 登录读锁 → Session → Buffer → 凭证锁。
+	// attach 不替换在线 Binding；takeover 仅逻辑撤权，不能提前取消旧 context，
+	// 否则 Reader 的 NETWORK_ERROR 可能抢先于锁外 end 确定终止原因。
 	for h, item := range m.credentials {
 		if item.sessionID == s.id {
 			delete(m.credentials, h)
 		}
+	}
+	old := s.binding
+	if old != nil {
+		old.active = false
+		old.superseded = true
 	}
 	bctx, bcancel := context.WithCancel(s.ctx)
 	s.generation++
@@ -170,7 +208,7 @@ func (s *Session) Attach(ctx context.Context, login *auth.Session, token string,
 	s.attached = m.now()
 	s.expires = time.Time{}
 	s.markDirty()
-	return b, nil
+	return &CommitResult{NewBinding: b, DisplacedBinding: old}, nil
 }
 func (m *Manager) invalidate(id string) {
 	m.credentialsMu.Lock()

@@ -223,8 +223,16 @@ func TestSessionsHTTPWebsocketAndLogoutRace(t *testing.T) {
 		}
 	}
 
-	if status, _, _ = request("POST", route+"/takeover", map[string]any{"mode": "takeover", "expected_generation": 0}, cookie); status != 400 {
-		t.Fatal("开放 takeover", status)
+	if status, data, _ = request("POST", route+"/takeover", map[string]any{"mode": "takeover", "expected_generation": 0}, cookie); status != 200 {
+		t.Fatal("takeover 凭证签发失败", status)
+	}
+	var takeoverCredential session.CredentialView
+	if err := json.Unmarshal(data, &takeoverCredential); err != nil || takeoverCredential.Credential == "" || takeoverCredential.ExpiresAt == "" {
+		t.Fatal("凭证响应不完整", err)
+	}
+	current, err := manager.Get(view.ID)
+	if err != nil || current.Status != "DISCONNECTED" || current.Generation != 0 || !reflect.DeepEqual(current.OfflineExpiresAt, view.OfflineExpiresAt) {
+		t.Fatal("Prepare 改变 Session", current, err)
 	}
 	for _, headers := range []http.Header{{"Origin": []string{cfg.Server.PublicOrigin}}, {"Origin": []string{"http://evil"}, "Cookie": []string{cookie.String()}}} {
 		conn, response, e := ws.Dial(t.Context(), h.URL+"/ws/sessions/"+view.ID, &ws.DialOptions{HTTPHeader: headers})

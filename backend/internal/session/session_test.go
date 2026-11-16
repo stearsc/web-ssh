@@ -75,13 +75,24 @@ func createSession(t *testing.T, m *Manager, login *auth.Session, id string) *Se
 	}
 	return s
 }
+
+// 既有 attach 测试复用同一提交入口，并履行成功结果的锁外收尾责任。
+func attachBinding(s *Session, ctx context.Context, login *auth.Session, token string, offset uint64, end func(string)) (*Binding, error) {
+	result, err := s.Attach(ctx, login, token, offset, end)
+	if err != nil {
+		return nil, err
+	}
+	defer result.FinishDisplaced()
+	return result.NewBinding, nil
+}
+
 func bind(t *testing.T, m *Manager, s *Session, login *auth.Session) *Binding {
 	t.Helper()
 	c, e := m.Prepare(login, s.id, "attach", s.View().Generation)
 	if e != nil {
 		t.Fatal(e)
 	}
-	b, e := s.Attach(t.Context(), login, c.Credential, 0, func(string) {})
+	b, e := attachBinding(s, t.Context(), login, c.Credential, 0, func(string) {})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -115,8 +126,11 @@ func TestRealSessionsIsolationAndAttachLifecycle(t *testing.T) {
 	if _, e := m.Prepare(login, a.id, "attach", ab.Generation); e != fault.Error("BIND_BUSY") {
 		t.Fatal(e)
 	}
-	if _, e := m.Prepare(login, a.id, "takeover", ab.Generation); e != fault.Error("INVALID_REQUEST") {
-		t.Fatal("主动接管被开放", e)
+	if _, e := m.Prepare(login, a.id, "takeover", ab.Generation); e != nil {
+		t.Fatal(e)
+	}
+	if a.View().Generation != ab.Generation || a.View().Status != "CONNECTED" {
+		t.Fatal("Prepare 改变已有 Binding")
 	}
 	if e := a.Execute(ab, []byte("A-only"), 0, 0); e != nil {
 		t.Fatal(e)
@@ -157,7 +171,7 @@ func TestConcurrentAttachAndCredentialFailure(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if _, e = s.Attach(t.Context(), login, first.Credential, 100000, func(string) {}); e != fault.Error("INVALID_OFFSET") {
+	if _, e = attachBinding(s, t.Context(), login, first.Credential, 100000, func(string) {}); e != fault.Error("INVALID_OFFSET") {
 		t.Fatal(e)
 	}
 	second, e := m.Prepare(login, s.id, "attach", 0)
@@ -172,7 +186,7 @@ func TestConcurrentAttachAndCredentialFailure(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			b, e := s.Attach(t.Context(), login, token, 0, func(string) {})
+			b, e := attachBinding(s, t.Context(), login, token, 0, func(string) {})
 			if e != nil && e != fault.Error("INVALID_CREDENTIAL") && e != fault.Error("BIND_CONFLICT") {
 				t.Error(e)
 			}
@@ -308,7 +322,7 @@ func TestSnapshotCommitRechecksCredentialAndFailureKeepsOffline(t *testing.T) {
 					}
 				}
 			}
-			if _, e = s.Attach(t.Context(), login, token.Credential, 0, func(string) {}); e != fault.Error("INVALID_CREDENTIAL") {
+			if _, e = attachBinding(s, t.Context(), login, token.Credential, 0, func(string) {}); e != fault.Error("INVALID_CREDENTIAL") {
 				t.Fatal(e)
 			}
 			if v := s.View(); v.Status != "DISCONNECTED" || v.Generation != 0 {
@@ -339,7 +353,7 @@ func TestDetachInFlightInputAndReattachGate(t *testing.T) {
 	}
 	attached := make(chan *Binding, 1)
 	go func() {
-		next, e := s.Attach(t.Context(), login, credential.Credential, 0, func(string) {})
+		next, e := attachBinding(s, t.Context(), login, credential.Credential, 0, func(string) {})
 		if e != nil {
 			t.Error(e)
 		}
@@ -487,18 +501,18 @@ func TestCredentialOwnershipCapacityAndCounters(t *testing.T) {
 		t.Fatal(e)
 	}
 	other := &auth.Session{ID: strings.Repeat("b", 32), Expires: time.Now().Add(time.Hour)}
-	if _, e = a.Attach(t.Context(), other, token.Credential, 0, func(string) {}); e != fault.Error("PERMISSION_DENIED") {
+	if _, e = attachBinding(a, t.Context(), other, token.Credential, 0, func(string) {}); e != fault.Error("PERMISSION_DENIED") {
 		t.Fatal(e)
 	}
-	if _, e = b.Attach(t.Context(), login, token.Credential, 0, func(string) {}); e != fault.Error("PERMISSION_DENIED") {
+	if _, e = attachBinding(b, t.Context(), login, token.Credential, 0, func(string) {}); e != fault.Error("PERMISSION_DENIED") {
 		t.Fatal(e)
 	}
-	binding, e := a.Attach(t.Context(), login, token.Credential, 0, func(string) {})
+	binding, e := attachBinding(a, t.Context(), login, token.Credential, 0, func(string) {})
 	if e != nil {
 		t.Fatal(e)
 	}
 	a.Detach(binding)
-	if _, e = a.Attach(t.Context(), login, token.Credential, 0, func(string) {}); e != fault.Error("INVALID_CREDENTIAL") {
+	if _, e = attachBinding(a, t.Context(), login, token.Credential, 0, func(string) {}); e != fault.Error("INVALID_CREDENTIAL") {
 		t.Fatal(e)
 	}
 	if _, e = m.Prepare(login, a.id, "attach", 0); e != fault.Error("BIND_CONFLICT") {
@@ -511,7 +525,7 @@ func TestCredentialOwnershipCapacityAndCounters(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if _, e = a.Attach(t.Context(), login, token.Credential, 0, func(string) {}); e != fault.Error("SESSION_NOT_READY") {
+	if _, e = attachBinding(a, t.Context(), login, token.Credential, 0, func(string) {}); e != fault.Error("SESSION_NOT_READY") {
 		t.Fatal(e)
 	}
 	<-a.Done()
@@ -586,7 +600,7 @@ func TestBusyCredentialNotConsumedAndGenerationPreserved(t *testing.T) {
 	s.gate <- struct{}{}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	if _, err = s.Attach(ctx, login, token.Credential, 0, func(string) {}); err != fault.Error("BIND_BUSY") {
+	if _, err = attachBinding(s, ctx, login, token.Credential, 0, func(string) {}); err != fault.Error("BIND_BUSY") {
 		t.Fatal(err)
 	}
 	<-s.gate
@@ -597,7 +611,7 @@ func TestBusyCredentialNotConsumedAndGenerationPreserved(t *testing.T) {
 	if !exists || s.View().Generation != 0 {
 		t.Fatal("失败已消费或增代")
 	}
-	b, err := s.Attach(t.Context(), login, token.Credential, 0, func(string) {})
+	b, err := attachBinding(s, t.Context(), login, token.Credential, 0, func(string) {})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -649,7 +663,7 @@ func TestAttachSnapshotCancellationAndOfflineScanOrdering(t *testing.T) {
 					s.expires = time.Now().Add(-time.Second)
 				}
 			}
-			next, err := s.Attach(ctx, login, token.Credential, 0, func(string) {})
+			next, err := attachBinding(s, ctx, login, token.Credential, 0, func(string) {})
 			if mode == "rebind" {
 				if err != nil {
 					t.Fatal(err)
