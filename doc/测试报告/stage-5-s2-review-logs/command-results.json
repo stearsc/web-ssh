@@ -1,0 +1,44 @@
+[
+  {
+    "command": "go test -count=1 ./...",
+    "exit_code": 0,
+    "seconds": 24.0,
+    "stdout": "backend-tests-text.log",
+    "stderr": "backend-tests-text.stderr.log"
+  },
+  {
+    "command": "go test -race -count=1 ./...",
+    "exit_code": 0,
+    "seconds": 25.79,
+    "stdout": "backend-race-text.log",
+    "stderr": "backend-race-text.stderr.log"
+  },
+  {
+    "command": "go test -count=1 -json ./...",
+    "exit_code": 0,
+    "seconds": 23.6,
+    "stdout": "backend-tests.json",
+    "stderr": "backend-tests.stderr.log"
+  },
+  {
+    "command": "go test -race -count=1 -json ./...",
+    "exit_code": 0,
+    "seconds": 25.8,
+    "stdout": "backend-race.json",
+    "stderr": "backend-race.stderr.log"
+  },
+  {
+    "command": "go vet ./...",
+    "exit_code": 0,
+    "seconds": 0.22,
+    "stdout": "vet.log",
+    "stderr": "vet.stderr.log"
+  },
+  {
+    "command": "go build ./...",
+    "exit_code": 0,
+    "seconds": 0.6,
+    "stdout": "build.log",
+    "stderr": "build.stderr.log"
+  }
+]

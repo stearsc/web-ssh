@@ -5,6 +5,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"io"
+	"log/slog"
 	"reflect"
 	"strings"
 	"sync"
@@ -396,6 +398,20 @@ func TestTakeoverU08HandoffAndLateDetach(t *testing.T) {
 	}
 }
 
+// WithTimeout 在尝试操作门之前调用父 context.Deadline；在此汇合所有
+// Attach 调用，避免仅凭 goroutine 已启动推断候选已进入真实提交路径。
+type candidateEntryContext struct {
+	context.Context
+	entered chan<- struct{}
+	proceed <-chan struct{}
+	once    sync.Once
+}
+
+func (c *candidateEntryContext) Deadline() (time.Time, bool) {
+	c.once.Do(func() { c.entered <- struct{}{}; <-c.proceed })
+	return c.Context.Deadline()
+}
+
 func TestTakeoverR01R02CredentialCompetition(t *testing.T) {
 	for _, kind := range []string{"distinct", "same_token", "attach_takeover"} {
 		t.Run(kind, func(t *testing.T) {
@@ -414,6 +430,19 @@ func TestTakeoverR01R02CredentialCompetition(t *testing.T) {
 					tokens[i] = prepareTakeover(t, m, s, login, mode)
 				}
 			}
+			m.credentialsMu.Lock()
+			for _, c := range tokens {
+				stored, exists := m.credentials[sha256.Sum256([]byte(c.Credential))]
+				if !exists || stored.sessionID != s.id || stored.expected != generation || stored.loginID != login.ID || !m.now().Before(stored.expires) {
+					m.credentialsMu.Unlock()
+					t.Fatal("候选凭证不属于同一 Session/代次或已经无效")
+				}
+			}
+			m.credentialsMu.Unlock()
+			entered, enterProceed := make(chan struct{}, len(tokens)), make(chan struct{})
+			var releaseEntry sync.Once
+			unblockEntry := func() { releaseEntry.Do(func() { close(enterProceed) }) }
+			defer unblockEntry()
 			ready := make(chan struct{}, len(tokens))
 			start := make(chan struct{})
 			type attempt struct {
@@ -423,12 +452,16 @@ func TestTakeoverR01R02CredentialCompetition(t *testing.T) {
 			results := make(chan attempt, len(tokens))
 			// 所有候选在门前汇合，首个快照暂停，其他候选仍不能越过门。
 			snapshot, proceed := make(chan struct{}), make(chan struct{})
+			var releaseSnapshot sync.Once
+			unblockSnapshot := func() { releaseSnapshot.Do(func() { close(proceed) }) }
+			defer unblockSnapshot()
 			m.beforeCredentialCommit = func() { close(snapshot); <-proceed }
 			for _, c := range tokens {
 				go func() {
 					ready <- struct{}{}
 					<-start
-					r, err := s.Attach(t.Context(), login, c.Credential, 0, func(string) {})
+					ctx := &candidateEntryContext{Context: t.Context(), entered: entered, proceed: enterProceed}
+					r, err := s.Attach(ctx, login, c.Credential, 0, func(string) {})
 					results <- attempt{r, err}
 				}()
 			}
@@ -436,8 +469,16 @@ func TestTakeoverR01R02CredentialCompetition(t *testing.T) {
 				receiveTakeover(t, ready)
 			}
 			close(start)
+			for range tokens {
+				receiveTakeover(t, entered)
+			}
+			// 八次真实 Attach 均已通过 token 格式校验、进入操作门等待准备阶段。
+			if s.View().Generation != generation {
+				t.Fatal("入口屏障前已经提交")
+			}
+			unblockEntry()
 			receiveTakeover(t, snapshot)
-			close(proceed)
+			unblockSnapshot()
 			wins := 0
 			var winner *Binding
 			for range tokens {
@@ -725,6 +766,37 @@ func TestTakeoverR04OldSweepAfterCommit(t *testing.T) {
 	assertCurrent(t, s, r.NewBinding, 1)
 }
 
+// 仅在测试中观测现有错误日志：第一次失败暂停 worker，后续失败只发通知。
+// Handler 不持 Session/数据库锁；释放通道在所有退出路径都会关闭。
+type metadataFailureObserver struct {
+	slog.Handler
+	failures chan string
+	release  chan struct{}
+	count    atomic.Int64
+}
+
+func (h *metadataFailureObserver) Handle(ctx context.Context, record slog.Record) error {
+	if record.Message == "Session 元数据更新失败" {
+		id := ""
+		record.Attrs(func(a slog.Attr) bool {
+			if a.Key == "session_id" {
+				id = a.Value.String()
+			}
+			return true
+		})
+		if h.count.Add(1) == 1 {
+			h.failures <- id
+			<-h.release
+		} else {
+			select {
+			case h.failures <- id:
+			default:
+			}
+		}
+	}
+	return h.Handler.Handle(ctx, record)
+}
+
 func TestTakeoverU09CountersOffsetsAndMetadata(t *testing.T) {
 	t.Run("offset boundaries", func(t *testing.T) {
 		for _, offset := range []uint64{0, MaxCounter - 2, MaxCounter, MaxCounter + 1} {
@@ -774,20 +846,55 @@ func TestTakeoverU09CountersOffsetsAndMetadata(t *testing.T) {
 	})
 	t.Run("metadata failure", func(t *testing.T) {
 		m, login, id, _ := setup(t)
-		s := createSession(t, m, login, id)
-		old := bind(t, m, s, login)
-		old.end = func(string) { s.Detach(old) }
-		// 只在测试数据库注入 UPDATE 失败，证明运行权限和列表不回滚到旧元数据。
+		observer := &metadataFailureObserver{
+			Handler:  slog.NewTextHandler(io.Discard, nil),
+			failures: make(chan string, 8), release: make(chan struct{}),
+		}
+		var release sync.Once
+		unblock := func() { release.Do(func() { close(observer.release) }) }
+		// defer 先于 setup 注册的 Cleanup 执行，失败分支也不会把 metadata worker 留住。
+		defer unblock()
+		// 此时尚无 Session/metadata worker；创建之前安装日志观测器。
+		m.log = slog.New(observer)
+		// 仅测试数据库故障注入；所有 sessions UPDATE 都由真实 metadata worker 执行。
 		if _, err := m.db.Exec(`CREATE TRIGGER reject_takeover_update BEFORE UPDATE ON sessions BEGIN SELECT RAISE(ABORT,'injected'); END`); err != nil {
 			t.Fatal(err)
 		}
+		s := createSession(t, m, login, id)
+		old := bind(t, m, s, login)
+		old.end = func(string) { s.Detach(old) }
+		if failedID := receiveTakeover(t, observer.failures); failedID != s.id {
+			t.Fatal("基线失败不属于目标 Session", failedID)
+		}
+		// worker 已完成旧 UPDATE 并阻塞在首次错误日志。排空创建/首次 attach 的
+		// 合并通知，使接下来唯一待处理的 dirty 明确来自 takeover 提交。
+		for {
+			select {
+			case <-s.dirty:
+			default:
+				goto drained
+			}
+		}
+	drained:
 		c := prepareTakeover(t, m, s, login, "takeover")
+		if len(s.dirty) != 0 {
+			t.Fatal("Prepare 意外产生 metadata 通知")
+		}
 		r := commitTakeover(t, s, login, c)
 		r.FinishDisplaced()
-		// 直接确认失败注入确实生效；实际 metadata 协程仍走原有错误处理。
-		if _, err := m.db.Exec(`UPDATE sessions SET status='CONNECTED' WHERE id=?`, s.id); err == nil {
-			t.Fatal("UPDATE 失败注入未生效")
+		if len(s.dirty) != 1 || observer.count.Load() != 1 {
+			t.Fatal("takeover 未留下唯一 dirty，或 worker 提前越过屏障")
 		}
+		// 旧对象 Detach 不是当前对象，不产生 dirty。释放后 worker 只能消费
+		// takeover 留下的通知，读取新 CONNECTED 状态并执行真实 UPDATE。
+		unblock()
+		if failedID := receiveTakeover(t, observer.failures); failedID != s.id || observer.count.Load() != 2 {
+			t.Fatal("未观测到 takeover 对应 UPDATE 的失败", failedID, observer.count.Load())
+		}
+		if len(s.dirty) != 0 {
+			t.Fatal("takeover 通知未被消费")
+		}
+		t.Log("已观测真实 metadata worker：旧写入失败暂停 → 清空旧通知 → takeover 唯一 dirty → 新 UPDATE 失败")
 		assertCurrent(t, s, r.NewBinding, 2)
 		items := m.List("")
 		if len(items) != 1 || items[0].Status != "CONNECTED" || items[0].Generation != 2 {
