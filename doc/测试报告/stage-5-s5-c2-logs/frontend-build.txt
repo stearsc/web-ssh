@@ -1,0 +1,18 @@
+
+> web-ssh-frontend@0.1.0 build
+> npm run typecheck && vite build
+
+
+> web-ssh-frontend@0.1.0 typecheck
+> vue-tsc --noEmit
+
+vite v8.3.8 building client environment for production...
+transforming...
+✓ 57 modules transformed.
+rendering chunks...
+computing gzip size...
+../backend/web/dist/index.html                   0.35 kB │ gzip:   0.26 kB
+../backend/web/dist/assets/index-C8rlzcls.css   13.20 kB │ gzip:   3.43 kB
+../backend/web/dist/assets/index-D7hEmHy0.js   482.04 kB │ gzip: 137.31 kB
+
+✓ built in 327ms

@@ -1,0 +1,13 @@
+normal_top_level_pass=118
+normal_subtest_pass=446
+normal_top_level_skip=0
+normal_subtest_skip=0
+normal_packages_with_tests=10
+normal_packages_without_tests=4
+race_top_level_pass=118
+race_subtest_pass=446
+race_top_level_skip=0
+race_subtest_skip=0
+race_packages_with_tests=10
+race_packages_without_tests=4
+race_marker_matches=0

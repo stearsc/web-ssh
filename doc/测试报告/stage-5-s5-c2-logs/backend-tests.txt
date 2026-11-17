@@ -1,0 +1,14 @@
+ok  	github.com/stearsc/web-ssh/backend/cmd/server	1.477s
+ok  	github.com/stearsc/web-ssh/backend/internal/auth	2.699s
+ok  	github.com/stearsc/web-ssh/backend/internal/config	0.037s
+ok  	github.com/stearsc/web-ssh/backend/internal/crypto	0.002s
+ok  	github.com/stearsc/web-ssh/backend/internal/database	0.203s
+?   	github.com/stearsc/web-ssh/backend/internal/fault	[no test files]
+ok  	github.com/stearsc/web-ssh/backend/internal/httpapi	2.547s
+ok  	github.com/stearsc/web-ssh/backend/internal/server	0.151s
+ok  	github.com/stearsc/web-ssh/backend/internal/session	7.661s
+ok  	github.com/stearsc/web-ssh/backend/internal/sshclient	1.147s
+?   	github.com/stearsc/web-ssh/backend/internal/testutil	[no test files]
+ok  	github.com/stearsc/web-ssh/backend/internal/websocket	37.809s
+?   	github.com/stearsc/web-ssh/backend/migrations	[no test files]
+?   	github.com/stearsc/web-ssh/backend/web	[no test files]
