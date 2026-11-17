@@ -79,6 +79,25 @@ export interface RecoveryState {
   diagnostic: boolean
   exhausted: boolean
 }
+export type ConnectionMode = 'attach' | 'takeover'
+export type TerminalClientTaskConflictReason =
+  | 'mode_mismatch'
+  | 'generation_mismatch'
+  | 'task_stopping'
+function taskConflictMessage(reason: TerminalClientTaskConflictReason): string {
+  if (reason === 'mode_mismatch') return '活动终端任务使用了不同的连接模式'
+  if (reason === 'generation_mismatch')
+    return '活动终端任务使用了不同的初始绑定代次'
+  return '请等待旧任务停止'
+}
+export class TerminalClientTaskConflictError extends Error {
+  readonly reason: TerminalClientTaskConflictReason
+  constructor(reason: TerminalClientTaskConflictReason) {
+    super(taskConflictMessage(reason))
+    this.name = 'TerminalClientTaskConflictError'
+    this.reason = reason
+  }
+}
 interface AttemptResult {
   code: string
   message: string
@@ -90,9 +109,22 @@ interface RecoveryTask {
   id: number
   stopped: boolean
   retries: number
+  // 初始参数定义任务身份；循环内由 takeover 转入 attach 不改变它们。
+  readonly initialMode: ConnectionMode
+  readonly initialExpectedGeneration: number
+  initialModeConsumed: boolean
+  // 只能由当前任务收到并通过校验的 bind_success 更新。
+  confirmedGeneration: number | null
   connection: Promise<ConnectionResult>
   connected: (value: ConnectionResult) => void
   done: Promise<RecoveryState>
+}
+interface AttemptPlan {
+  mode: ConnectionMode
+  expectedGeneration: number
+}
+interface PreparedCredential extends AttemptPlan {
+  credential: string
 }
 export const retryCodes = new Set([
   'BIND_BUSY',
@@ -192,23 +224,44 @@ export class TerminalClient {
       this.output.inputEnabled
     )
   }
-  connect(expectedGeneration = this.generation): Promise<ConnectionResult> {
-    return this.start(expectedGeneration).connection
+  private defaultExpectedGeneration(): number {
+    return this.task?.initialExpectedGeneration ?? this.generation
   }
-  run(expectedGeneration = this.generation): Promise<RecoveryState> {
-    return this.start(expectedGeneration).done
+  connect(
+    expectedGeneration = this.defaultExpectedGeneration(),
+  ): Promise<ConnectionResult> {
+    return this.start(expectedGeneration, 'attach').connection
+  }
+  run(
+    expectedGeneration = this.defaultExpectedGeneration(),
+  ): Promise<RecoveryState> {
+    return this.start(expectedGeneration, 'attach').done
+  }
+  connectTakeover(expectedGeneration: number): Promise<ConnectionResult> {
+    return this.start(expectedGeneration, 'takeover').connection
+  }
+  runTakeover(expectedGeneration: number): Promise<RecoveryState> {
+    return this.start(expectedGeneration, 'takeover').done
   }
   get completion(): Promise<RecoveryState> | null {
     return this.task?.done ?? null
   }
-  private start(expected: number): RecoveryTask {
+  private start(expected: number, mode: ConnectionMode): RecoveryTask {
     if (this.disposed || !this.allowed())
       throw new Error('终端已关闭或登录操作正在结束')
-    if (this.stopping || this.task?.stopped)
-      throw new Error('请等待旧任务停止')
-    if (this.task) return this.task
     if (!Number.isSafeInteger(expected) || expected < 0)
       throw new Error('非法预期绑定代次')
+    if (mode !== 'attach' && mode !== 'takeover')
+      throw new Error('非法连接模式')
+    if (this.stopping || this.task?.stopped)
+      throw new TerminalClientTaskConflictError('task_stopping')
+    if (this.task) {
+      if (this.task.initialMode !== mode)
+        throw new TerminalClientTaskConflictError('mode_mismatch')
+      if (this.task.initialExpectedGeneration !== expected)
+        throw new TerminalClientTaskConflictError('generation_mismatch')
+      return this.task
+    }
     let connected!: (value: ConnectionResult) => void
     const connection = new Promise<ConnectionResult>((resolve) => {
       connected = resolve
@@ -217,6 +270,10 @@ export class TerminalClient {
       id: ++this.sequence,
       stopped: false,
       retries: 0,
+      initialMode: mode,
+      initialExpectedGeneration: expected,
+      initialModeConsumed: false,
+      confirmedGeneration: null,
       connection,
       connected,
       done: null!,
@@ -272,15 +329,17 @@ export class TerminalClient {
     let exhausted = false
     try {
       while (this.admitted(task)) {
+        // 每一轮在首个 await 前确定并消费初始 mode；任何首轮失败都只能转 attach。
+        const attempt = this.nextAttemptGeneration(task)
         try {
           await this.output.settle(false)
           await this.sendTask
           if (!this.admitted(task)) break
           const offset = this.output.requestedStartOffset()
           this.publish(task, 'preparing')
-          const credential = await this.prepareCredential(task)
+          const prepared = await this.prepareCredential(task, attempt)
           if (!this.admitted(task)) break
-          result = await this.attempt(task, credential, offset)
+          result = await this.attempt(task, prepared, offset)
         } catch (error) {
           if (!this.admitted(task)) break
           const code =
@@ -337,7 +396,25 @@ export class TerminalClient {
       exhausted,
     )
   }
-  private async prepareCredential(task: RecoveryTask): Promise<string> {
+  private nextAttemptGeneration(task: RecoveryTask): AttemptPlan {
+    if (!task.initialModeConsumed) {
+      // 在任何 Prepare 异步边界前消费；即使该请求失败，后续也只能 attach。
+      task.initialModeConsumed = true
+      return {
+        mode: task.initialMode,
+        expectedGeneration: task.initialExpectedGeneration,
+      }
+    }
+    return {
+      mode: 'attach',
+      expectedGeneration:
+        task.confirmedGeneration ?? task.initialExpectedGeneration,
+    }
+  }
+  private async prepareCredential(
+    task: RecoveryTask,
+    attempt: AttemptPlan,
+  ): Promise<PreparedCredential> {
     if (!this.admitted(task)) throw new Error('已停止')
     const controller = new AbortController()
     this.controller = controller
@@ -349,7 +426,10 @@ export class TerminalClient {
       const value = await request<{ credential: string; expires_at: string }>(
         `/api/sessions/${encodeURIComponent(this.sessionId)}/takeover`,
         'POST',
-        { mode: 'attach', expected_generation: this.generation },
+        {
+          mode: attempt.mode,
+          expected_generation: attempt.expectedGeneration,
+        },
         controller.signal,
       )
       if (controller.signal.aborted || !this.admitted(task))
@@ -362,7 +442,7 @@ export class TerminalClient {
         !Number.isFinite(Date.parse(value.expires_at))
       )
         throw new ClientFailure('protocol', '绑定凭证响应非法')
-      return value.credential
+      return { ...attempt, credential: value.credential }
     } finally {
       clearTimeout(timer)
       if (this.controller === controller) this.controller = null
@@ -370,14 +450,14 @@ export class TerminalClient {
   }
   private attempt(
     task: RecoveryTask,
-    credential: string,
+    prepared: PreparedCredential,
     offset: number,
   ): Promise<AttemptResult> {
     if (!this.admitted(task))
       return Promise.resolve(this.result('USER_STOPPED'))
     this.output.begin(offset)
     this.publish(task, 'connecting')
-    const expected = this.generation
+    const expected = prepared.expectedGeneration
     return new Promise<AttemptResult>((resolve) => {
       const url = new URL(
         `/ws/sessions/${encodeURIComponent(this.sessionId)}`,
@@ -438,7 +518,7 @@ export class TerminalClient {
           socket.send(
             JSON.stringify({
               type: 'bind',
-              credential,
+              credential: prepared.credential,
               requested_start_offset: offset,
             }),
           )
@@ -461,6 +541,7 @@ export class TerminalClient {
             if (message.binding_generation !== expected + 1)
               throw new ClientFailure('protocol', '绑定代次不连续')
             this.output.bind(message)
+            task.confirmedGeneration = message.binding_generation
             this.generation = message.binding_generation
           } else if (message.type === 'history_truncated')
             this.output.truncated(message)

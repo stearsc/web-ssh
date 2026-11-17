@@ -6,7 +6,11 @@ import {
 } from '../src/terminal/output.ts'
 import { SessionRecovery } from '../src/terminal/recovery.ts'
 import { sessionView } from '../src/api/sessions.ts'
-import { TerminalClient, clientSettings } from '../src/terminal/client.ts'
+import {
+  TerminalClient,
+  TerminalClientTaskConflictError,
+  clientSettings,
+} from '../src/terminal/client.ts'
 const settings = {
   max_control_message_size: 16384,
   max_input_message_size: 64,
@@ -153,7 +157,7 @@ test('控制消息：字段、代次、尺寸及错误码严格校验', () => {
   ])
     assert.throws(() => parseControl(JSON.stringify(message), settings))
 })
-test('实际连接逻辑：只发 attach、输入分块、停止后按原代次开启新任务', async (t) => {
+test('实际连接逻辑：默认只发 attach、输入分块、停止后按原代次开启新任务', async (t) => {
   const originals = {
     fetch: globalThis.fetch,
     WebSocket: globalThis.WebSocket,
@@ -678,6 +682,201 @@ const sessionSnapshot = (generation = 7, status = 'DISCONNECTED') => ({
 const jsonResponse = (data, code = 0) => ({
   ok: code === 0,
   json: async () => ({ code, message: String(code), data }),
+})
+const credentialResponse = () =>
+  jsonResponse({
+    credential: 'a'.repeat(43),
+    expires_at: new Date(Date.now() + 30000).toISOString(),
+  })
+test('takeover mode 只消费一次：首次失败后 attach 使用初始代次且首次 Promise 不二次结束', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 10000 })
+  const h = recoveryHarness(t, { reconnect_max_attempts: 3 })
+  let prepares = 0
+  h.setResponse(() => {
+    prepares++
+    return prepares < 3 ? jsonResponse({}, 'BIND_BUSY') : credentialResponse()
+  })
+  let settlements = 0
+  const connection = h.client.connectTakeover(7).then((value) => {
+    settlements++
+    return value
+  })
+  const done = h.client.runTakeover(7)
+  assert.equal(done, h.client.completion)
+  await flush()
+  assert.deepEqual(
+    h.requests.map(({ mode, expected_generation }) => ({
+      mode,
+      expected_generation,
+    })),
+    [{ mode: 'takeover', expected_generation: 7 }],
+  )
+  assert.equal((await connection).connected, false)
+  assert.equal(settlements, 1)
+  assert.equal(h.client.running, true)
+  t.mock.timers.tick(1000)
+  await flush()
+  assert.deepEqual(
+    h.requests.map(({ mode, expected_generation }) => ({
+      mode,
+      expected_generation,
+    })),
+    [
+      { mode: 'takeover', expected_generation: 7 },
+      { mode: 'attach', expected_generation: 7 },
+    ],
+  )
+  assert.equal(h.sockets.length, 0)
+  t.mock.timers.tick(1000)
+  await flush()
+  assert.deepEqual(
+    h.requests.map(({ mode, expected_generation }) => ({
+      mode,
+      expected_generation,
+    })),
+    [
+      { mode: 'takeover', expected_generation: 7 },
+      { mode: 'attach', expected_generation: 7 },
+      { mode: 'attach', expected_generation: 7 },
+    ],
+  )
+  const socket = h.sockets[0]
+  socket.open()
+  socket.message(bound(0, 0, 8))
+  await flush()
+  assert.equal(settlements, 1)
+  assert.equal(h.client.currentGeneration, 8)
+  assert.equal(h.states.at(-1).phase, 'online')
+  assert.equal(h.requests.length, 3)
+  await h.client.stop()
+  await done
+})
+test('takeover bind_success 丢失不推算 G+1；后续合法确认代次驱动 attach', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 10000 })
+  const h = recoveryHarness(t, { reconnect_max_attempts: 3 })
+  const connection = h.client.connectTakeover(7)
+  const done = h.client.completion
+  await flush()
+  const lost = h.sockets[0]
+  lost.open()
+  lost.onerror()
+  assert.equal((await connection).connected, false)
+  await flush()
+  t.mock.timers.tick(1000)
+  await flush()
+  assert.deepEqual(
+    h.requests.map(({ mode, expected_generation }) => ({
+      mode,
+      expected_generation,
+    })),
+    [
+      { mode: 'takeover', expected_generation: 7 },
+      { mode: 'attach', expected_generation: 7 },
+    ],
+  )
+  const recovered = h.sockets[1]
+  recovered.open()
+  recovered.message(bound(0, 0, 8))
+  await flush()
+  assert.equal(h.client.currentGeneration, 8)
+  recovered.onerror()
+  await flush()
+  t.mock.timers.tick(1000)
+  await flush()
+  assert.deepEqual(
+    h.requests.map(({ mode, expected_generation }) => ({
+      mode,
+      expected_generation,
+    })),
+    [
+      { mode: 'takeover', expected_generation: 7 },
+      { mode: 'attach', expected_generation: 7 },
+      { mode: 'attach', expected_generation: 8 },
+    ],
+  )
+  await h.client.stop()
+  await done
+})
+test('活动任务参数先校验再复用，不同 mode/generation 和 stopping 明确拒绝', async (t) => {
+  const h = recoveryHarness(t)
+  const conflict = (reason) => (error) =>
+    error instanceof TerminalClientTaskConflictError && error.reason === reason
+  const first = h.client.connect(0)
+  assert.equal(h.client.run(0), h.client.completion)
+  assert.equal(h.client.connect(0), first)
+  await flush()
+  const socket = h.sockets[0]
+  socket.open()
+  socket.message(bound(0, 0, 1))
+  await first
+  assert.equal(h.client.connect(), first)
+  assert.throws(() => h.client.connectTakeover(0), conflict('mode_mismatch'))
+  assert.throws(() => h.client.connect(1), conflict('generation_mismatch'))
+  assert.throws(() => h.client.connect(-1), /非法预期绑定代次/)
+  assert.equal(h.requests.length, 1)
+  const stopping = h.client.stop()
+  assert.throws(() => h.client.connectTakeover(1), conflict('task_stopping'))
+  await stopping
+  const takeover = h.client.connectTakeover(1)
+  await flush()
+  assert.deepEqual(
+    h.requests.map(({ mode, expected_generation }) => ({
+      mode,
+      expected_generation,
+    })),
+    [
+      { mode: 'attach', expected_generation: 0 },
+      { mode: 'takeover', expected_generation: 1 },
+    ],
+  )
+  assert.throws(() => h.client.connect(1), conflict('mode_mismatch'))
+  await h.client.stop()
+  assert.equal((await takeover).connected, false)
+  await h.client.dispose()
+})
+test('takeover BIND_CONFLICT 立即停止，不自动查询或再发 attach', async (t) => {
+  const h = recoveryHarness(t)
+  h.setResponse(() => jsonResponse({}, 'BIND_CONFLICT'))
+  const connection = h.client.connectTakeover(3)
+  const done = h.client.completion
+  await flush()
+  assert.equal((await connection).connected, false)
+  const result = await done
+  assert.equal(result.code, 'BIND_CONFLICT')
+  assert.equal(result.exhausted, false)
+  assert.equal(h.requests.length, 1)
+  assert.equal(h.requests[0].mode, 'takeover')
+  assert.equal(h.requests[0].expected_generation, 3)
+  assert.equal(h.sockets.length, 0)
+})
+test('takeover 提交结果不确定后的 attach 冲突停止，不查询新代次', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 10000 })
+  const h = recoveryHarness(t)
+  const connection = h.client.connectTakeover(3)
+  const done = h.client.completion
+  await flush()
+  h.sockets[0].open()
+  h.sockets[0].onerror()
+  assert.equal((await connection).connected, false)
+  await flush()
+  h.setResponse(() => jsonResponse({}, 'BIND_CONFLICT'))
+  t.mock.timers.tick(1000)
+  await flush()
+  const result = await done
+  assert.equal(result.code, 'BIND_CONFLICT')
+  assert.deepEqual(
+    h.requests.map(({ mode, expected_generation }) => ({
+      mode,
+      expected_generation,
+    })),
+    [
+      { mode: 'takeover', expected_generation: 3 },
+      { mode: 'attach', expected_generation: 3 },
+    ],
+  )
+  t.mock.timers.tick(10000)
+  await flush()
+  assert.equal(h.requests.length, 2)
 })
 test('人工恢复必须刷新再点击：查询不改代次，候选只消费一次且只发 attach', async (t) => {
   const h = recoveryHarness(t)
