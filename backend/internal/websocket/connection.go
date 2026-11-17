@@ -24,14 +24,18 @@ type operation struct {
 
 // 测试同步点默认 nil；安装后不可修改，读取指针受 Connection.mu 保护。
 type connectionHooks struct {
-	beforeRegister   func(*session.CommitResult)
-	beforeAdmission  func()
-	beforeSession    func()
-	admitted         func(string)
-	beforeWrite      func(string)
-	beforeRead       func()
-	waitingOperation func()
-	beforeExecute    func()
+	beforeRegister     func(*session.CommitResult)
+	beforeAdmission    func()
+	beforeSession      func()
+	admitted           func(string)
+	beforeWrite        func(string)
+	beforeRead         func()
+	waitingOperation   func()
+	beforeExecute      func()
+	beforeTermination  func(string, string)
+	afterReasonFixed   func(string)
+	afterBindingExit   func(string)
+	disableLoginExpiry bool
 }
 
 type Connection struct {
@@ -73,6 +77,10 @@ func (c *Connection) signal() {
 }
 func (c *Connection) Terminate(reason string) { c.terminate(reason, time.Time{}) }
 func (c *Connection) terminate(reason string, applicationDeadline time.Time) {
+	hooks := c.testHooks()
+	if hooks != nil && hooks.beforeTermination != nil {
+		hooks.beforeTermination("end", reason)
+	}
 	c.mu.Lock()
 	if c.reason != "" {
 		if !applicationDeadline.IsZero() && applicationDeadline.Before(c.deadline) {
@@ -87,6 +95,9 @@ func (c *Connection) terminate(reason string, applicationDeadline time.Time) {
 		return
 	}
 	c.terminateLocked(reason, applicationDeadline)
+	if hooks != nil && hooks.afterReasonFixed != nil {
+		hooks.afterReasonFixed("end")
+	}
 	accepted := c.accepted
 	c.mu.Unlock()
 	c.signal()
@@ -113,18 +124,47 @@ func (c *Connection) terminateLocked(reason string, applicationDeadline time.Tim
 	close(c.terminated)
 }
 
-// 只用于 Done/旧权限准入失败。真实 Read/Write/Ping 故障不调用此分流。
+// 只用于 Done/旧权限准入失败。Inactive 由 Session.Close、Revoke 或 Sweep
+// 等生命周期所有者稍后调用 Binding.end；这里不能抢先用 fallback 定首因。
 func (c *Connection) finishBindingExit(b *session.Binding, fallback string) {
+	hooks := c.testHooks()
+	if hooks != nil && hooks.beforeTermination != nil {
+		hooks.beforeTermination("binding_exit", fallback)
+	}
 	c.mu.Lock()
-	if c.reason == "" {
-		state := c.target.BindingDisposition(b)
-		if state == session.BindingSuperseded {
-			fallback = "taken_over"
+	state := session.BindingInactive
+	handled := c.reason == ""
+	if handled {
+		state = c.target.BindingDisposition(b)
+		switch state {
+		case session.BindingSuperseded:
+			c.terminateLocked("taken_over", time.Time{})
+		case session.BindingCurrent:
+			c.terminateLocked(fallback, time.Time{})
+		case session.BindingInactive:
+			// 外部生命周期所有者负责发布 closed:/AUTH_REQUIRED。Writer 和
+			// registerBinding 等待 c.terminated，不能在此伪造终止原因。
 		}
-		c.terminateLocked(fallback, time.Time{})
+		if state != session.BindingInactive && hooks != nil && hooks.afterReasonFixed != nil {
+			hooks.afterReasonFixed("binding_exit")
+		}
 	}
 	c.mu.Unlock()
+	if handled && hooks != nil && hooks.afterBindingExit != nil {
+		hooks.afterBindingExit(dispositionName(state))
+	}
 	c.signal()
+}
+
+func dispositionName(state session.BindingDisposition) string {
+	switch state {
+	case session.BindingSuperseded:
+		return "superseded"
+	case session.BindingCurrent:
+		return "current"
+	default:
+		return "inactive"
+	}
 }
 
 func (c *Connection) testHooks() *connectionHooks {
@@ -158,7 +198,10 @@ func (c *Connection) run() {
 		select {
 		case <-c.ctx.Done():
 		case <-timer.C:
-			c.Terminate("AUTH_REQUIRED")
+			hooks := c.testHooks()
+			if hooks == nil || !hooks.disableLoginExpiry {
+				c.Terminate("AUTH_REQUIRED")
+			}
 		}
 	}()
 	workers.Wait()
@@ -226,7 +269,12 @@ func (c *Connection) readMessage() (ws.MessageType, []byte, error) {
 	return kind, data, err
 }
 func (c *Connection) reader() {
-	defer c.Terminate("NETWORK_ERROR")
+	suppressNetworkError := false
+	defer func() {
+		if !suppressNetworkError {
+			c.Terminate("NETWORK_ERROR")
+		}
+	}()
 	for {
 		if hooks := c.testHooks(); hooks != nil && hooks.beforeRead != nil {
 			hooks.beforeRead()
@@ -239,6 +287,7 @@ func (c *Connection) reader() {
 		b, reason := c.binding, c.reason
 		c.mu.Unlock()
 		if reason != "" {
+			suppressNetworkError = true
 			return
 		}
 		if b == nil {
@@ -261,6 +310,7 @@ func (c *Connection) reader() {
 				hooks.beforeRegister(result)
 			}
 			if !c.registerBinding(result) {
+				suppressNetworkError = true
 				return
 			}
 			continue
@@ -301,10 +351,12 @@ func (c *Connection) reader() {
 			timer.Stop()
 		case <-b.Done():
 			timer.Stop()
+			suppressNetworkError = true
 			c.finishBindingExit(b, "NETWORK_ERROR")
 			return
 		case <-c.ctx.Done():
 			timer.Stop()
+			suppressNetworkError = true
 			return
 		case <-timer.C:
 			c.Terminate("INPUT_BACKPRESSURE")

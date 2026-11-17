@@ -1,0 +1,21 @@
+{
+  "baseline": {
+    "luan-qi-ba-zao.txt": {
+      "sha256": "64d3829a0205694db5cfee00139aaec3b2d27ea98b5b351b79afb6a1813441b0"
+    },
+    "web-ssh-stage5-3.zip": {
+      "sha256": "c10e8a9a334f1699bc558402f84b0d57f8dc1437e63fb0646d139546218bdd5b",
+      "size": 693779,
+      "mtime": "2026-11-17 01:41:46 +0800"
+    }
+  },
+  "final_observed": {
+    "luan-qi-ba-zao.txt": {
+      "sha256": "f6f84a80124746d4a537fa2dc739bc714e12dae6680c8bcfba465fec3349357a",
+      "size": 2329,
+      "mtime": "2026-11-17 22:41:49.781 +0800"
+    },
+    "web-ssh-stage5-3.zip": "absent"
+  },
+  "note": "两文件由用户/外部进程在修复期间改变；本轮未编辑、移动或删除。"
+}

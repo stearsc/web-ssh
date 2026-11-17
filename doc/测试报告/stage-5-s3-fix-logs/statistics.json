@@ -1,0 +1,70 @@
+{
+  "backend-tests.json": {
+    "top_level": {
+      "pass": 118,
+      "fail": 0,
+      "skip": 0
+    },
+    "subtests": {
+      "pass": 451,
+      "fail": 0,
+      "skip": 0
+    },
+    "packages": {
+      "pass": 10,
+      "fail": 0,
+      "skip": 4
+    },
+    "s3": {
+      "top_level": {
+        "pass": 16,
+        "fail": 0,
+        "skip": 0
+      },
+      "subtests": {
+        "pass": 241,
+        "fail": 0,
+        "skip": 0
+      }
+    },
+    "race_markers": {
+      "backend-tests.json": 0,
+      "backend-tests.stderr.log": 0
+    },
+    "t1_winners": "takeover_test.go:491: termination lock winners: map[binding_exit:100 end:106]"
+  },
+  "backend-race.json": {
+    "top_level": {
+      "pass": 118,
+      "fail": 0,
+      "skip": 0
+    },
+    "subtests": {
+      "pass": 447,
+      "fail": 0,
+      "skip": 0
+    },
+    "packages": {
+      "pass": 10,
+      "fail": 0,
+      "skip": 4
+    },
+    "s3": {
+      "top_level": {
+        "pass": 16,
+        "fail": 0,
+        "skip": 0
+      },
+      "subtests": {
+        "pass": 237,
+        "fail": 0,
+        "skip": 0
+      }
+    },
+    "race_markers": {
+      "backend-race.json": 0,
+      "backend-race.stderr.log": 0
+    },
+    "t1_winners": "takeover_test.go:491: termination lock winners: map[binding_exit:100 end:102]"
+  }
+}

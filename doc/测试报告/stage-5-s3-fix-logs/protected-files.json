@@ -1,0 +1,42 @@
+[
+  {
+    "path": "backend/internal/session/send_admission.go",
+    "matches_HEAD": true,
+    "sha256": "3fe1c10f14f7bb8de271c02dd08f2d981c0839e91add7138104c727b3196f5a5"
+  },
+  {
+    "path": "backend/internal/session/session.go",
+    "matches_HEAD": true,
+    "sha256": "422b27f8cbd209b341ec91a5d8bc4919dad0b2422adf6ee0ebacfe08da4bd730"
+  },
+  {
+    "path": "backend/internal/session/binding.go",
+    "matches_HEAD": true,
+    "sha256": "6b16a63265dd0617595ea1a1518744c1c8c15667c1d1af4b4300efcf66f22835"
+  },
+  {
+    "path": "doc/stage-5-implementation-plan.md",
+    "matches_HEAD": true,
+    "sha256": "568598b5c589f613ae2dd4a14db92e7e8aee55c20e07399cc4cdbe9ca5b5f570"
+  },
+  {
+    "path": "doc/web-ssh-design-development-plan.md",
+    "matches_HEAD": true,
+    "sha256": "bb33c25f278ab73ccf134970d918ee1d1eadb2be0522351ea4146bd71de8739a"
+  },
+  {
+    "path": "doc/web-ssh-websocket-protocol.md",
+    "matches_HEAD": true,
+    "sha256": "9c40e06eeb51bdcd6ce53bfc1a3cb9cbddb29c292b75be0292d98f5874aa0a77"
+  },
+  {
+    "path": "doc/web-ssh-architecture-implementation-plan.md",
+    "matches_HEAD": true,
+    "sha256": "77ca20b430ef40628dc6a4fccef0a0a54e32cf2d43b026f39c884319e4340fc5"
+  },
+  {
+    "path": "doc/web-ssh-implementation-stages.md",
+    "matches_HEAD": true,
+    "sha256": "dc62be00acdae224f6a6f0eb5dcc5efd6c9de13275826b1c8b0ca8dd5826c4d9"
+  }
+]

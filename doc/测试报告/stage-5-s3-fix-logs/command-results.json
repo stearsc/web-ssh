@@ -1,0 +1,50 @@
+[
+  {
+    "command": "go test -count=1 -json ./...",
+    "cwd": "backend",
+    "exit_code": 0,
+    "seconds": 38.54,
+    "stdout": "backend-tests.json",
+    "stderr": "backend-tests.stderr.log"
+  },
+  {
+    "command": "go test -race -count=1 -json ./...",
+    "cwd": "backend",
+    "exit_code": 0,
+    "seconds": 48.41,
+    "stdout": "backend-race.json",
+    "stderr": "backend-race.stderr.log"
+  },
+  {
+    "command": "go vet ./...",
+    "cwd": "backend",
+    "exit_code": 0,
+    "seconds": 0.18,
+    "stdout": "vet.log",
+    "stderr": "vet.stderr.log"
+  },
+  {
+    "command": "go build ./...",
+    "cwd": "backend",
+    "exit_code": 0,
+    "seconds": 0.57,
+    "stdout": "build.log",
+    "stderr": "build.stderr.log"
+  },
+  {
+    "command": "npm test",
+    "cwd": "frontend",
+    "exit_code": 0,
+    "seconds": 0.69,
+    "stdout": "frontend-tests.log",
+    "stderr": "frontend-tests.stderr.log"
+  },
+  {
+    "command": "npm run build",
+    "cwd": "frontend",
+    "exit_code": 0,
+    "seconds": 2.07,
+    "stdout": "frontend-build.log",
+    "stderr": "frontend-build.stderr.log"
+  }
+]

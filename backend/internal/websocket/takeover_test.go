@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -209,6 +210,38 @@ func s3Echo(t *testing.T, p *takeoverPeer, text string) {
 	}
 }
 
+// s3ArmReaderDone 让执行器停在已准入操作上，并把操作槽填满，使 Reader
+// 确定停在 Binding.Done select；返回的 release 用于测试结束前解除执行器。
+func s3ArmReaderDone(t *testing.T, h *harness, hooks *connectionHooks) (*takeoverPeer, *session.Binding, func()) {
+	t.Helper()
+	executeGate, releaseExecute := s3Gate(t)
+	executing := make(chan struct{}, 1)
+	waiting := make(chan struct{}, 1)
+	var operations atomic.Int64
+	var executeOnce sync.Once
+	hooks.beforeExecute = func() {
+		executeOnce.Do(func() {
+			executing <- struct{}{}
+			<-executeGate
+		})
+	}
+	hooks.waitingOperation = func() {
+		if operations.Add(1) == 3 {
+			waiting <- struct{}{}
+		}
+	}
+	a := s3Peer(t, h, hooks)
+	a.bind(t, h, "attach", 0)
+	a.prefix(t)
+	old := s3Binding(a.server)
+	a.send(t, 2, []byte("forbidden-queued-1"))
+	s3Wait(t, executing)
+	a.send(t, 2, []byte("forbidden-queued-2"))
+	a.send(t, 1, []byte(`{"type":"resize","cols":100,"rows":40,"binding_generation":1}`))
+	s3Wait(t, waiting)
+	return a, old, releaseExecute
+}
+
 func TestS3T1W02HundredTakeovers(t *testing.T) {
 	h := s3Harness(t, nil)
 	stopLists := make(chan struct{})
@@ -360,79 +393,77 @@ func TestS3T2RealNetworkFirstReason(t *testing.T) {
 }
 
 func TestS3T1ReaderDoneAndCommitHandoff(t *testing.T) {
-	for round := 0; round < 100; round++ {
-		t.Run(fmt.Sprintf("round-%03d", round), func(t *testing.T) {
+	counts := map[string]int{"end": 0, "binding_exit": 0}
+	for attempt := 0; attempt < 400 && (counts["end"] < 100 || counts["binding_exit"] < 100); attempt++ {
+		startWithBindingExit := attempt%2 == 1
+		order := "end_first"
+		if startWithBindingExit {
+			order = "binding_first"
+		}
+		t.Run(fmt.Sprintf("%s-%03d", order, attempt), func(t *testing.T) {
 			h := s3Harness(t, nil)
-			executeGate, releaseExecute := s3Gate(t)
-			writerGate, releaseWriter := s3Gate(t)
+			bindingGate := make(chan struct{})
+			endGate := make(chan struct{})
+			bindingReady := make(chan struct{}, 1)
+			endReady := make(chan struct{}, 1)
+			winner := make(chan string, 1)
 			registerGate, releaseRegister := s3Gate(t)
-			executing := make(chan struct{}, 1)
-			waiting := make(chan struct{}, 1)
-			writerPaused := make(chan struct{}, 1)
 			committed := make(chan *session.CommitResult, 1)
-			var pauseWriter atomic.Bool
-			var operations atomic.Int64
-			var executeOnce sync.Once
-			var writerOnce sync.Once
-			a := s3Peer(t, h, &connectionHooks{
-				beforeExecute: func() { executeOnce.Do(func() { executing <- struct{}{}; <-executeGate }) },
-				waitingOperation: func() {
-					if operations.Add(1) == 3 {
-						waiting <- struct{}{}
+			var bindingOnce, endOnce sync.Once
+			hooks := &connectionHooks{
+				beforeTermination: func(source, reason string) {
+					switch {
+					case source == "binding_exit":
+						bindingOnce.Do(func() { bindingReady <- struct{}{} })
+						<-bindingGate
+					case source == "end" && reason == "taken_over":
+						endOnce.Do(func() { endReady <- struct{}{} })
+						<-endGate
 					}
 				},
-				beforeAdmission: func() {
-					if pauseWriter.Load() {
-						writerOnce.Do(func() { writerPaused <- struct{}{}; <-writerGate })
-					}
-				},
-			})
-			a.bind(t, h, "attach", 0)
-			a.prefix(t)
-			old := s3Binding(a.server)
-			a.send(t, 2, []byte("forbidden-queued-1"))
-			s3Wait(t, executing)
-			a.send(t, 2, []byte("forbidden-queued-2"))
-			a.send(t, 1, []byte(`{"type":"resize","cols":100,"rows":40,"binding_generation":1}`))
-			s3Wait(t, waiting)
-			pauseWriter.Store(true)
-			a.server.signal()
-			s3Wait(t, writerPaused)
-			b := s3Peer(t, h, &connectionHooks{beforeRegister: func(r *session.CommitResult) { committed <- r; <-registerGate }})
+				afterReasonFixed: func(source string) { winner <- source },
+			}
+			a, old, releaseExecute := s3ArmReaderDone(t, h, hooks)
+			b := s3Peer(t, h, &connectionHooks{beforeRegister: func(r *session.CommitResult) {
+				committed <- r
+				<-registerGate
+			}})
 			b.bind(t, h, "takeover", 0)
 			result := s3Wait(t, committed)
-			select {
-			case <-old.Done():
-				t.Fatal("提交提前取消旧 context")
-			default:
+			if h.session.BindingDisposition(old) != session.BindingSuperseded {
+				t.Fatal("提交未逻辑撤权")
 			}
-			if h.session.BindingDisposition(old) != session.BindingSuperseded || h.service.Count() != 2 {
-				t.Fatal("逻辑撤权/slot 错误")
-			}
-			// 由旧执行器失效分流先进入终止，old.end 随后执行；所有网络发送仍由原 Writer 完成。
-			if round%2 == 0 {
-				// 独立的迟到 Detach 取消已 superseded 对象；Connection context 尚未取消，
-				// 执行器仍暂停且操作槽满，Reader 此刻只能通过 Binding.Done 退出。
+			if startWithBindingExit {
 				h.session.Detach(old)
-				s3Wait(t, a.server.terminated)
-				releaseExecute()
+				s3Wait(t, bindingReady)
+				go result.FinishDisplaced()
+				s3Wait(t, endReady)
 			} else {
-				// 对照：先让执行器完成失效准入分流，Reader 的迟到 defer 不得覆盖。
-				releaseExecute()
-				s3Wait(t, a.server.terminated)
+				go result.FinishDisplaced()
+				s3Wait(t, endReady)
+				h.session.Detach(old)
+				s3Wait(t, bindingReady)
 			}
+			// 两个终止路径都已停在 c.mu 前；按本轮起点放行后再同时竞争 c.mu。
+			if startWithBindingExit {
+				close(bindingGate)
+				runtime.Gosched()
+				close(endGate)
+			} else {
+				close(endGate)
+				runtime.Gosched()
+				close(bindingGate)
+			}
+			won := s3Wait(t, winner)
+			counts[won]++
+			releaseExecute()
 			if s3Reason(a.server) != "taken_over" {
-				t.Fatal(s3Reason(a.server))
+				t.Fatalf("首因=%s winner=%s", s3Reason(a.server), won)
 			}
-			if h.service.Count() != 2 {
-				t.Fatal("Writer 未退出却提前归还 slot")
-			}
-			releaseWriter()
 			a.terminal(t, "taken_over", 4001)
 			s3Done(t, a.server)
 			releaseRegister()
 			b.prefix(t)
-			result.FinishDisplaced()
 			if h.session.BindingDisposition(result.NewBinding) != session.BindingCurrent {
 				t.Fatal("旧回调改变新端")
 			}
@@ -450,8 +481,227 @@ func TestS3T1ReaderDoneAndCommitHandoff(t *testing.T) {
 			if resizeCount != 0 || h.remote.Shells.Load() != 1 {
 				t.Fatal("旧 resize 到达真实 SSH 或重建 Shell", resizeCount)
 			}
+			b.raw.Close()
+			s3Done(t, b.server)
 		})
 	}
+	if counts["end"] < 100 || counts["binding_exit"] < 100 {
+		t.Fatalf("锁竞争顺序覆盖不足: %v", counts)
+	}
+	t.Logf("termination lock winners: %v", counts)
+}
+
+func TestS3InactiveLifecycleReasons(t *testing.T) {
+	for _, cause := range []string{"close", "revoke"} {
+		t.Run(cause, func(t *testing.T) {
+			h := s3Harness(t, nil)
+			bindingGate, releaseBinding := s3Gate(t)
+			endGate, releaseEnd := s3Gate(t)
+			bindingReady := make(chan struct{}, 1)
+			endReady := make(chan struct{}, 1)
+			inactiveDone := make(chan string, 1)
+			var bindingOnce, endOnce, inactiveOnce sync.Once
+			hooks := &connectionHooks{
+				beforeTermination: func(source, reason string) {
+					switch {
+					case source == "binding_exit":
+						bindingOnce.Do(func() { bindingReady <- struct{}{} })
+						<-bindingGate
+					case source == "end":
+						endOnce.Do(func() { endReady <- struct{}{} })
+						<-endGate
+					}
+				},
+				afterBindingExit: func(state string) {
+					inactiveOnce.Do(func() { inactiveDone <- state })
+				},
+			}
+			a, _, releaseExecute := s3ArmReaderDone(t, h, hooks)
+			var other *session.Session
+			if cause == "revoke" {
+				login := &auth.Session{ID: strings.Repeat("b", 32), Expires: time.Now().Add(time.Hour)}
+				view, _, err := h.manager.Create(login, h.session.View().ServerID, 80, 24)
+				if err != nil {
+					t.Fatal(err)
+				}
+				other, err = h.manager.Find(view.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			causeDone := make(chan struct{})
+			go func() {
+				defer close(causeDone)
+				if cause == "close" {
+					h.session.Close("user_closed")
+				} else {
+					h.manager.Revoke(h.login.ID)
+				}
+			}()
+			s3Wait(t, bindingReady)
+			s3Wait(t, endReady)
+			releaseBinding()
+			if state := s3Wait(t, inactiveDone); state != "inactive" {
+				t.Fatalf("Reader 处置=%s", state)
+			}
+			if got := s3Reason(a.server); got != "" {
+				t.Fatalf("Reader 抢先固定原因=%s", got)
+			}
+			releaseEnd()
+			s3Wait(t, causeDone)
+			releaseExecute()
+			want, code := "closed", 1000
+			if cause == "revoke" {
+				want, code = "error", 1008
+			}
+			a.terminal(t, want, code)
+			s3Done(t, a.server)
+			if cause == "close" {
+				if s3Reason(a.server) != "closed:user_closed" || h.session.View().Status != "CLOSED" {
+					t.Fatal(s3Reason(a.server), h.session.View())
+				}
+				s3Wait(t, h.session.Done())
+			} else {
+				if s3Reason(a.server) != "AUTH_REQUIRED" || h.session.View().Status != "DISCONNECTED" {
+					t.Fatal(s3Reason(a.server), h.session.View())
+				}
+				if other == nil || other.View().Status != "DISCONNECTED" {
+					t.Fatal("其他登录 Session 被撤销")
+				}
+				if len(h.manager.List("")) != 2 || h.remote.Shells.Load() != 2 {
+					t.Fatal("撤销跨 Session 生效", len(h.manager.List("")), h.remote.Shells.Load())
+				}
+				other.Close("test_cleanup")
+				s3Wait(t, other.Done())
+				h.session.Close("test_cleanup")
+				s3Wait(t, h.session.Done())
+			}
+			if h.service.Count() != 0 {
+				t.Fatal("旧 slot 未回收")
+			}
+		})
+	}
+}
+
+func TestS3SweepLoginExpiryInactiveReason(t *testing.T) {
+	h := s3Harness(t, nil)
+	deadline := time.Now().Add(2 * time.Second)
+	h.login.Expires = deadline
+	bindingGate, releaseBinding := s3Gate(t)
+	endGate, releaseEnd := s3Gate(t)
+	bindingReady := make(chan struct{}, 1)
+	endReady := make(chan struct{}, 1)
+	inactiveDone := make(chan string, 1)
+	var bindingOnce, endOnce, inactiveOnce sync.Once
+	hooks := &connectionHooks{
+		disableLoginExpiry: true,
+		beforeTermination: func(source, reason string) {
+			switch {
+			case source == "binding_exit":
+				bindingOnce.Do(func() { bindingReady <- struct{}{} })
+				<-bindingGate
+			case source == "end":
+				endOnce.Do(func() { endReady <- struct{}{} })
+				<-endGate
+			}
+		},
+		afterBindingExit: func(state string) {
+			inactiveOnce.Do(func() { inactiveDone <- state })
+		},
+	}
+	a, _, releaseExecute := s3ArmReaderDone(t, h, hooks)
+	timer := time.NewTimer(time.Until(deadline.Add(time.Millisecond)))
+	<-timer.C
+	sweepDone := make(chan struct{})
+	go func() {
+		h.manager.Sweep()
+		close(sweepDone)
+	}()
+	s3Wait(t, bindingReady)
+	s3Wait(t, endReady)
+	releaseBinding()
+	if state := s3Wait(t, inactiveDone); state != "inactive" {
+		t.Fatalf("Reader 处置=%s", state)
+	}
+	if got := s3Reason(a.server); got != "" {
+		t.Fatalf("Reader 抢先固定原因=%s", got)
+	}
+	releaseEnd()
+	s3Wait(t, sweepDone)
+	releaseExecute()
+	a.terminal(t, "error", 1008)
+	s3Done(t, a.server)
+	if s3Reason(a.server) != "AUTH_REQUIRED" || h.session.View().Status != "DISCONNECTED" {
+		t.Fatal(s3Reason(a.server), h.session.View())
+	}
+	h.session.Close("test_cleanup")
+	s3Wait(t, h.session.Done())
+	if h.service.Count() != 0 || h.remote.Shells.Load() != 1 {
+		t.Fatal("Sweep 回收或 SSH 保留错误")
+	}
+}
+
+func TestS3SweepExpiredCredentialKeepsBinding(t *testing.T) {
+	h := s3Harness(t, func(c *config.Config) {
+		c.Session.BindingCredentialTtl = 1
+		c.Websocket.BindTimeout = 1
+	})
+	a := s3Peer(t, h, nil)
+	a.bind(t, h, "attach", 0)
+	a.prefix(t)
+	old := s3Binding(a.server)
+	credential, err := h.manager.Prepare(h.login, h.session.View().ID, "takeover", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline, err := time.Parse("2006-01-02T15:04:05.000Z", credential.ExpiresAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	timer := time.NewTimer(time.Until(deadline.Add(time.Millisecond)))
+	<-timer.C
+	h.manager.Sweep()
+	if h.session.BindingDisposition(old) != session.BindingCurrent || h.session.View().Generation != 1 {
+		t.Fatal("Sweep 撤销活动 Binding")
+	}
+	b := s3Peer(t, h, nil)
+	b.token(t, credential.Credential, 0)
+	b.terminal(t, "error", 1008)
+	s3Done(t, b.server)
+	if s3Reason(b.server) != "INVALID_CREDENTIAL" {
+		t.Fatal(s3Reason(b.server))
+	}
+	s3Echo(t, a, "sweep-keeps-live")
+}
+
+func TestS3CurrentInputBackpressureUsesFallback(t *testing.T) {
+	h := s3Harness(t, func(c *config.Config) { c.Session.OperationWaitTimeout = 1 })
+	executeGate, releaseExecute := s3Gate(t)
+	executing := make(chan struct{}, 1)
+	waiting := make(chan struct{}, 1)
+	var operations atomic.Int64
+	var executeOnce sync.Once
+	a := s3Peer(t, h, &connectionHooks{
+		beforeExecute: func() { executeOnce.Do(func() { executing <- struct{}{}; <-executeGate }) },
+		waitingOperation: func() {
+			if operations.Add(1) == 3 {
+				waiting <- struct{}{}
+			}
+		},
+	})
+	a.bind(t, h, "attach", 0)
+	a.prefix(t)
+	a.send(t, 2, []byte("blocked-1"))
+	s3Wait(t, executing)
+	a.send(t, 2, []byte("blocked-2"))
+	a.send(t, 1, []byte(`{"type":"resize","cols":100,"rows":40,"binding_generation":1}`))
+	s3Wait(t, waiting)
+	a.terminal(t, "error", 1008)
+	if s3Reason(a.server) != "INPUT_BACKPRESSURE" {
+		t.Fatal(s3Reason(a.server))
+	}
+	releaseExecute()
+	s3Done(t, a.server)
 }
 
 func TestS3R06T4RegistrationWindow(t *testing.T) {

@@ -1,0 +1,10 @@
+{
+  "zip_comment": "b91546aa5739a80468d7ba5d02ac864b28ed79cd",
+  "zip_entries": 178,
+  "zip_has_report": true,
+  "zip_has_frontend_tests_log": false,
+  "zip_has_frontend_build_log": false,
+  "observed_command": "git archive --format=zip --output=web-ssh-stage5-3.zip b91546aa",
+  "observed_source": "~/.bash_history",
+  "zip_mtime": "2026-11-17 01:41:46 +0800"
+}
