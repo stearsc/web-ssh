@@ -1,5 +1,12 @@
 import { ApiError } from './client.ts'
 import { request } from './management.ts'
+
+export type SessionStatus =
+  | 'CONNECTING'
+  | 'CONNECTED'
+  | 'DISCONNECTED'
+  | 'CLOSING'
+
 export interface SessionView {
   id: string
   server_id: string
@@ -7,7 +14,7 @@ export interface SessionView {
   host: string
   port: number
   username: string
-  status: 'CONNECTING' | 'CONNECTED' | 'DISCONNECTED' | 'CLOSING'
+  status: SessionStatus
   binding_generation: number
   current_cols: number
   current_rows: number
@@ -50,6 +57,7 @@ export function sessionView(value: unknown, id: string): SessionView {
     Number.isFinite(Date.parse(s))
   if (
     v.id !== id ||
+    !/^[a-f0-9]{32}$/.test(id) ||
     typeof v.server_id !== 'string' ||
     !/^[a-f0-9]{32}$/.test(v.server_id) ||
     !['name', 'host', 'username'].every(
@@ -81,5 +89,61 @@ export function sessionView(value: unknown, id: string): SessionView {
       : v.offline_expires_at !== null || v.remaining_seconds !== null
   )
     return fail()
-  return { ...v } as unknown as SessionView
+  // 只复制冻结的 SessionView 字段，避免响应中的额外字段进入页面状态。
+  return {
+    id: v.id,
+    server_id: v.server_id,
+    name: v.name as string,
+    host: v.host as string,
+    port: v.port,
+    username: v.username as string,
+    status: v.status as SessionStatus,
+    binding_generation: v.binding_generation,
+    current_cols: v.current_cols,
+    current_rows: v.current_rows,
+    created_at: v.created_at as string,
+    disconnected_at: v.disconnected_at as string | null,
+    last_attached_at: v.last_attached_at as string | null,
+    offline_expires_at: v.offline_expires_at as string | null,
+    remaining_seconds: v.remaining_seconds as number | null,
+  }
+}
+
+export function sessionList(value: unknown): SessionView[] {
+  const fail = (): never => {
+    throw new ApiError('INVALID_RESPONSE', 'Session 列表响应非法')
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return fail()
+  const items = (value as Record<string, unknown>).items
+  if (!Array.isArray(items)) return fail()
+  const ids = new Set<string>()
+  return items.map((item) => {
+    if (
+      !item ||
+      typeof item !== 'object' ||
+      Array.isArray(item) ||
+      typeof (item as Record<string, unknown>).id !== 'string'
+    )
+      return fail()
+    const id = (item as Record<string, unknown>).id as string
+    if (!/^[a-f0-9]{32}$/.test(id) || ids.has(id)) return fail()
+    ids.add(id)
+    return sessionView(item, id)
+  })
+}
+
+export async function listSessions(
+  serverID: string,
+  signal: AbortSignal,
+): Promise<SessionView[]> {
+  const params = new URLSearchParams()
+  if (serverID) params.set('server_id', serverID)
+  const query = params.toString()
+  const value = await request<unknown>(
+    `/api/sessions${query ? `?${query}` : ''}`,
+    'GET',
+    undefined,
+    signal,
+  )
+  return sessionList(value)
 }

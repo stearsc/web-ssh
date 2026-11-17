@@ -17,7 +17,7 @@ RUN CGO_ENABLED=0 go build -trimpath -o /out/web-ssh ./cmd/server
 
 FROM debian:bookworm-slim AS runtime
 WORKDIR /app
-RUN mkdir -p /data && chown 10001:10001 /data /app
+RUN groupadd --gid 10001 app && useradd --uid 10001 --gid 10001 --home-dir /home/app --create-home --shell /usr/sbin/nologin app && mkdir -p /data && chown 10001:10001 /data /app /home/app
 COPY --from=backend /out/web-ssh /app/web-ssh
 USER 10001:10001
 EXPOSE 8080

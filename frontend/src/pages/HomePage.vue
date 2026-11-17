@@ -15,8 +15,10 @@ import ThemeButton from '../components/layout/ThemeButton.vue'
 import Modal from '../components/layout/Modal.vue'
 import ServerForm from '../components/server/ServerForm.vue'
 import HostKeyDialog from '../components/server/HostKeyDialog.vue'
+import SessionManager from '../components/session/SessionManager.vue'
 const tabs = ref<SessionView[]>([])
 const signingOut = ref(false)
+const view = ref<'servers' | 'sessions'>('servers')
 const panes = new Map<
   string,
   { stop(): Promise<void>; dispose(): Promise<void> }
@@ -48,6 +50,7 @@ async function connectServer(id = selected.value?.id): Promise<void> {
     if (operations.signal.aborted) return
     tabs.value.push(session)
     activeTab.value = session.id
+    view.value = 'servers'
     sidebar.value = false
   } catch (error) {
     if (operations.signal.aborted) return
@@ -137,7 +140,7 @@ async function choose(item: ServerView): Promise<void> {
   if (logoutPending.value) return
   const generation = ++selectionGeneration
   try {
-    const view = await request<ServerView>(
+    const server = await request<ServerView>(
       `/api/servers/${item.id}`,
       'GET',
       undefined,
@@ -145,8 +148,9 @@ async function choose(item: ServerView): Promise<void> {
     )
     if (generation !== selectionGeneration || operations.signal.aborted)
       return
-    selected.value = view
+    selected.value = server
     activeTab.value = ''
+    view.value = 'servers'
     if (matchMedia('(max-width: 720px)').matches) sidebar.value = false
   } catch (error) {
     if (!operations.signal.aborted) notice.value = message(error)
@@ -215,19 +219,23 @@ async function confirmed(): Promise<void> {
   const id = probeTarget.value
   probe.value = null
   try {
-    const view = await request<ServerView>(
+    const server = await request<ServerView>(
       `/api/servers/${id}`,
       'GET',
       undefined,
       operations.signal,
     )
-    if (selected.value?.id === id) selected.value = view
+    if (selected.value?.id === id) selected.value = server
     await load()
     if (probeAction.value === 'connect') await connectServer(id)
     else await testServer(id)
   } catch (error) {
     if (!operations.signal.aborted) notice.value = message(error)
   }
+}
+function openSessionManager(): void {
+  sidebar.value = false
+  view.value = 'sessions'
 }
 async function signOut(): Promise<void> {
   if (signingOut.value) return
@@ -260,6 +268,7 @@ async function signOut(): Promise<void> {
     <header class="topbar">
       <div class="brand">
         <button
+          v-if="view === 'servers'"
           class="icon-button"
           :aria-expanded="sidebar"
           aria-label="显示或隐藏服务器列表"
@@ -269,7 +278,19 @@ async function signOut(): Promise<void> {
         ><span class="wordmark">Web SSH</span>
       </div>
       <div class="top-actions">
-        <button :disabled="logoutPending" @click="edit(null)">
+        <button
+          v-if="view === 'servers'"
+          :disabled="logoutPending"
+          @click="openSessionManager"
+        >
+          会话管理
+        </button>
+        <button v-else @click="view = 'servers'">返回服务器</button>
+        <button
+          v-if="view === 'servers'"
+          :disabled="logoutPending"
+          @click="edit(null)"
+        >
           添加服务器</button
         ><ThemeButton /><button :disabled="signingOut" @click="signOut">
           {{ logoutPending ? '重试退出登录' : '退出登录' }}
@@ -277,12 +298,16 @@ async function signOut(): Promise<void> {
       </div>
     </header>
     <button
-      v-if="sidebar"
+      v-if="view === 'servers' && sidebar"
       class="drawer-backdrop"
       aria-label="隐藏服务器列表"
       @click="sidebar = false"
     />
-    <aside v-if="sidebar" class="sidebar" aria-label="服务器列表">
+    <aside
+      v-if="view === 'servers' && sidebar"
+      class="sidebar"
+      aria-label="服务器列表"
+    >
       <div class="section-heading">
         服务器 <span>{{ items.length }}</span>
       </div>
@@ -337,7 +362,11 @@ async function signOut(): Promise<void> {
       <button @click="load">刷新列表</button>
     </aside>
     <main class="main">
-      <nav v-if="tabs.length" class="terminal-tabs" aria-label="终端标签">
+      <nav
+        v-if="view === 'servers' && tabs.length"
+        class="terminal-tabs"
+        aria-label="终端标签"
+      >
         <button :class="{ selected: !activeTab }" @click="activeTab = ''">
           服务器
         </button>
@@ -353,13 +382,22 @@ async function signOut(): Promise<void> {
       <TerminalPane
         v-for="tab in tabs"
         :key="tab.id"
-        v-show="activeTab === tab.id"
+        v-show="view === 'servers' && activeTab === tab.id"
         :ref="(pane) => setPane(tab.id, pane)"
         :session="tab"
-        :active="activeTab === tab.id"
+        :active="view === 'servers' && activeTab === tab.id"
         @closed="removeTab(tab.id)"
       />
-      <section v-if="selected && !activeTab" class="server-detail">
+      <SessionManager
+        v-if="view === 'sessions'"
+        :servers="items"
+        :can-refresh="identity !== null && !logoutPending"
+        :auth-token="identity"
+      />
+      <section
+        v-else-if="selected && !activeTab"
+        class="server-detail"
+      >
         <div class="detail-heading">
           <h1>{{ selected.name }}</h1>
           <div class="actions">
