@@ -643,6 +643,60 @@ test('裸关闭码遵循冻结分类；4001/1000停止，4002及网络关闭有�
     } else assert.equal((await done).code, `WS_${code}`)
   }
 })
+test('裸 Close 4001 明确提示接管关闭、保留有限排空且不重试；4002 仍恢复', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 10000 })
+  const h = recoveryHarness(t)
+  const connection = h.client.connect()
+  const done = h.client.completion
+  await flush()
+  const socket = h.sockets[0]
+  socket.open()
+  socket.message(bound(0, 2))
+  socket.message(Uint8Array.of(1, 2).buffer)
+  socket.message(Uint8Array.of(3, 4).buffer)
+  await flush()
+  assert.equal(h.terminals[0].writes.length, 1)
+  socket.onclose({ code: 4001 })
+  assert.equal((await connection).connected, true)
+  await flush()
+  assert.equal(h.requests.length, 1)
+  assert.equal(h.sockets.length, 1)
+  assert.equal(
+    h.states.some(
+      (state) => state.phase === 'retry_wait' && state.code === 'WS_4001',
+    ),
+    false,
+  )
+  h.terminals[0].writes[0].cb()
+  await flush()
+  assert.equal(h.terminals[0].writes.length, 2)
+  h.terminals[0].writes[1].cb()
+  await flush()
+  const result = await done
+  assert.equal(result.code, 'WS_4001')
+  assert.match(result.message, /其他连接接管/)
+  assert.equal(result.exhausted, false)
+  assert.equal(h.client.output.requestedStartOffset(), 4)
+  t.mock.timers.tick(1000)
+  await flush()
+  assert.equal(h.requests.length, 1)
+  assert.equal(h.sockets.length, 1)
+
+  const next = h.client.connect()
+  await flush()
+  const nextSocket = h.sockets[1]
+  nextSocket.open()
+  nextSocket.onclose({ code: 4002 })
+  await flush()
+  assert.equal(h.states.at(-1).phase, 'retry_wait')
+  assert.equal(h.states.at(-1).code, 'WS_4002')
+  t.mock.timers.tick(1000)
+  await flush()
+  assert.equal(h.requests.length, 3)
+  assert.equal(h.sockets.length, 3)
+  await h.client.stop()
+  assert.equal((await next).connected, false)
+})
 test('持续 OUTPUT_GAP 和本地终端重建不能无限恢复，旧 epoch 回调无效', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 10000 })
   const h = recoveryHarness(t, { reconnect_max_attempts: 2 })

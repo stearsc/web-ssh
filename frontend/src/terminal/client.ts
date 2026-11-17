@@ -589,7 +589,9 @@ export class TerminalClient {
         if (!valid()) return
         const result = this.result(
           `WS_${event.code}`,
-          `连接已结束（${event.code}）`,
+          event.code === 4001
+            ? '连接已因其他连接接管而关闭（4001）'
+            : `连接已结束（${event.code}）`,
           [1000, 4001].includes(event.code),
         )
         result.retry = [1006, 1011, 1012, 1013, 4002].includes(event.code)
