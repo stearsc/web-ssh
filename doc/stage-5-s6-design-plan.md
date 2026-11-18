@@ -17,6 +17,7 @@
 | MAJOR-3 signOut 失败语义 | §6.5 | stop 失败与 close 失败分别统计、记录和反馈；登出成功优先 |
 | U1–U9 | §19 | 全部改为“已裁决” |
 | 新增测试 | §17 | S6-T46 至 S6-T50 |
+| 第三轮：T46 构造阶段补充 | §7.4.1、§15.1、§17、§18.1、§19.2 | 核对 xterm 6.0.0、addon-fit 0.11.0 源码：`new Terminal()` 抛错无可释放实例，构造期不产生外部资源（未确认边界已记录）；`new FitAddon()` 抛错时工厂释放已持有的 Terminal。新增 S6-T46-A、S6-T46-B；无新阻塞项 |
 
 ---
 
@@ -666,8 +667,45 @@ function rollbackTerminal(term: Terminal, subscriptions: IDisposable[]): void {
 
 - 与现状的差异只有两点：订阅失败也纳入回滚；`terminal`/`fit` 引用改为全部成功后才写入（现状是 `open` 之后立即写入）。端口的 `write`/`dispose` 行为不变。
 - 回滚失败时仍重新抛出**原错误**，回滚错误另行记录在 `terminalCleanupError`。此时可能有 xterm 残留，`close()` 会因此 reject，Pane 进入 `dispose_failed`，保留预占（U1）。
-- **C1 前置不变量**：本节结论依赖“`createTerminal()` 是 `TerminalClient` 与 `TerminalOutputTracker` 构造函数的最后一步”。C1 开始前必须重新核对；若 S5 构造顺序改变，必须重新证明构造失败不会遗留资源，否则停止并报告（§16.2）。
+- **C1 前置不变量**：本节结论依赖“`createTerminal()` 是 `TerminalClient` 与 `TerminalOutputTracker` 构造函数的最后一步”，以及 §7.4.1 对 `@xterm/xterm` 6.0.0 构造期行为的核对。C1 开始前必须重新核对；若 S5 构造顺序或 xterm 版本改变，必须重新证明构造失败不会遗留资源，否则停止并报告（§16.2）。
 - 运行期重建（`replaceTerminal`）中工厂失败时，工厂同样保证不遗留新 xterm；Tracker 随后的状态处理属于 S5 现有行为，S6 不修改。
+
+#### 7.4.1 `new Terminal()` 与 `new FitAddon()` 两个构造阶段（第三轮补充）
+
+依据：`frontend/package.json` 与 `package-lock.json` 锁定 `@xterm/xterm` 6.0.0、`@xterm/addon-fit` 0.11.0。项目目录没有 `node_modules`；核对使用临时副本 `/tmp/codex/s6-ui/frontend/node_modules` 中同版本包（锁文件的 version 和 integrity 与项目一致）随包发布的 `src/` 源码。
+
+**阶段一：`new Terminal()` 抛错**
+
+| 问题 | 结论 | 依据 |
+|---|---|---|
+| 调用方能否拿到可 `dispose()` 的实例 | 不能。构造表达式抛错时 `term` 没有被赋值，工厂和调用方都拿不到实例 | JavaScript 语义 |
+| xterm 构造函数内部是否自行回滚已完成的部分 | **不会**。`Terminal`、`CoreBrowserTerminal`、`CoreTerminal` 的构造函数都没有 try/catch；中途抛错时，已经 `_register` 到内部 `DisposableStore` 的对象不会被 dispose | `src/browser/public/Terminal.ts` 第 32–54 行；`src/browser/CoreBrowserTerminal.ts` 第 149–181 行；`src/common/CoreTerminal.ts` 第 99–143 行 |
+| 构造期间是否创建 DOM 节点 | 否。创建 `div`、`textarea` 等 DOM 节点只发生在 `open(parent)`（`CoreBrowserTerminal.ts` 第 393 行起） | 同上 |
+| 构造期间是否注册全局或 DOM 事件监听、计时器、Worker、Observer | 否。构造链只创建内存对象：选项、缓冲区、日志、核心、鼠标、Unicode、字符集、OSC 链接等服务，以及 InputHandler、WriteBuffer、DecorationService、LinkProviderService、AddonManager、Emitter，并在这些内部对象之间注册事件转发。逐个检查这些构造函数，未发现 `window`/`document` 访问、`addEventListener`、`setTimeout`/`setInterval` 或 Worker；WriteBuffer 的 `setTimeout` 只在写入方法中使用 | 上述服务各自源文件的构造函数 |
+| 是否登记到全局表，导致无法回收 | 否。`vs/base/common/lifecycle.ts` 中 `TRACK_DISPOSABLES = false`，`disposableTracker` 默认为 `null` | `lifecycle.ts` 第 21–22 行 |
+| 非法选项是否会让构造抛错 | 一般不会。`OptionsService` 构造时对每个选项的校验错误被捕获并 `console.error`，不向外抛出 | `src/common/services/OptionsService.ts` 第 73–99 行 |
+
+结论：`new Terminal()` 抛错时，已创建的部分对象只在内存中互相引用，没有外部引用，也没有 DOM、全局监听或计时器，会被垃圾回收。**不需要也无法由工厂或 Pane 释放**。所以 `new Terminal()` 放在 try 之前是正确的：此时工厂不持有任何资源，直接抛出原错误即可。Client、Tracker 随之构造失败（§3.2、§3.3），Pane 的 `client` 为 null，进入 `init_failed`。
+
+未确认边界（如实记录，不当作事实）：
+
+1. 结论来自随包发布的 TypeScript 源码。运行时实际加载的是构建产物 `lib/xterm.mjs`（压缩代码），没有逐行比对；同版本包内源码与产物同源只是合理前提，未运行验证。
+2. xterm.js 没有对“构造中途抛错时不留外部资源”做文档承诺；以上只是 6.0.0 实现上的事实。升级 `@xterm/xterm` 时必须重新核对，作为 C1 前置不变量的一部分。
+3. S6 的测试使用 xterm 替身，只能验证**工厂和 Pane 的**所有权逻辑，不能证明 xterm 内部行为；不能用 T46-A 的断言替代以上源码依据。
+
+**阶段二：`new FitAddon()` 抛错**
+
+| 问题 | 结论 |
+|---|---|
+| 此时 Terminal 是否已创建、是否由工厂持有 | 是。`term` 已创建并由工厂局部变量持有；按 §7.4 伪代码，`new FitAddon()` 位于 try 内 |
+| 工厂是否释放 Terminal | 是。catch 调用 `rollbackTerminal(term, subscriptions)`：此时没有订阅，只执行 `term.dispose()`，然后重新抛出原错误 |
+| 清理失败是否保留错误 | 是。`term.dispose()` 抛错时记入 `terminalCleanupError`，写日志，仍抛出 FitAddon 的原错误；Pane 初始化失败提示显示原错误 |
+| 后续 `Pane.close()` 是否会误报成功 | 不会。此时 `client` 为 null，`close()` 中 `client?.dispose() ?? Promise.resolve()` 之后检查 `terminalCleanupError !== null` 并 reject，Pane 进入 `dispose_failed`，不 emit `closed`，HomePage 保留记录和预占（U1） |
+| FitAddon 自身是否需要释放 | 不需要。0.11.0 的 `FitAddon` 没有构造函数，只有初始为 `undefined` 的 `_terminal` 字段，`dispose()` 为空操作；构造失败时没有实例 | `addon-fit/src/FitAddon.ts` 第 26–33 行 |
+
+与当前真实代码的差异（这是 C1 要修复的现有缺陷，不是新阻塞项）：`TerminalPane.vue` 当前工厂（第 230–275 行）中 `new Terminal`、`new FitAddon`、`loadAddon`、`open` 和三个订阅**都没有 try/catch**，并在 `open` 后立即写入 `terminal`/`fit`。所以当前代码里 FitAddon 构造失败会留下一个无人引用但尚未 open 的 Terminal（按阶段一的结论，只占内存，可被回收）；`open` 或订阅失败则可能留下已插入 host 的 DOM 和监听，且无人释放。§7.4 的工厂设计已覆盖这些情况，不需要改变所有权模型。
+
+**测试替身要求**：`terminal-pane.test.mjs` 当前把 `@xterm/addon-fit` 替换为固定的 `FitAddon` 类，无法注入构造异常。C1 需要把它改为与 `Terminal` 一样，通过 `globalThis` 提供可替换的替身，才能实现 T46-B。
 
 ---
 
@@ -1300,7 +1338,7 @@ stateDiagram-v2
 | `frontend/src/pages/HomePage.vue` | 修改 | `records`、`openSession`、`registerPane`、`paneClosed`、`paneChanged`、`pageDisposed`、`connectServer` 去重、`signOut` 适配（stop/close 失败分别统计、记录和反馈，§6.5）；删除 `tabs`、`panes`、`setPane`、`removeTab` |
 | `frontend/src/components/session/SessionManager.vue` | 修改 | “操作”列、`open` 事件 |
 | `frontend/tests/session-takeover.test.mjs` | 新增 | SessionTakeover 单元测试 |
-| `frontend/tests/terminal-pane.test.mjs` | 修改 | 新增 Pane 用例；harness 中 Modal 替身改为渲染默认插槽 |
+| `frontend/tests/terminal-pane.test.mjs` | 修改 | 新增 Pane 用例；harness 中 Modal 替身改为渲染默认插槽；`FitAddon` 替身改为可经 `globalThis` 替换（T46-B） |
 | `frontend/tests/session-list.test.mjs` | 修改 | HomePage 替身 Pane 支持 ready/failed/closed/changed；新增 HomePage 与 SessionManager 用例 |
 | `frontend/src/styles/base.css` | 条件修改 | 仅 §14 第 7 条的情形 |
 
@@ -1393,6 +1431,8 @@ stateDiagram-v2
 | S6-T44 | C2 | E | 视觉检查 | 浅色和深色主题下，表格、工具栏、确认框与现有风格一致 |
 | S6-T45 | C2 | — | 回归 | `npm test`、`npm run build`、后端 `go test ./...` 全部通过；输出测试报告 |
 | S6-T46 | C1 | P | TerminalClient 构造中途抛错：用可控的 xterm 替身分别让 `loadAddon`、`open`、`onData`/`onBinary`/`onResize` 注册抛错；另测回滚本身抛错 | 已创建的订阅和 xterm 都被释放（替身记录 dispose 次数为 1）；`client` 为 null；failed 一次；关闭后 emit closed。回滚抛错时 close reject、进入 `dispose_failed`、不 emit closed |
+| S6-T46-A | C1 | P | Terminal 构造失败：`Terminal` 替身构造函数抛错 | 工厂没有可释放的实例：`FitAddon` 未构造，`loadAddon`/`open`/订阅均未调用，Pane 的 `terminal`/`fit` 保持 null，`terminalCleanupError` 为 null；`client` 为 null，ResizeObserver、MutationObserver、window 监听均未创建；failed 一次、无 ready，提示为原错误；零 fetch、零 WS；`close()` resolve 并 emit closed 一次。替身只能验证工厂和 Pane 的逻辑，xterm 内部不留外部资源以 §7.4.1 的源码依据为准，不由本测试证明 |
+| S6-T46-B | C1 | P | FitAddon 构造失败：`FitAddon` 替身构造函数抛错；子场景 B2 同时令 `term.dispose()` 抛错 | B1：Terminal 替身构造一次、`dispose` 恰好一次，`loadAddon`/`open`/订阅未调用，`terminal`/`fit` 保持 null；`client` 为 null；failed 一次，提示为 FitAddon 原错误；`close()` resolve 并 emit closed 一次。B2：提示仍为原错误；回滚错误写日志并保留；`close()` reject，`life` 为 `dispose_failed`，不 emit closed；再次 `close()` 返回同一失败 |
 | S6-T47 | C1 | P | ResizeObserver/MutationObserver 构造或 `observe` 抛错 | 已创建的 Observer 被 `disconnect`，window 监听被移除，Client 的 dispose 已启动且 xterm 替身被释放；`init_failed`、failed 一次；关闭时等待同一 dispose 结果；dispose 失败时不 emit closed、HomePage 记录保留 |
 | S6-T48 | C1 | U/P | confirming 状态下 `canBegin()` 变假（打开关闭 SSH 确认框或 Client 状态变化），再调用 `confirm()` | `canConfirm` 为假；直接调用 `confirm()` 也不调用 `connectTakeover`；零 POST takeover、零 WS；回到 idle 并提示 |
 | S6-T49 | C1 | U | GET 详情返回前：分别令 `isEnded()` 变真、`canBegin()` 变假、`allowed()` 变假 | 不进入 confirming，候选为空，确认框不渲染；之后 `confirm()` 无效 |
@@ -1404,7 +1444,7 @@ stateDiagram-v2
 
 ### 18.1 C1
 
-1. S6-T01 至 S6-T37、S6-T46 至 S6-T50 全部通过；原有 68 个用例全部通过。
+1. S6-T01 至 S6-T37、S6-T46（含 T46-A、T46-B）至 S6-T50 全部通过；原有 68 个用例全部通过。
 2. `npm run build`（含 `vue-tsc`）通过。
 3. `git diff --name-only` 只包含 §15.1 列出的文件。
 4. 代码审查确认：
@@ -1456,3 +1496,4 @@ stateDiagram-v2
 | dispose 失败后预占不释放 | 该 Session 在本页无法再打开新 Pane | U1：提示刷新页面 |
 | 构造顺序前置不变量 | BLOCKER-1 的结论依赖 S5 构造链当前顺序 | C1 开始前复核，变化即停止（§7.4、§16.2） |
 | 运行期重建时工厂失败 | 工厂保证不遗留新 xterm；Tracker 之后的状态处理是 S5 现有行为 | S6 不修改 S5 |
+| xterm 构造中途抛错的内部行为 | 依据 6.0.0 随包源码：构造期间不创建 DOM、全局监听或计时器，部分对象可被回收；未与构建产物逐行比对，xterm 没有文档承诺 | 不阻塞；升级 `@xterm/xterm` 时重新核对（§7.4.1） |

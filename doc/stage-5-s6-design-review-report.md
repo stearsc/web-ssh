@@ -3,7 +3,7 @@
 - 编写日期：2026-11-18
 - 审查对象：`doc/stage-5-s6-design-plan.md`
 - 代码基线：分支 `S6`，HEAD `feb0ac5 S5-C2`
-- 结论：第二轮定点修订已完成，BLOCKER-1/2、MAJOR-1/2/3 已处理，U1–U9 已按用户裁决登记，建议进入最终人工审查。**没有开始编码，没有执行 S6-C1，没有 commit、push 或部署。**
+- 结论：第二轮定点修订已完成，BLOCKER-1/2、MAJOR-1/2/3 已处理，U1–U9 已按用户裁决登记；第三轮补充了 T46 构造阶段的异常安全（§0A），未发现新的阻塞项，建议进入最终人工审查。**没有开始编码，没有执行 S6-C1，没有 commit、push 或部署。**
 
 ---
 
@@ -46,6 +46,43 @@
 | 最终检查紧贴 `connectTakeover` | 采纳，见设计 §10.3 |
 | signOut 先等 stop 屏障再 logout | **部分采纳**：保留 stop 与 close 失败分开处理；但 logout 与本地排空保持并行，不先等 stop。理由：实施计划 §12.2 继承第四阶段冻结语义，准入已同步封闭，先等 drain 不增加安全性，只会推迟服务端撤销最多 `write_drain_timeout` |
 | 额外调整 | “关闭 SSH 会话”不再因接管进行中禁用，以符合实施计划 §11.3“关闭意图优先”；两个 Modal 的互斥由准入检查和 `showModal` 保证 |
+
+---
+
+## 0A. 第三轮定点修订记录：T46 构造阶段异常安全（2026-11-18）
+
+### 0A.1 修订范围
+
+只修改设计方案 §7.4（新增 §7.4.1、更新 C1 前置不变量）、§15.1 测试文件说明、§17（新增 S6-T46-A、S6-T46-B，原 T46 保留不变）、§18.1、§19.2，以及本节。未修改实施计划、生产代码或测试代码；未运行测试或构建。
+
+### 0A.2 实际核对的代码和依赖
+
+- `frontend/package.json` 第 16–17 行、`frontend/package-lock.json` 约第 650–660 行：`@xterm/addon-fit` 0.11.0、`@xterm/xterm` 6.0.0。项目目录没有 `node_modules`；使用临时副本 `/tmp/codex/s6-ui/frontend/node_modules` 中的同版本包，锁文件 version 与 integrity 一致。
+- `@xterm/xterm/src/browser/public/Terminal.ts` 第 32–54 行：构造 `CoreBrowserTerminal` 和 `AddonManager`，并设置选项代理。
+- `@xterm/xterm/src/browser/CoreBrowserTerminal.ts` 第 149–181 行（构造函数）、第 234–238 行（`_setup`）、第 393 行起（`open`，DOM 创建与监听注册都在这里）、第 177–180 行（dispose 时移除 element）。
+- `@xterm/xterm/src/common/CoreTerminal.ts` 第 99–143 行（构造函数）、第 240–242 行（`_setup`）。
+- 构造链中各服务、InputHandler、WriteBuffer、DecorationService、LinkProviderService、OscLinkProvider、AddonManager 的构造函数：未发现 DOM、全局监听、计时器或 Worker。
+- `@xterm/xterm/src/common/services/OptionsService.ts` 第 73–99 行：选项校验错误被捕获，不向外抛出。
+- `@xterm/xterm/src/vs/base/common/lifecycle.ts` 第 21–22 行、第 468–498 行：全局 disposable 跟踪默认关闭；`Disposable` 构造不登记全局表。
+- `@xterm/addon-fit/src/FitAddon.ts` 第 26–33 行：无构造函数，`dispose()` 为空操作。
+- `frontend/src/components/terminal/TerminalPane.vue` 第 230–275 行：当前工厂没有 try/catch。
+- `frontend/tests/terminal-pane.test.mjs` 第 28–36 行：`Terminal` 替身经 `globalThis` 注入，`FitAddon` 是固定替身。
+
+### 0A.3 T46-A：Terminal 构造失败
+
+- **结论**：调用方拿不到实例，无从释放；xterm 6.0.0 构造函数**不会**自行回滚已注册的内部对象，但构造期间只创建内存对象，没有 DOM、全局监听、计时器或全局登记，可被垃圾回收。因此工厂把 `new Terminal()` 放在 try 之前是正确的，资源所有权已闭合。
+- **未确认边界**：结论来自随包源码，未与运行时加载的 `lib/xterm.mjs` 逐行比对；xterm 没有文档承诺。升级 xterm 时必须重新核对，已写入 C1 前置不变量。测试替身不能证明 xterm 内部行为。
+- **验收断言**：见设计 §17 S6-T46-A。
+
+### 0A.4 T46-B：FitAddon 构造失败
+
+- **结论**：此时 Terminal 已创建并由工厂持有；`new FitAddon()` 位于 try 内，catch 中执行 `term.dispose()` 后重新抛出原错误。`term.dispose()` 失败时，错误记入 `terminalCleanupError`，`close()` 因此 reject，不会误报清理成功，Pane 保留记录和预占。FitAddon 本身无需释放。
+- **验收断言**：见设计 §17 S6-T46-B（B1 正常回滚，B2 回滚失败）。
+- **C1 测试前提**：`FitAddon` 替身需改为可经 `globalThis` 替换。
+
+### 0A.5 阻塞项结论
+
+**没有发现新的设计阻塞项。** 当前真实代码中的工厂缺少回滚，是已知的现有缺陷，由第二轮的 §7.4 设计在 C1 修复；本轮没有改变资源所有权模型、Client 移交时机、ready/failed/closed 语义、预占规则或 S5 连接契约。
 
 ---
 
@@ -182,7 +219,8 @@ U1–U9 已由用户裁决，详见设计方案 §19.1 和实施计划 §21.5，
 | 在临时副本执行 `npm ci` 后运行基线 `npm test` | 已执行，68/68 通过（仅作基线，不涉及 S6 改动） |
 | mock 页面截图检查现有 UI | 已执行 |
 | 第二轮：只读核对构造链、signOut、auth/router 代码 | 已执行 |
-| S6-T01 至 S6-T50 | **均为计划，尚未执行** |
+| S6-T01 至 S6-T50（含 T46-A、T46-B） | **均为计划，尚未执行** |
+| 第三轮：只读核对 xterm 6.0.0、addon-fit 0.11.0 源码及 Pane 工厂、测试替身 | 已执行 |
 | `npm run build`、后端测试、端到端 | 未执行 |
 | 第二轮修订后的任何测试或构建 | 未执行（本轮只修改文档） |
 
