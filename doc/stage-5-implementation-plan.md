@@ -1,10 +1,10 @@
 # Web SSH 第五阶段详细实施计划
 
-- 编写日期：2026-11-16；S6 方案 B 第一轮定点修订：2026-11-18；第二轮定点修订：2026-11-18。
-- 状态：S6 方案 B 第二轮定点修订稿；D1、D2、D3 的 A 方案保持冻结，S6 所有权按用户 2026-11-18 明确裁决的方案 B 细化，并补齐 Pane ready/failed 握手、Pane 级操作门禁、身份代次和 C1/C2 边界。S5-C1/S5-C2 已完成并冻结，S6 只消费现有接口。Binding终止和Writer准入设计保持既有修订，等待人工复审；未开始编码。
+- 编写日期：2026-11-16；S6 方案 B 第一轮定点修订：2026-11-18；第二轮定点修订：2026-11-18；第三轮定点修订：2026-11-18。
+- 状态：S6 方案 B 第三轮定点修订稿；D1、D2、D3 的 A 方案保持冻结，S6 所有权按用户 2026-11-18 明确裁决的方案 B 细化。第三轮补齐 dispose 成功/失败传播、PaneLifecycle 创建取消屏障和登录生命周期 identityEpoch 三个边界，并保持第二轮 ready/failed、Pane 级操作门禁、stop/drain、replaying 和 C1/C2 边界。S5-C1/S5-C2 已完成并冻结，S6 只消费现有接口。Binding终止和Writer准入设计保持既有修订，等待人工复审；未开始编码。
 - 阶段：会话管理与跨设备接管。
-- 首轮代码检查基线：`8dc739d90034abb16bd60009d21e3af944654c7e`。第二轮文档基线：分支 `codex/第五阶段`，HEAD `feb0ac5`；本轮开始暂存区为空，工作区保留上一轮文档改动及未跟踪的 S6 编码前检查报告、第一轮修订报告和第二轮只读审查报告，均原样保护。
-- 本轮只修订本文件中与 S6 方案 B 直接相关的设计内容，并新增本轮修订报告。不修改业务代码、测试代码、API/协议、S5 冻结契约、S7/S8 既定范围、CSS、依赖或构建配置，不安装依赖，不提交、推送或执行分支整合。本轮开始前工作区保留未跟踪的 S6 编码前检查报告、第一轮修订报告和第二轮只读审查报告，本轮均不改写。
+- 首轮代码检查基线：`8dc739d90034abb16bd60009d21e3af944654c7e`。第三轮文档基线：分支 `codex/第五阶段`，HEAD `1084e02`；本轮开始暂存区为空，工作区保留用户已有修改 `luan-qi-ba-zao.txt` 和未跟踪文件 `web-ssh-stage5-6.zip`，均原样保护。
+- 本轮只修订本文件中与 S6 方案 B 第三轮三个问题直接相关的设计内容，并新增本轮修订报告。不修改业务代码、测试代码、API/协议、S5 冻结契约、S7/S8 既定范围、CSS、依赖或构建配置，不安装依赖，不提交、推送或执行分支整合。第一轮、第二轮修订报告和第二轮只读审查报告均不改写。
 - 用户本次确认：第四阶段、UI 状态提示残留修复及最新部署真实环境验证已经完成。第四阶段报告仍是当时“本地完成、生产待验”的历史记录；本计划不擅自改写它，也不将用户确认扩大为第五阶段已验收。
 
 ## 1. 阶段目标、非目标与交付边界
@@ -32,7 +32,7 @@
 | [第三阶段报告](stage-3-implementation-report.md) | 全文 §1–14；Session/Binding/WS 基础、attach-only 范围及真实网络测试方法 |
 | [v2 原型](web-ssh-prototype-v2.html) | 会话管理布局、状态筛选、已有标签定位、独立关闭确认；演示数组和立即切换状态不作为业务算法 |
 
-术语：Session 是后端托管的远端会话；WebAuthSession 是一次独立登录；Binding 属于一条 WS、固定一个 generation；候选 WS 已升级但尚未提交 Binding；提交点是架构 §5.2 的唯一原子操作；Pane 是本页终端标签组件；TerminalClient 是该 Pane 的唯一连接/恢复协调器；SessionRecovery 是原 Pane 的人工 attach 候选及人工恢复详情所有者，不拥有 takeover 详情；SessionTakeover 是候选 Pane/原 Pane 主动接管流程的唯一所有者，负责详情、确认、取消并调用既有 TerminalClient；PaneOperationGate 是 Pane 内协调 Recovery/Takeover 的本地 lease 门禁，不是全局锁或队列；`paneKey`/`paneInstanceId` 标识一次 Pane 实例；HomePage 只负责 Session ID 唯一登记、候选 Pane 创建/定位、ready/failed 匹配和页面生命周期，不持有详情或确认候选；SessionManager 只负责列表展示、筛选、刷新和发出打开事件。
+术语：Session 是后端托管的远端会话；WebAuthSession 是一次独立登录；Binding 属于一条 WS、固定一个 generation；候选 WS 已升级但尚未提交 Binding；提交点是架构 §5.2 的唯一原子操作；Pane 是本页终端标签组件；TerminalClient 是该 Pane 的唯一连接/恢复协调器；SessionRecovery 是原 Pane 的人工 attach 候选及人工恢复详情所有者，不拥有 takeover 详情；SessionTakeover 是候选 Pane/原 Pane 主动接管流程的唯一所有者，负责详情、确认、取消并调用既有 TerminalClient；PaneOperationGate 是 Pane 内协调 Recovery/Takeover 的本地 lease 门禁，不是全局锁或队列；`paneKey`/`paneInstanceId` 标识一次 Pane 实例；`PaneLifecycle` 是 HomePage 在同步预占时创建、由该 Pane 实例独占的本地生命周期句柄，承载不可逆取消标记、长期资源登记和真实 dispose 结果；`PaneDisposeResult` 是 `dispose()` 返回的显式成功/失败结果；`loginEpoch` 是登录身份生命周期代次，只在建立新登录、登出或服务端确认身份失效时推进，不随 `/api/auth/me` 展示刷新或 AuthView 对象替换变化；HomePage 只负责 Session ID 唯一登记、候选 Pane 创建/定位、ready/failed 匹配和页面生命周期，不持有详情或确认候选；SessionManager 只负责列表展示、筛选、刷新和发出打开事件。
 
 本地查询序号、任务 ID、页面生命周期标识、terminalEpoch 均不是 binding_generation。列表/详情中的 generation 只是某次查询快照；自动任务只接受自己校验通过的 bind_success 更新代次。
 
@@ -56,10 +56,10 @@
 | `frontend/src/terminal/client.ts` | S5-C1/S5-C2 已完成并通过审查：单长期任务，connect 首次前缀 Promise，completion 长期 Promise；`connectTakeover()`、首次 mode 消费、后续 attach、generation 规则和 stop 屏障均已实现并冻结 | S6 只调用现有 `connect()`/`connectTakeover()`/`stop()`/`completion`；不修改 S5 协议、mode、generation、RecoveryTask 或 stop 屏障 |
 | `frontend/src/terminal/output.ts` | tracker、偏移、drain、epoch、稳定资格及 taken_over 解析 | 原样复用；不新建第二套输出恢复机制 |
 | `frontend/src/terminal/recovery.ts`：SessionRecovery | 私有详情序号/AbortController、候选、两步人工 attach；running 时拒绝刷新 | 原流程保持；`refresh()`、`recover()` 和 `stoppedState()` 诊断刷新全部经过 Pane 操作门禁；不拥有 takeover 详情或确认，不把列表结果塞入人工候选 |
-| `frontend/src/components/terminal/TerminalPane.vue` | 每 Pane 一个 client/tracker/recovery；onMounted 自动 connect；只 emit `closed`、expose stop/dispose；初始化异常内部 catch | 增加显式 `candidate/attach` 启动模式、`ready/failed` 握手、Pane 内唯一 SessionTakeover 与操作门禁、主动接管 UI、真实 dispose 完成信号；候选 mount 不得 connect |
+| `frontend/src/components/terminal/TerminalPane.vue` | 每 Pane 一个 client/tracker/recovery；onMounted 自动 connect；只 emit `closed`、expose stop/dispose；`dispose()` 以 `catch` 吞掉清理异常并返回正常 Promise | 增加显式 `candidate/attach` 启动模式、`ready/failed` 握手、Pane 内唯一 SessionTakeover 与操作门禁、主动接管 UI；接收 HomePage 的 `PaneLifecycle`，在每个长期资源创建前及跨 await 后校验取消；`dispose()` 返回 `PaneDisposeResult`，失败不伪装成功；候选 mount 不得 connect |
 | `frontend/src/components/session/SessionManager.vue` | 只读活动 Session 列表、服务器筛选、本地状态筛选、手动刷新、可见性刷新 | 增加行“打开”事件；不查详情、不创建 Pane、不持有确认状态、不取消已移交 Pane 的接管流程 |
-| `frontend/src/pages/HomePage.vue` | tabs 数组、panes Map、v-show 保留；signOut 同步封闭准入并停止 Pane | 作为页面内唯一 Session ID 登记和 Pane 生命周期所有者；增加 `paneKey`、`pending/closing`、候选 Pane 创建/定位、ready/failed 匹配和 dispose 等待，不承载详情/确认/恢复循环 |
-| `frontend/src/stores/auth.ts`、`router/index.ts`、`pages/LoginPage.vue` | logoutPending、单 logoutTask、私有 identityEpoch、退出失败重试 | 沿用；只增加只读身份代次访问，供 Pane/Recovery/Takeover 捕获并比较；不新建全局身份基础设施 |
+| `frontend/src/pages/HomePage.vue` | tabs 数组、panes Map、v-show 保留；signOut 同步封闭准入并停止 Pane | 作为页面内唯一 Session ID 登记和 Pane 生命周期所有者；同步创建 `PaneLifecycle`/`paneKey`、维护 `pending/closing`、保留 retired `paneKey` tombstone、匹配 ready/failed、等待真实 dispose 结果，不承载详情/确认/恢复循环 |
+| `frontend/src/stores/auth.ts`、`router/index.ts`、`pages/LoginPage.vue` | logoutPending、单 logoutTask、私有 identityEpoch 只在 clear/logout 推进；`router.beforeEach()` 调 `checkIdentity()`；登录成功后导航由 `/me` 刷新身份 | 沿用现有模块：`acceptIdentity()` 只刷新展示数据，新增建立登录生命周期的入口并暴露只读 epoch；登录成功推进一次，登出推进，服务端确认失效推进；`/me` 刷新、AuthView 对象替换和网络错误不推进；不新建全局身份基础设施 |
 | 既有 Go/前端测试 | 包含“拒绝 takeover”的阶段范围断言、恢复/race/真实 TCP 及实际 Pane 测试 | 仅替换已过时范围断言，保留 attach 安全与第四阶段全部行为断言 |
 
 差异分类：
@@ -389,7 +389,9 @@ Connection.mu是现有WS调度锁，本次把已有 `Connection.mu→Detach/Sess
 
 ### 8.1 所有者和启动模型
 
-用户已确认 D2=A、D3=A，并进一步确认 S6 采用方案 B。SessionManager 只展示列表、筛选、刷新并在用户点击“打开”时发出打开事件，不查询详情、不创建 Pane、不持有确认状态。HomePage 按 Session ID 查 `tabs`、`panes`、`pending`、`closing`，在首次 await 前同步预占并创建候选 Pane。候选 Pane 只有在 `onMounted` 初始化完成、`TerminalClient`/`SessionRecovery`/`SessionTakeover` 已按顺序创建并绑定到同一 Pane、且发出经过身份校验的 `ready` 事件后，主动接管流程所有权才算移交给 Pane。模板 ref 存在或 `setPane()` 被调用都不构成 ready。
+用户已确认 D2=A、D3=A，并进一步确认 S6 采用方案 B。SessionManager 只展示列表、筛选、刷新并在用户点击“打开”时发出打开事件，不查询详情、不创建 Pane、不持有确认状态。HomePage 按 Session ID 查 `tabs`、`panes`、`pending`、`closing`，在首次 await 前同步预占、生成 `PaneLifecycle` 并创建候选 Pane。候选 Pane 只有在 `onMounted` 初始化完成、`TerminalClient`/`SessionRecovery`/`SessionTakeover` 已按顺序创建并绑定到同一 Pane、且发出经过身份校验的 `ready` 事件后，主动接管流程所有权才算移交给 Pane。模板 ref 存在、`setPane()` 被调用或 `PaneLifecycle` 已创建都不构成 ready。
+
+`PaneLifecycle` 是 HomePage 自有的普通页面对象，不是 Vue 组件实例、全局 Store 或事件总线。它在同步预占时先于组件创建，因此“尚无组件句柄”不等于“没有可取消、可清理的生命周期”。组件的模板 ref 只表示 mount 事实，永远不作为所有权、取消完成或 dispose 完成的依据。
 
 候选 Pane 拥有唯一 client/tracker/recovery/takeover 和唯一 Pane 级操作门禁。SessionTakeover 拥有主动接管的详情快照、确认候选、取消和状态；SessionRecovery 只负责人工 attach 候选和两步恢复。两者不能各自持有一套互不感知的异步状态：所有人工刷新、人工恢复、诊断刷新、接管准备、详情查询、确认和连接启动都必须经过同一个 Pane 级门禁。候选详情与 SessionRecovery 的人工 attach 候选分别存储并互相失效；SessionRecovery 不拥有 takeover。
 
@@ -399,54 +401,100 @@ S5-C1/S5-C2 已经完成并冻结。`TerminalClient` 已提供 `connect(expected
 
 #### 8.1.1 同页唯一登记、pending 与 closing 状态
 
-HomePage 的登记状态必须覆盖 Pane 尚未存在、正在初始化、初始化失败、正在关闭但尚未完成 dispose 的整个窗口，不能只用 `panes` Map 或模板 ref 判断唯一性。最小结构如下：
+HomePage 的登记状态必须覆盖 Pane 尚未创建、正在初始化、初始化失败、正在关闭但尚未完成 dispose 的整个窗口，不能只用组件 ref 或 `panes` Map 判断唯一性。最小结构如下：
 
 - `tabs`：以 Session ID 为键的 `TabEntry`，保存本次打开的 `SessionView` 快照、当前 `paneKey`/`paneInstanceId` 和 `initState: 'pending' | 'ready' | 'failed'`。
-- `panes`：以 `paneKey` 为键的 Pane 句柄，不按 Session ID 覆盖旧实例；`setPane(paneKey, handle)` 只登记句柄，不释放 `pending`。
+- `panes`：以 `paneKey` 为键的 `PaneLifecycle` 句柄，在同步预占时创建，不按 Session ID 覆盖旧实例。`setPane(paneKey, handle)` 只附加“组件已 mount”的事实和组件 ref，不替换生命周期句柄，也不释放 `pending`。
 - `pending`：以 Session ID 为键，保存当前 `paneKey`/`paneInstanceId` 和创建/初始化阶段；一个 Session 同时至多一个 pending。
-- `closing`：以 Session ID 为键，保存当前 `paneKey`/`paneInstanceId`、真实 `dispose()` Promise 或“尚无句柄”的创建取消 Promise、清理失败标记和至多一个 `reopenRequested`。
+- `closing`：以 Session ID 为键，保存当前 `paneKey`/`paneInstanceId`、该 `PaneLifecycle.dispose()` 的进行中/最终结果、清理失败标记和至多一个 `reopenRequested`。不再存在“尚无句柄”的独立分支。
+- `retiredPaneKeys`：HomePage 生命周期内只增不减的 tombstone 集合，保存已取消或已释放的 `paneKey`。旧实例迟到的 `setPane`、`ready`、`failed`、`closed`、取消确认和 dispose 结果一律按 tombstone 丢弃。
 
-`paneKey` 和 `paneInstanceId` 都由 HomePage 在同步预占时生成并写入 `TabEntry` 与 `pending`，创建后传给 Pane 且不可变；`paneKey` 建议由 Session ID 加页面内单调序号组成，用作 Vue 的 `:key`，`paneInstanceId` 用作事件和异步回调的实例身份。每次创建、失败重试和关闭后重开都必须同时生成新的 `paneKey`/`paneInstanceId`，不能只用 Session ID 区分。这样旧实例的 `ready`/`failed`/`closed` 回调可以按 `paneKey` 和 `paneInstanceId` 被识别并丢弃。
+`paneKey` 和 `paneInstanceId` 都由 HomePage 在同步预占时生成并写入 `TabEntry`、`pending`、`closing` 和 `PaneLifecycle`，创建后不可变；`paneKey` 建议由 Session ID 加页面内单调序号组成，用作 Vue 的 `:key`，`paneInstanceId` 用作事件和异步回调的实例身份。每次创建、失败重试和关闭后重开都必须同时生成新的 `paneKey`/`paneInstanceId`，不能只用 Session ID 区分。
 
-| 状态 | 建立时机 | 释放时机 | 打开/关闭规则 |
+`PaneLifecycle` 至少包含：
+
+- 不可变身份：`paneKey`、`paneInstanceId`、`pageToken`、捕获时的 `loginEpoch` 和身份 token。
+- 不可逆 `cancelled` 标记；`cancelCreation()` 只能从 `false` 置为 `true`，任何路径都不得恢复。
+- 阶段：`created`（已预占，无组件/资源）、`mounting`（组件开始初始化）、`ready`、`failed`、`disposeRequested`、`disposing`、`disposed`、`disposeFailed`。
+- 长期资源登记：`TerminalClient`、`Terminal`、`SessionRecovery`、`SessionTakeover`、监听器、observer、timer 等。组件只能通过 `lifecycle.registerResource(kind, resource, cleanup)` 创建并登记长期资源；该方法同步检查 `cancelled`/`disposed`，拒绝时返回失败且调用方不得创建资源。登记项至少保存资源种类、对象身份和清理入口；`dispose()` 保证先封闭准入/abort/stop，再销毁 Terminal/tracker/listener，同一资源只清理一次。若资源创建本身抛错，调用方必须在同一 `catch` 中撤销该登记，避免 lifecycle 持有半成品。
+- `dispose(): Promise<PaneDisposeResult>`：对已登记资源执行 invalidate/abort/stop/dispose；无资源时返回真实成功结果，而不是伪造等待。
+
+`PaneLifecycle` 必须由 HomePage 在同步调用栈内创建，并作为不可替换 prop 传给 TerminalPane。这样“组件尚未创建/尚未 mount/模板 ref 尚未注册”时，HomePage 仍持有可取消、可清理、可查询真实结果的句柄；迟到 mount 只能向一个已取消或已 dispose 的 lifecycle 登记资源，从而在创建任何长期资源之前被拒绝。
+
+| 状态 | 建立时机 | 释放/转换时机 | 打开/关闭规则 |
 |---|---|---|---|
-| `tabs` 项 | 用户打开一个当前页没有的 Session，在任何 await 之前同步加入 | 交互式关闭在真实 `dispose()` 完成后移除；HomePage 销毁时整页失效 | 已有项只定位，不 push 第二项；`paneKey` 标识当前实例，旧实例不能替换新项 |
-| `pending` | 与 `tabs` 项同一同步步骤加入，覆盖 Pane 创建、mount、初始化和 SessionTakeover 绑定 | 正常初始化只由匹配当前 `paneKey`/`paneInstanceId` 的 `ready` 或 `failed` 事件释放；创建前失败由 HomePage 生成同结构的失败结果释放；显式关闭/页面终止作为取消路径释放，不得把取消当成 ready | `pending` 期间再次打开只定位现有候选标签，不创建第二个 Pane、Client、详情 GET 或 takeover |
-| `closing` | 用户关闭候选/标签，或 HomePage 开始交互式移除该 Pane 时同步加入 | 有句柄时等待该 `paneKey` 的 `dispose()` Promise settle；尚无句柄时等待创建取消 Promise 确认无可清理实例；清理失败则保留并允许重试关闭 | `closing` 期间禁止创建同 ID 新 Pane；可记录至多一次 `reopenRequested`，closing settle 后才按新 `paneKey` 重新预占 |
+| `tabs` 项 | 用户打开一个当前页没有的 Session，在任何 await 之前同步加入 | 交互式关闭在真实 `dispose()` 返回 `succeeded` 后移除；HomePage 销毁时整页失效 | 已有项只定位，不 push 第二项；`paneKey` 标识当前实例，旧实例不能替换新项 |
+| `pending` | 与 `tabs` 项、`PaneLifecycle` 同一同步步骤加入，覆盖 Pane 创建、mount、初始化和 SessionTakeover 绑定 | 正常初始化只由匹配当前 `paneKey`/`paneInstanceId` 的 `ready` 或 `failed` 事件释放；创建前失败由 HomePage 生成同结构的失败结果释放；显式关闭/页面终止作为取消路径释放，不得把取消当成 ready | `pending` 期间再次打开只定位现有候选标签，不创建第二个 Pane、Client、详情 GET 或 takeover |
+| `closing` | 用户关闭候选/标签，或 HomePage 开始交互式移除该 Pane 时同步加入，同时同步调用 `lifecycle.cancelCreation()` | 只有该 `paneKey` 的 `dispose()` 返回 `{ status: 'succeeded' }` 才释放；`failed` 时保留句柄、tombstone 和失败原因，允许用户重试关闭 | `closing` 期间禁止创建同 ID 新 Pane；可记录至多一次 `reopenRequested`，只有 `succeeded` 后才按新 `paneKey` 重新预占 |
+
+closing 与实例状态的对应关系必须完整：
+
+| 实例状态 | 是否已创建长期资源 | closing 是否可释放 |
+|---|---|---|
+| 仅创建 `PaneLifecycle`，组件尚未创建 | 否 | 否；先 `cancelCreation()`，再由 `dispose()` 返回真实成功 |
+| 组件已创建但尚未 mount | 否 | 否；迟到 mount 必须被取消屏障拒绝，`dispose()` 真实成功后才释放 |
+| 已 mount，初始化尚未完成 | 可能有部分资源 | 否；取消后由 `dispose()` 清理已登记资源 |
+| 模板 ref 已注册，尚未 ready | 可能有部分资源 | 否；ref 只表示 mount，不是清理完成 |
+| 已 ready | 是 | 否；必须等待真实 `dispose()` 成功 |
+| `disposeRequested` / `disposing` | 保留 | 否；重复关闭共享同一进行中 Promise |
+| `disposed`（`dispose()` 返回 `succeeded`） | 否 | 是；释放 closing，保留 tombstone |
+| `disposeFailed` | 保留必要句柄 | 否；保留 closing 和失败原因，允许重试，不得创建新 Pane |
+
+“只要仍存在旧组件迟到 mount 并创建资源的可能，就不能释放 closing”由 `PaneLifecycle` 的不可逆取消和资源登记检查保证：`dispose()` 成功时 lifecycle 已永久处于 `cancelled + disposed`，迟到 mount 无法登记任何长期资源；因此释放 closing 不是因为猜测旧组件不会 mount，而是因为旧实例已失去创建资源的能力。不得用超时、`nextTick()`、模板 ref 为 null 或组件卸载代替该状态。
 
 具体规则：
 
 1. 连续点击同一 Session：第一次点击同步建立 `tabs` 项、`paneKey` 和 `pending`；后续点击命中 `tabs`、`pending` 或 `closing`，只定位或记录一次待重开，不创建第二份候选状态。
-2. Pane 尚未 mount：`pending` 已存在但没有 `panes` 句柄；此时不自动连接、不查详情。正常路径只有匹配的 `ready` 事件到达后才释放 `pending` 并完成所有权移交；用户关闭或页面终止按第 8/12 条的取消路径处理。
+2. Pane 尚未 mount：`pending` 和 `PaneLifecycle` 已存在，但没有组件 ref；此时不自动连接、不查详情。正常路径只有匹配的 `ready` 事件到达后才释放 `pending` 并完成所有权移交；用户关闭或页面终止按第 8/12 条的取消路径处理。
 3. Pane 正在初始化：`pending` 保持到匹配的 `ready`/`failed`；`setPane()` 或模板 ref 出现不改变 `pending`。初始化中的重复打开不触发第二次初始化。
 4. 用户切换管理页/终端页：只改变视图，不改变 `tabs`、`paneKey`、`pending`、`closing` 或 Pane 的接管所有权。
-5. 候选 Pane 创建失败（组件尚未建立）：HomePage 捕获创建错误，保留同一 `tabs` 项，生成该 `paneKey` 的失败状态和明确原因，释放 `pending`；不自动重试，不另 push 并行 Pane。
-6. 候选 Pane mount 或初始化失败：TerminalPane 先进入 `failed`，使旧实例不再可能发出 `ready`，invalidate 门禁和 SessionTakeover、abort 详情请求，并立即发出带 `paneKey`/`paneInstanceId` 和错误原因的 `failed`；异步清理随后进行，不得让 `failed` 的发布等待 `stop()`/`dispose()`。HomePage 只接受当前实例的失败，立即释放 `pending`，保留失败标签和原因；清理失败只追加“清理失败”状态，不能把已经进入 `failed` 的 Pane 重新标记为可用。
-7. 初始化失败后的同标签重试：只允许用户显式点击“重试初始化”。重试不复用半初始化的 Client/Takeover，而是把旧实例进入 `closing`，等待其真实 `dispose()` settle，移除旧 `paneKey` 的标签和句柄后，生成新 `paneKey` 重新创建。旧实例迟到的 `ready`/`failed`/`closed` 因 `paneKey` 不匹配被忽略。
-8. Pane 正在关闭但尚未 dispose：`closing` 保持，`panes` 句柄和旧任务仍属于旧 Pane；不得先创建新 Pane 等待旧 Pane 卸载，不得仅因 `nextTick()` 或模板 ref 变为 null 释放 `closing`。若关闭发生在 Pane 句柄存在之前，HomePage 必须取消该 `paneKey` 的 pending 创建意图，记录“尚无句柄”的创建取消 Promise；若最终确认没有实例可创建，可在创建尝试 settle 后释放 `closing`（没有 Client 可清理），但迟到的 `setPane` 若带来句柄仍必须先 dispose 再释放。即使 `closing` 已结束，旧 `paneKey` 的迟到 `setPane` 也不得登记为当前 Pane，必须立即 dispose；旧 `ready`/`failed` 不得重建可操作 Pane。
-9. 关闭后立即重新打开：若旧 Pane 尚未 dispose 完成，只在该 `closing` 记录中保存一次 `reopenRequested`；`dispose()` settle 后释放 `closing`，再同步预占并生成新 `paneKey`，保证旧、新 Pane 不重叠。
+5. 候选 Pane 创建失败（组件尚未建立）：HomePage 捕获创建错误，保留同一 `tabs` 项，生成该 `paneKey` 的失败状态和明确原因，调用该 `PaneLifecycle.dispose()`；无资源时必须返回真实 `succeeded`，再释放 `pending`。不自动重试，不另 push 并行 Pane。
+6. 候选 Pane mount 或初始化失败：TerminalPane 先进入 `failed`，使旧实例不再可能发出 `ready`，invalidate 门禁和 SessionTakeover、abort 详情请求，并立即发出带 `paneKey`/`paneInstanceId` 和错误原因的 `failed`；异步清理随后进行，不得让 `failed` 的发布等待 `stop()`/`dispose()`。HomePage 只接受当前实例的失败，立即释放 `pending`，保留失败标签和原因；清理返回 `failed` 时只追加“清理失败”状态和可重试入口，不能把已经进入 `failed` 的 Pane 重新标记为可用，也不能释放该 Session 的 closing。
+7. 初始化失败后的同标签重试：只允许用户显式点击“重试初始化”。重试不复用半初始化的 Client/Takeover，而是把旧实例进入 `closing`、同步 `cancelCreation()`，等待其 `dispose()` 返回 `succeeded`，移除旧 `paneKey` 的标签和句柄后，生成新 `paneKey` 重新创建。若 `dispose()` 返回 `failed`，保留失败标签、旧 lifecycle 和重试关闭入口，不生成新 `paneKey`。旧实例迟到的 `ready`/`failed`/`closed`/dispose 结果因 tombstone 被忽略。
+8. Pane 正在关闭但尚未 dispose：`closing` 保持，`PaneLifecycle`、已登记资源和旧任务仍属于旧 Pane；不得先创建新 Pane 等待旧 Pane 卸载，不得仅因 `nextTick()` 或模板 ref 变为 null 释放 `closing`。关闭动作必须在同一同步步骤内调用 `lifecycle.cancelCreation()`，使旧实例此后不能登记任何新长期资源；随后调用 `lifecycle.dispose()`。即使 `dispose()` 已成功、closing 已释放，旧 `paneKey` 仍在 tombstone 中，迟到的 `setPane` 只丢弃，不得登记为当前 Pane，也不得因旧句柄重新调用业务方法；lifecycle 已永久 disposed，不能重新登记资源。旧 `ready`/`failed`/`closed` 不得重建可操作 Pane。
+9. 关闭后立即重新打开：若旧 Pane 尚未 dispose 成功，只在该 `closing` 记录中保存一次 `reopenRequested`；`dispose()` 返回 `succeeded` 后释放 `closing`，再同步预占并生成新 `paneKey`，保证旧、新 Pane 不重叠。`dispose()` 返回 `failed` 时不得执行 `reopenRequested`，只允许用户重试关闭。
 10. 关闭与失败/ready 竞争：关闭意图优先。`closing` 或页面失效后到达的 `ready`/`failed` 不释放新状态、不重建标签；关闭仍只等待该 `paneKey` 的 dispose。
-11. 清理失败：`dispose()` 的拒绝或清理错误必须显示为明确失败，`closing` 不伪造成功；保留旧句柄并允许用户重试关闭，只有真实 dispose settle 后才允许同一 Session 新建 Pane。
-12. HomePage 卸载、登出或身份失效：设置页面失效标识，停止接受新打开并清空 `pending`、`closing` 和 `reopenRequested`；通过 Pane 暴露的 invalidate/stop/dispose 入口让每个 Pane 先失效门禁和 SessionTakeover、abort 详情，再按既有生命周期 stop/dispose。页面销毁后迟到回调不得重建 `tabs`、`pending` 或连接。交互式关闭等待 dispose；浏览器页面销毁只能尽力异步清理，不能伪称同步完成。
+11. 清理失败：`dispose()` 必须以 `{ status: 'failed', error, retryable }` 返回清理错误，不能以正常完成或 `void` 吞掉异常。`closing` 不伪造成功，保留旧 lifecycle 和必要句柄，显示明确失败原因并允许用户重试关闭；只有真实 `dispose()` 返回 `succeeded` 后才允许同一 Session 新建 Pane。内部错误提示只影响 UI，不改变 HomePage 收到的失败结果。
+12. HomePage 卸载、登出或身份失效：设置页面失效标识，停止接受新打开并清空 `pending`、`closing` 和 `reopenRequested`；这里的清空只表示页面不再提供重开入口，不代表 dispose 成功。对每个 `PaneLifecycle` 同步 `cancelCreation()`，再调用 invalidate/stop/dispose 并使其 abort 详情。页面销毁后迟到回调不得重建 `tabs`、`pending` 或连接。HomePage 卸载只能尽力异步清理，必须检查并记录每个 dispose 结果；未完成或失败不得报告清理成功，也不得等待 UI 关闭。登出和身份失效还必须推进登录生命周期，使旧 epoch 的所有详情、确认和连接启动失效。
 
 #### 8.1.2 Pane ready/failed 握手
 
 TerminalPane 的初始化必须形成可观察、可校验的握手，不能把组件实例存在当作成功。设计约定如下：
 
-- props 至少包含 `session`、`active`、`pageToken`、`paneKey`、`paneInstanceId` 和 `startMode: 'attach' | 'candidate'`。
-- emits 至少包含 `ready`、`failed`、`closed`；payload 均带 `{ sessionId, paneKey, paneInstanceId }`，`failed` 另带安全错误文本，`closed` 表示该实例已完成 `dispose()`。
-- HomePage 的 `setPane(paneKey, handle)` 只登记句柄。只有 `ready`/`failed` 的 `sessionId`、`paneKey`、`paneInstanceId` 与当前 `tabs`、`pending` 完全匹配，且页面/身份仍有效时，才允许改变 `pending` 和所有权状态。
+- props 至少包含 `session`、`active`、`lifecycle`（即该实例的 `PaneLifecycle`，内含 `pageToken`、`paneKey`、`paneInstanceId` 和身份 token）和 `startMode: 'attach' | 'candidate'`；不得由 TerminalPane 自行生成或替换生命周期身份。
+- emits 至少包含 `ready`、`failed`、`closed`；payload 均带 `{ sessionId, paneKey, paneInstanceId }`，`failed` 另带安全错误文本。`closed` 只表示该实例的真实 `dispose()` 已返回 `succeeded`，不得在 dispose 开始、组件卸载或 `nextTick()` 完成时提前发出；dispose 失败不发出 `closed`。
+- HomePage 的 `setPane(paneKey, handle)` 只附加组件 ref 和 mount 事实，不替换 `PaneLifecycle`，也不释放 `pending`。只有 `ready`/`failed` 的 `sessionId`、`paneKey`、`paneInstanceId` 与当前 `tabs`、`pending` 完全匹配，且页面/身份仍有效时，才允许改变 `pending` 和所有权状态。
 
 初始化顺序固定为：
 
-1. 捕获本 Pane 的 `pageToken`、`paneKey`、`paneInstanceId` 和登录身份 token；校验身份、页面和 host 可用。
-2. 创建唯一 `TerminalClient`，此步不调用 `connect()`/`connectTakeover()`。
-3. 创建唯一 `PaneOperationGate`，初始状态为 `idle`。
-4. 创建唯一 `SessionRecovery`，注入该门禁、Pane 身份、页面 token 和身份 token。
-5. 创建唯一 `SessionTakeover`，完成 `bind({ sessionId, paneKey, paneInstanceId, client, recovery, gate, identityToken, pageToken, requestClose })`；绑定必须校验传入对象就是本 Pane 的实例。
-6. 安装终端工厂、尺寸/主题监听和网络监听；候选模式到此仍不创建 WebSocket、不申请凭证、不查详情。
-7. 等待必要的 `nextTick()`，再次校验本实例 `paneKey`/`paneInstanceId` 未变化、页面/身份 token 有效、`closing`/`disposed` 未发生。
-8. 全部通过后进入 `ready`，先记录状态再 emit `ready`。若任何一步抛错或校验失败，进入 `failed`，使后续 `ready` 永久不可能发出，先 emit 一次带安全错误原因的 `failed`，再异步清理门禁/Takeover/Client；清理的拒绝或延迟不得阻止 HomePage 释放 `pending`，也不得产生第二次 `failed` 或迟到的 `ready`。失败后的内部清理不得发出会让 HomePage 移除标签的 `closed`；`closed` 只属于用户显式关闭或“重试初始化”路径，失败标签必须保留到用户选择重试或关闭。
+1. 在 `setup` 最早阶段读取不可替换的 `lifecycle`，立即检查 `cancelled`、`disposed`、`pageToken` 和登录身份 token；若已失效，直接进入取消路径，不创建任何长期资源、不 emit `ready`。
+2. 通过 `lifecycle.registerResource('client', ...)` 创建唯一 `TerminalClient`，此步不调用 `connect()`/`connectTakeover()`；登记检查与创建必须在同一同步步骤完成，取消后不得先创建再检查。
+3. 创建唯一 `PaneOperationGate` 并登记，初始状态为 `idle`。
+4. 创建唯一 `SessionRecovery` 并登记，注入该门禁、Pane 身份、页面 token 和身份 token。
+5. 创建唯一 `SessionTakeover` 并登记，完成 `bind({ sessionId, paneKey, paneInstanceId, client, recovery, gate, identityToken, pageToken, requestClose })`；绑定必须校验传入对象就是本 Pane 的实例。
+6. 安装终端工厂、尺寸/主题监听和网络监听，全部通过 `registerResource` 登记；候选模式到此仍不创建 WebSocket、不申请凭证、不查详情。
+7. 等待必要的 `nextTick()`，再次校验 `lifecycle.cancelled === false`、阶段未进入 `disposed`、本实例 `paneKey`/`paneInstanceId` 未变化、页面/身份 token 有效。
+8. 全部通过后进入 `ready`，先记录状态再 emit `ready`。若任何一步抛错或校验失败，进入 `failed`，使后续 `ready` 永久不可能发出，先 emit 一次带安全错误原因的 `failed`，再异步调用 `lifecycle.dispose()` 清理已登记资源；清理结果不得阻止 HomePage 释放 `pending`，也不得产生第二次 `failed` 或迟到的 `ready`。失败后的内部清理不得发出会让 HomePage 移除标签的 `closed`；`closed` 只属于用户显式关闭或“重试初始化”路径，失败标签必须保留到用户选择重试或关闭。
+
+每个可能跨越 await 的初始化步骤（创建 Client、Recovery、Takeover、安装监听、等待 `nextTick()`）之后都必须重新检查 `lifecycle.cancelled` 和 token；检查失败时立即停止后续初始化。已登记资源由该 `PaneLifecycle` 负责清理，不能留给 HomePage 猜测，也不能注册为当前有效 Pane。不得只在初始化最后一步检查，不得用 `nextTick()`、模板 ref 消失或组件卸载证明取消完成。
+
+`PaneLifecycle` 对 HomePage 暴露的 dispose 契约固定为显式结果对象，不采用 Promise reject 语义；TerminalPane 内部的关闭按钮和 `closeLocal` 只能转调该入口，成功后才 emit `closed`，不得另建一套 dispose 结果：
+
+```ts
+type PaneDisposeResult =
+  | { status: 'succeeded' }
+  | { status: 'failed'; error: string; retryable: boolean }
+```
+
+规则：
+
+1. `lifecycle.dispose()` 始终 resolve 一个 `PaneDisposeResult`，不得以 reject 表示清理失败，也不得在内部 `catch` 后返回成功。调用方只以 `status === 'succeeded'` 判定成功。
+2. `disposeRequested`、`disposing`、`disposeFailed`、`disposed` 必须可区分；只有 `disposed` 表示真实成功，只有此时可发出 `closed` 和释放 `closing`。
+3. 进行中的 dispose 共享同一个底层 Promise；重复调用不得并行执行多个 `client.dispose()`/stop 链。
+4. 成功后重复调用幂等返回 `{ status: 'succeeded' }`，不重新执行清理。
+5. 失败后不得永久缓存失败的 Promise；下一次 `dispose()` 必须从 `disposeFailed` 发起新的清理尝试，跳过已确认清理完成的资源，并继续处理剩余资源。S5 `client.dispose()` 成功后自身幂等，重复调用返回同一已成功结果；S6 不修改其缓存语义，只对尚未完成的 lifecycle 资源重新执行清理。
+6. `retryable` 只作为 UI 建议，HomePage 不以它决定是否释放 closing；任何 `failed` 都保留 closing。
+7. 内部可以把错误文本显示在 Pane 或页面提示中，但不得改变返回给 HomePage 的失败结果。
 
 `ready` 表示“Pane 已具备安全接收候选接管操作的能力”，不表示已连接。`attach` 模式可在 `ready` 后按既有流程首次 attach；`candidate` 模式在用户确认前不得 attach、Prepare 或创建 WebSocket。初始化失败不得用超时、模板 ref 或普通渲染重试来猜测成功；失败标签必须保留明确原因，并由用户显式重试或关闭。
 
@@ -478,30 +526,79 @@ TerminalPane 的初始化必须形成可观察、可校验的握手，不能把�
 7. 确认处理器在首次 await 前消费快照并校验 lease、`paneKey`、`paneInstanceId`、页面 token、身份 token、任务 ID 和快照 sequence；通过后进入 `takeoverConnecting` 并只调用一次 `connectTakeover()`。`connectTakeover()` 同步抛错或启动前异步失败时按 lease 身份释放并显示失败；只有长期任务实际启动后才转为 `clientTask`，不能让失败路径留下永久 lease。
 8. `clientTask` 只在 `client.completion` settle 且 `client.running` 为 false 时释放到 `idle`；takeover 成功后 Recovery 仍因 `client.running` 被拒绝，任务结束/停止后才重新获得显式恢复资格。不得在 S5 长期任务仍有效时启动另一个连接任务。
 9. 任何 `client.connect()`/`connectTakeover()` 调用，包括 `attach` 模式 ready 后的首次 attach，都必须在首次 await 前取得 `clientTask` lease；取不到时不得启动连接。该 lease 由启动任务的所有者持有，直到 `client.completion` settle 且 `client.running=false`；同步启动失败必须在 `finally` 中立即释放。这样初始 attach、人工恢复和主动接管不会并行启动第二个连接任务。
-10. 关闭、登出、身份失效或 HomePage 卸载必须先把门禁置为 `terminating`，再 invalidate SessionTakeover、abort 详情、stop/dispose。终止后任何旧 lease 的 assert 都失败。
-11. 门禁必须检查当前 `tabs` 的 `paneKey` 和 Pane 实例身份；旧 Pane 的 lease 不能操作新 Pane，旧 Pane 的完成回调也不能释放新 Pane 的 `pending`/`closing`。
+10. 关闭、登出、身份失效或 HomePage 卸载必须先把门禁置为 `terminating`，再同步 `lifecycle.cancelCreation()`、invalidate SessionTakeover、abort 详情、stop/dispose。终止后任何旧 lease 的 assert 都失败；终止不是“绕过门禁”，而是门禁的最终状态。
+11. 门禁必须检查当前 `tabs` 的 `paneKey`、`PaneLifecycle` 实例身份和登录生命周期 token；旧 Pane 的 lease 不能操作新 Pane，旧 Pane 的完成回调也不能释放新 Pane 的 `pending`/`closing`。
+12. 门禁进入 `terminating` 后不得再创建任何长期资源；TerminalPane 的初始化步骤与资源登记也必须检查同一 `lifecycle.cancelled`。门禁拒绝和 lifecycle 取消是两道独立但必须同时满足的准入，不能用 UI 按钮禁用、模板卸载或 `nextTick()` 替代。
+13. 关闭路径只以 `PaneLifecycle.dispose()` 的 `PaneDisposeResult` 判定清理结果；`terminating` 本身不是清理完成，`closed` 事件也不是 HomePage 释放 closing 的唯一依据。dispose 失败时门禁保持终止语义，旧 Pane 不可恢复，但 closing 保留并允许重试清理。
 
-#### 8.1.4 登录身份代次
+#### 8.1.4 登录身份生命周期与 Pane 身份 token
 
-只判断 `identity.value !== null` 不足以证明发起操作时的登录身份仍然有效。沿用现有 auth 模块的私有 `identityEpoch`，增加只读身份代次访问，并规定：
+只判断 `identity.value !== null` 不足以证明发起操作时的登录身份仍然有效；但也不能把每次 `/api/auth/me` 刷新或 AuthView 对象替换都当成身份变化。必须区分四个不同概念：
 
-- 每次 `acceptIdentity()` 接受新的身份对象、`clearIdentity()`、登出或身份过期都推进身份代次；同一对象重复接受不重复推进；同一管理员重新登录仍必须得到新代次。
-- Pane 初始化、详情查询、确认、`connectTakeover()` 启动和所有迟到回调捕获发起时的 `{ epoch, identity }` token。
-- 有效条件为：token 的 epoch 等于当前代次、token 的 identity 仍是当前对象、`logoutPending=false`、页面 token 未失效、Pane 未 terminating。
-- 旧身份的迟到详情、确认、凭证、onopen、bind_success 和 finally 一律丢弃，不能在新身份下创建 WS、改代次、重建标签或启动连接。
-- 不新增全局身份 Store 或跨页面身份服务；只在现有 auth 模块暴露只读代次，Pane 内保存 token。
-- TerminalClient 的 `allowed()` 回调也必须由 Pane 提供页面 token、身份 token 和实例有效性检查，不能只判断 `identity.value !== null`；但 gate 仍由 Pane/Takeover 拥有，不塞进 TerminalClient 的连接状态机。
+- 登录生命周期：用户当前所处的 WebAuthSession。由 `identityEpoch` 表示，只在新登录、登出或服务端确认身份失效时推进。
+- 身份展示数据：`/api/auth/me` 返回的 AuthView，包括管理员展示字段、`client_settings`、`expires_at`。同一登录生命周期内可重新获取、替换对象或更新过期时间。
+- 页面生命周期：HomePage 的 `pageToken`。HomePage 销毁只失效页面 token，不推进登录 epoch。
+- Pane 实例：`paneKey`/`paneInstanceId`。重试、关闭后重开必须生成新实例。
+
+`identityEpoch` 的推进规则固定如下：
+
+| 事件 | 是否推进 identityEpoch | 说明 |
+|---|---|---|
+| 应用首次通过 `/me` 确认当前登录有效 | 否 | 这是发现已有登录，不是新登录；当前值作为页面基线 |
+| 同一登录生命周期内重新请求 `/me` | 否 | 只更新 AuthView 展示数据 |
+| 同一登录生命周期内 AuthView 对象引用被替换 | 否 | 对象引用不是登录生命周期；不得因此停止 Pane |
+| 路由导航触发 `checkIdentity()` | 否 | `checkIdentity()` 只刷新展示数据 |
+| 用户成功登录，建立新登录生命周期 | 是 | 登录成功后在导航前推进一次 |
+| 用户开始登出 | 是 | 同步推进，使旧 Pane token 立即失效 |
+| 同一登出意图的成功清理、失败或重试 | 否 | 一次登出只推进一次；失败保持 logoutPending 和已推进的 epoch |
+| 服务端明确确认当前身份失效（如 `AUTH_REQUIRED`/登录过期） | 是 | 服务端确认的失效，不是普通网络错误 |
+| 登出后重新登录，即使是同一管理员 | 是 | 每次成功登录都是新生命周期 |
+| HomePage 销毁 | 否 | 由独立 `pageToken` 失效处理，不混同登录 epoch |
+| `/me` 网络错误、超时或服务暂时不可用 | 否 | 不能无条件视为身份失效 |
+
+现有 auth 模块的职责必须明确划分，不新增全局身份 Store：
+
+- `acceptIdentity(value)`：只接受并刷新身份展示数据、更新过期定时器；永不推进 `identityEpoch`。同一生命周期内重复调用、AuthView 对象替换都不改变 epoch。
+- `beginLoginLifecycle()`（或等价命名）：在 `POST /api/auth/login` 成功后、`router.replace('/')` 之前同步调用，推进 epoch 一次，表示建立新登录生命周期。登录成功后的 `/me` 仍走 `acceptIdentity()`，不重复推进。
+- `checkIdentity()`：捕获调用时的 epoch，请求 `/me`；只有 epoch 未变化且未进入 logoutPending 时才 `acceptIdentity(value)`。它只刷新展示数据，不建立新登录生命周期，也不因网络错误推进 epoch 或清除身份。
+- `clearIdentity()`：清除身份展示数据并推进 epoch；用于登出成功清理和服务端确认的失效。登出意图已在开始时推进时，成功清理不得重复推进。
+- `expireIdentity()`：只在服务端明确返回身份失效/过期时调用；网络错误不得调用它，也不得用 `clearIdentity()` 代替错误分类。
+- `router.beforeEach()`：`AUTH_REQUIRED` 才按身份失效处理并进入登录页；网络错误且已有身份时保留当前身份、epoch、当前页面和 Pane，显示“无法验证登录状态”的可重试提示，不强制跳转登录页，也不因一次 `/me` 网络失败停止终端。没有既有身份时才回到登录页等待重试。
+- `TerminalPane` 的身份监听必须监听 `identityEpoch`（或派生的登录生命周期 token），不得监听 `identity` 对象引用；普通 `/me` 刷新不得触发 stop。
+
+Pane 捕获的身份 token 至少包含：
+
+```ts
+type PaneIdentityToken = {
+  loginEpoch: number
+  pageToken: string
+  paneKey: string
+  paneInstanceId: string
+}
+```
+
+有效条件为：token 的 `loginEpoch` 等于当前 epoch、`pageToken` 仍是当前 HomePage、`paneKey`/`paneInstanceId` 仍是当前有效实例、`logoutPending=false`、Pane 未进入 terminating/cancelled/disposed。不得用 AuthView 对象引用相等作为有效性条件。
+
+校验时机至少包括：
+
+- TerminalPane 初始化和每个跨 await 的初始化步骤之后。
+- 详情 GET 完成、发布快照和展示确认内容之前。
+- 用户确认处理器首次 await 之前，以及 `connectTakeover()` 启动之前。
+- 凭证响应、WebSocket `onopen`、`bind_success`、长期任务回调和所有 `finally`。
+- TerminalClient 的 `allowed()` 回调；gate 仍由 Pane/Takeover 拥有，不塞进 TerminalClient 的连接状态机。
+
+旧登录生命周期的迟到详情、确认、凭证、onopen、bind_success 和 finally 一律丢弃，不能在新 epoch 下发布快照、创建 WS、改代次、重建标签或启动连接。页面 token、登录 epoch 和 Pane 实例三者必须同时匹配，不能只检查其中一个。
 
 ### 8.2 从列表到终端的步骤
 
 1. 用户点 SessionManager 某行“打开/主动接管”；SessionManager 只发出打开事件并传递 Session ID 与列表快照，不查询详情、不创建 Pane、不持有确认状态。
-2. HomePage 按 Session ID 查当前页 `tabs`、`panes`、`pending`、`closing`，在首次 await 前同步预占并生成 `paneKey`；绝不按服务器名称去重，也不因列表快照相同而复用不同 Session。
+2. HomePage 按 Session ID 查当前页 `tabs`、`panes`、`pending`、`closing`，在首次 await 前同步预占、生成 `paneKey` 和 `PaneLifecycle`；绝不按服务器名称去重，也不因列表快照相同而复用不同 Session。
 3. 已有在线或 `replaying` Pane 按 D2 优先定位，结束本次列表动作，不停止 Pane、不发 takeover；已有恢复/停止 Pane 走 §11 的显式流程。无 Pane 按 D3 建立唯一候选 Pane，默认不联网。
-4. 所有权移交：HomePage 完成 Session ID 唯一登记并创建候选 Pane；只有匹配当前 `paneKey`/`paneInstanceId` 的 `ready` 事件到达，且 SessionTakeover 已绑定该 Pane 后，主动接管流程所有权移交完成。`setPane()` 不是移交点。SessionManager 卸载、管理页切换或重新挂载只取消列表 GET，不影响已移交的详情、确认或 takeover。
+4. 所有权移交：HomePage 完成 Session ID 唯一登记、创建 `PaneLifecycle` 并创建候选 Pane；只有匹配当前 `paneKey`/`paneInstanceId` 的 `ready` 事件到达，且 SessionTakeover 已绑定该 Pane 后，主动接管流程所有权移交完成。`setPane()`、模板 ref 和 lifecycle 创建都不是移交点。SessionManager 卸载、管理页切换或重新挂载只取消列表 GET，不影响已移交的详情、确认或 takeover。
 5. 主动接管准备阶段由 Pane 的 SessionTakeover 执行：先取得 Pane 门禁 lease，封闭原人工候选；若存在旧任务，显式停止并等待 `client.stop()` 的长期任务、发送、清理与 drain 屏障完成后才继续。按 D2=A，恢复中任务在用户点击“停止恢复并准备接管”时先停止，之后取消确认也不自动复活；在线或 replaying 端只定位，不悄悄暂停。
-6. 用可取消详情 GET 获取完整 SessionView。检查门禁 lease、任务、Pane 实例、页面 token 和登录身份 token；展示 Session 快照目标、状态、代次、离线期限。CONNECTING/CLOSING/NOT_FOUND 禁止接管；CONNECTED/DISCONNECTED 才可确认。GET 无本地自动超时。
+6. 用可取消详情 GET 获取完整 SessionView。检查门禁 lease、任务、Pane 实例、页面 token、`loginEpoch` 和当前身份 token；展示 Session 快照目标、状态、代次、离线期限。CONNECTING/CLOSING/NOT_FOUND 禁止接管；CONNECTED/DISCONNECTED 才可确认。GET 无本地自动超时。
 7. 用户单独确认“主动接管；当前操作端将停止”。确认框位于候选 Pane，不是列表刷新自动生成的授权。确认前不申请凭证、不请求 Prepare、不创建 WebSocket、不启动 SSH、不自动 attach 或 takeover；刷新详情或目标变化使旧确认候选失效，不自动确认新代次。
-8. 确认处理器首次 await 前消费候选、锁住动作并进入 `takeoverConnecting`；复查门禁 lease、旧任务收尾、Pane/页面/身份 token 和动作 sequence；以详情代次启动该 Pane 唯一任务，第一次 POST `mode=takeover`。
+8. 确认处理器首次 await 前消费候选、锁住动作并进入 `takeoverConnecting`；复查门禁 lease、旧任务收尾、Pane/页面/`loginEpoch` 身份 token 和动作 sequence；以详情代次启动该 Pane 唯一任务，第一次 POST `mode=takeover`。快照对应的登录 epoch 已失效时拒绝确认。
 9. 凭证 POST 使用独立 credential_timeout；迟到/取消响应不创建 WS。通过后新建候选 WS，设置 arraybuffer/handlers，onopen 前再次检查身份，发送首条 bind。
 10. 服务端按 §7 依次验证、取操作门、快照与原子提交；HTTP 成功、WS OPEN 或 bind 已发送都不等于已接管。
 11. 客户端校验 bind_success 代次与前缀；connection Promise 完整前缀才反馈成功，长期 completion 仍运行。成功后聚焦同一标签、同步有效尺寸；回放未处理完显示“正在回放”，不提前启用输入。
@@ -513,7 +610,7 @@ SessionTakeover 持有独立的 `sequence`、`controller`、`snapshot`、`acting
 
 1. 首次 await 前通过门禁取得 takeover lease；若当前是 `takeoverPreparing`，加入现有准备动作；若当前是 `takeoverReview`，普通重复打开只定位，用户显式“刷新详情”才复用同一 lease 并启动新查询；若当前是 `takeoverConnecting`，拒绝重复准备。若门禁被不允许抢占的 Recovery 占用则拒绝并显示“当前终端操作进行中”，不发详情请求。
 2. 新准备或显式刷新详情时，在 lease 仍有效的前提下递增 `sequence`、invalidate 旧确认候选并 abort 旧详情请求，再清理旧快照和错误；若存在旧 RecoveryTask，先执行完整 `client.stop()` 屏障。只有长期任务、发送和 drain 完成后才发详情 GET。显式刷新不能创建第二个 takeover lease，也不能让旧请求的 `finally` 清除新请求的 loading。
-3. 详情 GET 完成后检查本次 `sequence`、lease、请求身份、`AbortSignal`、Pane 实例、页面 token、身份 token 和 `logoutPending`，全部有效才发布快照和确认界面。
+3. 详情 GET 完成后检查本次 `sequence`、lease、请求身份、`AbortSignal`、Pane 实例、页面 token、`loginEpoch`、身份 token 和 `logoutPending`，全部有效才发布快照和确认界面。AuthView 对象被同一 epoch 的 `/me` 刷新替换不构成失效。
 4. `AbortController.abort()` 只表示本地取消意图，不证明底层 fetch、JSON 解析或调用方 `finally` 已结束。成功、失败和 `finally` 回调都必须检查同一 `sequence`、lease 与请求身份；旧请求迟到时不得清当前 loading、覆盖新快照、重新展示确认内容或启动 takeover。
 5. 用户取消、重新查询详情、关闭 Pane、HomePage 卸载、登出或身份失效都使当前 `sequence`/lease 失效并清空确认候选；取消发生在 stop 尚未完成时只标记取消，待 stop settle 后释放，stop 失败进入 `blockedStop`；旧 RecoveryTask 保持停止，不因取消查询或关闭确认界面而恢复。
 6. stop 拒绝或未完成时进入 `blockedStop`，不发布详情、不自动重试；只有重试 stop 成功或关闭 Pane 才能离开该状态。
@@ -521,10 +618,10 @@ SessionTakeover 持有独立的 `sequence`、`controller`、`snapshot`、`acting
 确认动作只能使用当前有效的详情快照：
 
 1. 首次 await 前同步消费候选、设置 `acting` 并进入 `takeoverConnecting`，后续重复点击直接忽略，不能产生第二次 Prepare。
-2. 校验快照的 Session ID、详情 `binding_generation`、查询 `sequence`、lease、候选身份、Pane 实例、当前任务身份、页面 token、身份 token 和旧任务停止状态。
+2. 校验快照的 Session ID、详情 `binding_generation`、查询 `sequence`、lease、候选身份、Pane 实例、当前任务身份、页面 token、`loginEpoch`、身份 token 和旧任务停止状态。
 3. 快照已取消、失效、被新查询替换或 Pane 已进入关闭/销毁时拒绝确认，释放 lease 并清空候选，不调用 `connectTakeover()`。
 4. 确认后把快照代次作为该 TerminalClient 唯一任务的不可变 `initialExpectedGeneration`；首次 Prepare 使用 `mode=takeover`，后续可重试 attempt 固定 attach，并使用 `confirmedGeneration ?? initialExpectedGeneration`；BIND_CONFLICT 按停止处理，不进入 attach 重试；不查询详情推算代次，不因 `bind_success` 丢失而 generation + 1。
-5. `connectTakeover()` 同步抛错时释放 lease、显示失败且不创建 WS；启动任务后门禁进入 `clientTask`。确认结果、Prepare 响应、WebSocket 回调和 `finally` 返回时再次检查动作、lease、任务与 Pane/身份 token；旧动作不得写新状态、创建 WS、重试或复活已停止任务。
+5. `connectTakeover()` 启动前必须再次校验 `loginEpoch`、页面 token、Pane 实例和快照 sequence；同步抛错时释放 lease、显示失败且不创建 WS；启动任务后门禁进入 `clientTask`。确认结果、Prepare 响应、WebSocket 回调和 `finally` 返回时再次检查动作、lease、任务与 Pane/身份 token；旧登录 epoch 或旧 Pane 的动作不得写新状态、创建 WS、重试或复活已停止任务。
 
 同实例复用先 drain 再读取 processedOffset；新设备、新页面、新 xterm 或排空失败重建从 0。无论已有 Pane 与否，都不得使用另一设备、列表或服务端发送游标作偏移。
 
@@ -543,7 +640,7 @@ sequenceDiagram
     participant O as 旧Binding和WS
     U->>M: 点击“打开”
     M->>H: emit open(Session ID/列表快照)
-    H->>H: 按ID查tabs/panes/pending/closing并同步预占paneKey
+    H->>H: 按ID查tabs/panes/pending/closing并同步预占paneKey与PaneLifecycle
     H->>P: 创建候选Pane，不自动attach
     P->>P: 初始化client/gate/recovery/takeover
     P-->>H: ready(paneKey/paneInstanceId)
@@ -559,7 +656,7 @@ sequenceDiagram
     P-->>U: 展示状态和接管影响
     alt 用户确认且身份仍有效
         U->>P: 明确确认主动接管
-        P->>P: 消费候选并检查sequence/lease/Pane/身份token
+        P->>P: 消费候选并检查sequence/lease/Pane/loginEpoch/身份token
         P->>C: stop屏障完成后启动唯一初始takeover任务
         C->>API: POST mode=takeover, expected=G
         Note over API,O: 登录读锁→Session锁→凭证锁；仅签发，旧端不变
@@ -632,7 +729,7 @@ sequenceDiagram
     participant C as TerminalClient
     U->>M: 点击“打开”
     M->>H: emit open(Session ID/列表快照)
-    H->>H: 同步登记tabs与pending
+    H->>H: 同步登记tabs、pending与PaneLifecycle
     H->>P: 创建候选Pane
     P->>P: 初始化client/gate/recovery/takeover
     P-->>H: ready(paneKey/paneInstanceId)
@@ -643,7 +740,7 @@ sequenceDiagram
     M->>L: 只Abort列表GET并移除监听
     Note over M,L: SessionManager卸载不影响Pane
     API-->>P: 详情快照
-    P->>P: 校验sequence/lease/Pane/身份token
+    P->>P: 校验sequence/lease/Pane/loginEpoch/身份token
     P-->>U: 展示接管确认
     U->>P: 确认主动接管
     P->>C: connectTakeover(snapshot.G)
@@ -779,7 +876,7 @@ sequenceDiagram
 | WS/Reader/Writer/执行器/Ping/定时器 | 各连接统一终止；取消在途Ping；Supervisor不等调度锁或Close，绝对截止强关底层net.Conn |
 | WS slot | Service 的连接收尾者等待 workers、Supervisor 全部完成后一次归还；Close发起、taken_over送达、Session移除均不能提前归还 |
 | SSH/PTY/Buffer、服务器名额 | 仍属于 Session；takeover不释放；只由既有Close/reap在相应生命周期释放 |
-| Pane/client/tracker/listeners | Pane.stop保留实例；Pane.dispose同步封闭准入并有限排空后销毁；页面卸载捕获清理异常 |
+| Pane/client/tracker/listeners | Pane.stop保留实例；Pane.dispose同步封闭准入并有限排空后销毁，返回显式成功/失败结果；页面卸载记录清理结果，不把异常吞成成功 |
 
 即便 bind_success 写失败，服务端提交已经发生，凭证已消费、generation已递增。若前端未收到该代次，原代次 attach 最终冲突停止；若已经收到并校验 bind_success，后续恢复可用刚获知代次。两种情形均不能通过查询偷偷换代。新成功不依赖旧通知送达；旧连接始终按自己的关闭预算收尾。
 
@@ -812,13 +909,14 @@ sequenceDiagram
 
 ### 11.1 所有权不变量
 
-- 一个 HomePage 生命周期内，同一 Session ID 至多一个 Pane、一个 TerminalClient、一个 tracker、一个 SessionRecovery、一个 SessionTakeover、一个 PaneOperationGate、一个有效长期任务；`pending`（已预占未 ready/failed）和 `closing`（已关闭未完成 dispose）也参与去重。
+- 一个 HomePage 生命周期内，同一 Session ID 至多一个 Pane、一个 `PaneLifecycle`、一个 TerminalClient、一个 tracker、一个 SessionRecovery、一个 SessionTakeover、一个 PaneOperationGate、一个有效长期任务；`pending`（已预占未 ready/failed）、`closing`（已关闭未完成 dispose）和 retired `paneKey` tombstone 也参与去重。
 - `paneKey`/`paneInstanceId` 标识本地 Pane 实例；Session ID 是稳定业务标识；Binding 由服务端提交产生，与本地组件寿命不同。列表项不是 Pane，删除列表项不能直接卸载/关闭终端。
 - SessionManager 只发出打开事件；HomePage 只做 Session ID 唯一登记、候选 Pane 创建/定位和页面生命周期，不持有详情/确认候选；候选 Pane 只有在匹配当前实例的 `ready` 到达后才完成所有权移交。
 - HomePage 只调用 Pane 暴露的定位、invalidate、stop/dispose 和关闭确认入口；主动接管的 prepare/confirm 由 Pane 内 SessionTakeover 接收用户操作，实际详情 GET、确认、fetch/WS/重试由 Pane 的唯一 SessionTakeover/TerminalClient 执行。
 - HomePage 可以读取 Pane 暴露的粗粒度阶段（在线、replaying、恢复中、已停止、失败、关闭中）以决定定位还是提示用户停止恢复，但不能读取或缓存详情快照、确认候选或 generation 候选。
 - 同一 Pane 内所有用户操作共享 `PaneOperationGate`；SessionRecovery 的三个入口和 SessionTakeover 的准备/确认都必须经过门禁，不能只靠隐藏 UI 按钮。
-- Pane 初始化、详情、确认、连接启动和迟到回调都必须校验页面 token、Pane 实例和登录身份 token；`identity.value !== null` 不是充分条件。
+- Pane 初始化、详情、确认、连接启动和迟到回调都必须校验页面 token、Pane 实例、`loginEpoch` 和登录身份 token；`identity.value !== null` 不是充分条件，AuthView 对象引用相同/不同也不是登录生命周期判断条件。
+- 同一登录生命周期内 `/me` 刷新或 AuthView 对象替换不使 Pane token 失效；登出、服务端确认身份失效和新登录才推进 `loginEpoch`。HomePage 销毁只失效页面 token。
 - SessionManager 卸载、管理页切换、列表刷新或隐藏不是所有权终止；只有候选 Pane 关闭/dispose、HomePage 卸载、登出或登录身份失效才终止已移交的主动接管流程。
 - 切换服务器、列表和终端时保留 Pane，通过 active/可见性控制 fit/焦点。隐藏组件不能以零尺寸覆盖 PTY，后台恢复不能抢焦点。
 - 浏览器顶层网页标签/窗口属于不同 HomePage，不能靠本页 Map 检测它们。它们与另一浏览器/设备一样由后端 Binding/generation 协调；不承诺全浏览器进程只有一个视图，不新增跨窗口选主或持久化标签恢复。浏览器刷新后通过列表发现，再由用户明确打开。
@@ -835,7 +933,7 @@ sequenceDiagram
 
 B按已确认D2=A执行“定位”，不触发无提示attach或自我接管；用户之后明确停止再按既定流程准备主动接管。未采用在线直接主动重连的B方案。
 
-方案 B 的共同所有权规则：SessionManager 卸载、管理页切换或重新挂载只取消列表 GET；候选 Pane 只有匹配当前 `paneKey`/`paneInstanceId` 的 `ready` 到达后才完成所有权移交，后续详情、确认、取消和 takeover 均由该 Pane 负责，不因列表组件生命周期变化而取消。唯一性由 HomePage 的 `tabs`、`panes`、`pending`、`closing` 共同保证；`pending` 从同步预占开始到匹配的 `ready`/`failed` 到达，`closing` 从关闭开始到真实 `dispose()` settle。
+方案 B 的共同所有权规则：SessionManager 卸载、管理页切换或重新挂载只取消列表 GET；候选 Pane 只有匹配当前 `paneKey`/`paneInstanceId` 的 `ready` 到达后才完成所有权移交，后续详情、确认、取消和 takeover 均由该 Pane 负责，不因列表组件生命周期变化而取消。唯一性由 HomePage 的 `tabs`、`panes`（`PaneLifecycle`）、`pending`、`closing` 和 retired tombstone 共同保证；`pending` 从同步预占开始到匹配的 `ready`/`failed` 到达，`closing` 从关闭开始到 `dispose()` 返回 `succeeded`，失败时保留并允许重试。
 
 #### 11.2.1 连接阶段分类与 `replaying` 的 D2 归属
 
@@ -845,7 +943,7 @@ B按已确认D2=A执行“定位”，不触发无提示attach或自我接管；
 | `replaying` | 已收到合法 `bind_success` 且首次前缀完成，`output.inputEnabled=false` | **只定位原 Pane，不启动 takeover、不创建第二 Pane** | 等待 replay 完成；用户显式停止终端后才进入停止态流程 |
 | 正常连接 | 已收到合法 `bind_success`，输入门禁已开 | 只定位原 Pane | 不主动 takeover；用户显式停止后按停止态处理 |
 | 已停止 / 不可恢复 | Client 无运行任务，phase 为 stopped/ended/taken_over 等 | 定位原 Pane，允许用户重新刷新详情 | 显式详情→确认 takeover，或按第四阶段两步人工 attach；真正 ended 不复活 |
-| closing / terminating | Pane 正在关闭或页面失效 | 不创建、不操作，只显示关闭中 | 无 |
+| closing / disposing / disposeFailed / terminating | Pane 正在关闭、清理失败或页面失效 | 不创建、不操作；disposeFailed 显示“清理失败”和重试关闭 | 只允许重试 dispose 或等待页面终止 |
 
 `replaying` 是“已经建立连接、只是输入门禁尚未打开”，不是“尚未建立 Binding 的恢复中”。列表打开不得因 replay 未完成而停止任务或发起 takeover；同一 Session 仍只有一个 Pane/Client。
 
@@ -861,13 +959,13 @@ B按已确认D2=A执行“定位”，不触发无提示attach或自我接管；
 
 方案 B 以“候选 Pane 初始化完成、SessionTakeover 已绑定且匹配当前实例的 `ready` 已到达”为所有权移交点，不以用户确认或离开管理页为边界：
 
-- SessionManager 点击“打开”只发出事件；HomePage 同步预检 `tabs/panes/pending/closing`、预占 Session ID、生成 `paneKey` 并创建候选 Pane。
+- SessionManager 点击“打开”只发出事件；HomePage 同步预检 `tabs/panes/pending/closing`、预占 Session ID、生成 `paneKey` 和 `PaneLifecycle` 并创建候选 Pane。
 - 候选 Pane 初始化完成、SessionTakeover 归属于该 Pane 并发出匹配 `ready` 后，主动接管流程所有权移交完成；此后 Pane 负责门禁、停止旧任务、详情 GET、确认/取消和 `connectTakeover()`，HomePage 只保留登记、定位和生命周期职责。
 - SessionManager 卸载、管理页切换到终端/服务器、列表刷新或隐藏只取消列表 GET；不取消已移交 Pane 的详情、确认或 takeover，不停止 Pane，不复活旧 RecoveryTask。
-- 所有权终止事件只有：候选 Pane 关闭/dispose、HomePage 卸载、用户登出、登录身份失效。终止时由 Pane 先把门禁置为 `terminating`，再 invalidate SessionTakeover、abort 详情 GET、阻止迟到回调，并按既有 TerminalClient 生命周期 stop/dispose；stop 完成前不得为同一 Pane 启动新任务。
+- 所有权终止事件只有：候选 Pane 关闭/dispose、HomePage 卸载、用户登出、登录身份失效。终止时同步 `lifecycle.cancelCreation()`，由 Pane 先把门禁置为 `terminating`，再 invalidate SessionTakeover、abort 详情 GET、阻止迟到回调，并按既有 TerminalClient 生命周期 stop/dispose；stop 完成前不得为同一 Pane 启动新任务。dispose 失败保留 closing 和重试入口，不创建替代 Pane。
 - 用户取消只取消 Pane 当前确认候选；旧 RecoveryTask 保持停止，不自动恢复。关闭候选标签会取消详情/确认并 dispose，不调用 Session DELETE。
 
-因此“takeover HTTP 已发出后关闭管理视图”不再有三种所有权分支：关闭管理视图不影响已移交 Pane，Pane 的详情/确认/takeover 继续；只有关闭对应终端标签、离开整个 HomePage、登出或身份失效才 stop/dispose。交互式关闭的 `closing` 必须等到该 `paneKey` 的 `dispose()` Promise settle；模板 ref 变 null、`nextTick()` 完成或从 `tabs` 删除都不构成完成信号。HomePage 卸载无法同步等待浏览器销毁，只能设置页面失效并尽力异步清理；新 HomePage 有独立页面 token，旧页面迟到回调不能操作新页面，跨页面连接仍由服务端 Binding/generation 仲裁。
+因此“takeover HTTP 已发出后关闭管理视图”不再有三种所有权分支：关闭管理视图不影响已移交 Pane，Pane 的详情/确认/takeover 继续；只有关闭对应终端标签、离开整个 HomePage、登出或身份失效才 stop/dispose。交互式关闭的 `closing` 必须等到该 `paneKey` 的 `PaneLifecycle.dispose()` 返回 `{ status: 'succeeded' }`；`dispose()` 返回 `failed` 时保留 closing、旧 lifecycle 和失败原因，允许重试关闭。模板 ref 变 null、`nextTick()` 完成、组件卸载或从 `tabs` 删除都不构成完成信号；`closed` 事件也不能替代 HomePage 对结果对象的检查。HomePage 卸载无法同步等待浏览器销毁，只能设置页面失效、同步取消所有 lifecycle 并尽力异步清理；每个结果都必须可观察，未完成或失败不得报告成功。新 HomePage 有独立页面 token，旧页面迟到回调不能操作新页面，跨页面连接仍由服务端 Binding/generation 仲裁。
 
 用户关闭网页时无法保证异步 drain 或网络 Close 握手实际完成，不依赖 beforeunload 发送 DELETE；服务端靠现有断线/心跳/Supervisor 回收 Binding 与 WS，SSH 继续离线保留。已提交后即刻关闭网页只 Detach 新端，不恢复旧端；尚未提交的候选关闭不撤销其他旧 Binding。
 
@@ -882,22 +980,29 @@ sequenceDiagram
     participant C as TerminalClient
     participant API as HTTP API
     U->>P: 关闭候选/终端标签
-    H->>H: closing记录paneKey与dispose Promise
+    H->>H: closing记录paneKey；同步lifecycle.cancelCreation()
     P->>P: gate进入terminating
     P->>T: invalidate，sequence递增
     T->>API: abort未完成详情GET
     P->>C: stop并等待长期任务/发送/drain
-    C-->>P: 屏障完成
-    P->>P: dispose settle后emit closed
-    H->>H: 校验paneKey后移除tab并释放closing
-    Note over P: 迟到详情/Prepare/WS回调检查paneKey/身份后丢弃
+    C-->>P: 屏障完成或清理异常
+    P->>H: dispose(): PaneDisposeResult
+    alt status=succeeded
+        H->>H: 校验paneKey后移除tab、释放closing、保留tombstone
+        P-->>U: 仅在真实成功后emit closed
+    else status=failed
+        H->>H: 保留closing、lifecycle和错误；允许重试关闭
+        Note over H,P: 不创建替代Pane；重试dispose共享/重建清理链但不并行
+    end
+    Note over P: 迟到mount检查cancelled，registerResource拒绝；迟到详情/Prepare/WS回调检查paneKey/身份后丢弃
     U->>H: HomePage卸载/登出/身份失效
-    H->>H: 设置页面失效与logoutPending
+    H->>H: 设置页面失效、logoutPending并推进登录epoch
     loop 每个Pane
-        H->>P: invalidate/stop/dispose
+        H->>P: lifecycle.cancelCreation() + invalidate/stop/dispose
         P->>P: gate进入terminating
         P->>T: invalidate并abort详情
         P->>C: stop/dispose
+        P-->>H: PaneDisposeResult（记录，不伪报成功）
     end
     Note over H,C: 页面销毁后不重建tabs/pending，不为同一Pane启动新任务
 ```
@@ -908,7 +1013,7 @@ sequenceDiagram
 
 Prepare成功但候选未提交时登出：浏览器Abort/stop防止继续发布；服务端登录写锁先使本登录无效，锁外清凭证和所属全部WS。候选如果已提交则扫描Detach它；如果来自另一独立登录的旧Binding尚有效，登出候选登录不能误撤销旧端。过期同样使用当前登录归属检查。
 
-每个 await 返回、JSON 解析后、onopen、onmessage、重试 timer、布局 nextTick 及 finally 都检查本地动作、lease、任务、Pane 实例、页面 token 和身份 token。身份代次在 `acceptIdentity` 接受新对象、`clearIdentity`、登出和过期时推进；同一管理员重新登录也是新代次。退出后凭证或成功前缀迟到不能创建 WS、改代次、复活标签、覆盖“退出未完成”。老任务的 xterm 回调只有原 epoch 仍有效时可完成 drain，不操作新实例。
+每个 await 返回、JSON 解析后、onopen、onmessage、重试 timer、布局 nextTick 及 finally 都检查本地动作、lease、任务、Pane 实例、页面 token、`loginEpoch` 和身份 token。`loginEpoch` 只在成功建立新登录、登出意图开始和服务端确认身份失效时推进；同一登出意图的重试不重复推进，同一登录生命周期内的 `/me` 刷新、AuthView 对象替换和路由导航不推进。同一管理员重新登录仍是新 epoch。退出后凭证或成功前缀迟到不能创建 WS、改代次、复活标签、覆盖“退出未完成”。老任务的 xterm 回调只有原 epoch 仍有效时可完成 drain，不操作新实例。`/me` 网络错误不得推进 epoch 或触发 Pane stop；只有服务端明确返回身份失效才安全终止。
 
 | logout结果 | 继承的处理 |
 |---|---|
@@ -1029,7 +1134,7 @@ sequenceDiagram
 | OUTPUT_GAP/4002 | 仍丢未提交队列、等在途write后有限恢复；不与4001混淆，不增加invalid_bind或retryable字段 |
 | INPUT_BACKPRESSURE | 停止，不重放输入；普通输入/粘贴/历史查询自动应答继续按回放门禁 |
 | UI状态修复 | 当前连接提示与历史异常分离；新有效前缀清当前旧错误；旧事件不污染新任务；网络online仅展示；不因新增列表改回旧提示行为 |
-| stop/dispose | stop可保留实例；dispose不可逆，销毁中不建替代实例；后续新任务必须等待旧任务和发送/drain完成 |
+| stop/dispose | stop可保留实例；dispose不可逆，销毁中不建替代实例；dispose返回显式成功/失败结果，失败保留closing并允许重试，不伪报成功；后续新任务必须等待旧任务和发送/drain完成 |
 | 超时 | 凭证POST仅credential_timeout；详情GET无本地定时器；WS前缀等待仍bind_timeout+operation_wait_timeout+write_timeout；不修改配置和默认值 |
 | 独立操作 | 关闭标签仅dispose；DELETE需确认且不等于立即CLOSED；takeover复用SSH，三种操作不混用 |
 
@@ -1060,12 +1165,12 @@ sequenceDiagram
 | S3 WebSocket终止及交接 | 依赖S2；修改`backend/internal/websocket/connection.go`、`protocol.go`、`connection_test.go`、`backend/internal/httpapi/sessions_test.go`；新增`backend/internal/websocket/takeover_test.go` | taken_over具名DTO/4001、先定原因再取消、失效退出分流、Writer双锁原子准入、提交登记窗口、slot与Supervisor复用 | W01–W06、R06–R08、T1–T4；真实HTTP/WS/SSH验证新旧端消息和操作；Reader/Writer堵塞不阻挡新端、旧slot不早还；失败允许合法首因 | 先撤销本步WS/HTTP测试及实现hunk；若放弃整个接管后端，还须逆序撤销S2，不能保留缺发送链路的公开takeover能力；S1保持 |
 | S4 列表前端及异步查询 | 依赖S1与D1；修改`frontend/src/api/sessions.ts`、`frontend/src/pages/HomePage.vue`；新增`frontend/src/session/list.ts`、`frontend/src/components/session/SessionManager.vue`、`frontend/tests/session-list.test.mjs`；仅在现有样式确实不足时增加最小范围 scoped CSS，优先复用 `base.css` 与 `.session-*` | 列表解析/单请求所有者/序号/Abort、服务器和本地状态筛选、独立管理视图、loading/error/empty；保持Pane挂载；接管按钮此步不开放未完成链路 | U10、F01–F03；乱序、旧finally、卸载/登出、可见刷新、失败保留快照；列表任何刷新无POST/WS；实际组件测试 | 撤销列表组件挂载/样式/API增量，移除仅本步文件；原服务器页/终端与后端列表保留，无依赖清单变化 |
 | S5 Client初始takeover模式（已完成，冻结基线） | S5-C1/S5-C2 已完成并通过审查；`frontend/src/terminal/client.ts`、`frontend/tests/terminal.test.mjs`、`frontend/tests/stage-5-c2.test.mjs` 已存在，不在本轮或 S6 重新实现 | 已实现初始用户模式、后续固定attach、两种Promise、同一任务、预算、offset、stop屏障和generation规则；S6 只消费 | 作为 S6 前置回归基线；不把 S5 测试算作 S6 新结果，不要求 S6 再次修改 `client.ts` | 无 S6 回滚动作；若 S6 发现 S5 契约冲突，停止并报告，不得在 S6 内改 S5 |
-| S6-C1 Pane所有权与安全纵切 | 依赖S4/S5完成、D2/D3及方案B；修改`frontend/src/components/terminal/TerminalPane.vue`、`frontend/src/terminal/recovery.ts`、`frontend/src/pages/HomePage.vue`、`frontend/src/components/session/SessionManager.vue`、`frontend/src/stores/auth.ts`、对应前端测试；新增`frontend/src/session/takeover.ts`、`frontend/tests/session-takeover.test.mjs` | SessionManager只emit打开；HomePage用tabs/panes/pending/closing与paneKey同步唯一登记；ready/failed握手；初始化失败与同标签重试；PaneOperationGate；SessionRecovery三个入口遵守门禁；D2完整stop/drain；详情/确认/取消；身份代次；Pane关闭/HomePage卸载/登出/身份失效的基础清理；closing等待真实dispose；确认前零Prepare/零WS；UI复用 | F05–F09、F12、S6-B01–B22、S6-B24–B33（含 B25 首次 UI 样式验收）、S6-B35、S6-B37；同Session一个Pane/Client；ready前不释放pending；门禁无并行详情/恢复；stop屏障前无详情；基础关闭/登出/身份失效可清理；两步人工attach原样通过 | 先撤销UI入口，再撤销Pane启动、ready/failed、门禁与所有权增量，移除本步专属控制器/测试；恢复原mounted attach，仅保留创建Session入口，S4列表仍可只读 |
-| S6-C2 专项竞态与集成回归 | 依赖S6-C1；仅在测试证据表明缺陷时最小修改S6-C1文件及测试；不新增业务功能 | 重复点击/高并发、初始化失败与重试迟到、旧请求/旧finally/旧Pane迟到、多Session并行、SessionManager重挂载、stop/详情/确认/取消复杂交错、HomePage卸载与新页面竞争、浏览器集成、S4/S5回归、UI一致性复核 | F01–F04、F10–F13、S6-B18–B20的复杂交错、S6-B23、S6-B25、S6-B34、S6-B36、S6-B38、B01–B05；不能用C2补C1缺失的基本安全清理 | 撤销本步新增竞态测试或失败修复；不回退C1已完成的ready/failed、门禁、身份和dispose基础；不把C2失败当作C1可跳过 |
+| S6-C1 Pane所有权与安全纵切 | 依赖S4/S5完成、D2/D3及方案B；修改`frontend/src/components/terminal/TerminalPane.vue`、`frontend/src/terminal/recovery.ts`、`frontend/src/pages/HomePage.vue`、`frontend/src/components/session/SessionManager.vue`、`frontend/src/stores/auth.ts`、`frontend/src/router/index.ts`、`frontend/src/pages/LoginPage.vue`、对应前端测试；新增`frontend/src/session/takeover.ts`、`frontend/tests/session-takeover.test.mjs`；如独立测试需要，可新增小型`frontend/src/session/pane-lifecycle.ts`，不建全局基础设施 | SessionManager只emit打开；HomePage同步创建tabs/panes(PaneLifecycle)/pending/closing、paneKey与tombstone；ready/failed握手；初始化失败与同标签重试；PaneOperationGate；SessionRecovery三个入口遵守门禁；D2完整stop/drain；详情/确认/取消；登录生命周期identityEpoch与token；创建取消屏障；dispose结果对象、失败保留closing与重试；Pane关闭/HomePage卸载/登出/身份失效的基础清理；确认前零Prepare/零WS；UI复用 | F05–F09、F12、S6-B01–B22、S6-B24–B33（含 B25 首次 UI 样式验收）、S6-B35、S6-B37、S6-B39–B46；同Session一个Pane/Client；ready前不释放pending；门禁无并行详情/恢复；stop屏障前无详情；dispose失败不释放closing；迟到mount不创建资源；`/me`刷新不失效Pane；基础关闭/登出/身份失效可清理；两步人工attach原样通过 | 先撤销UI入口，再撤销Pane启动、ready/failed、门禁、lifecycle与所有权增量，移除本步专属控制器/测试；恢复原mounted attach，仅保留创建Session入口，S4列表仍可只读 |
+| S6-C2 专项竞态与集成回归 | 依赖S6-C1；仅在测试证据表明缺陷时最小修改S6-C1文件及测试；不新增业务功能 | 重复点击/高并发、初始化失败与重试迟到、旧请求/旧finally/旧Pane迟到、迟到mount与dispose重试交错、多Session并行、SessionManager重挂载、stop/详情/确认/取消复杂交错、HomePage卸载与新页面竞争、浏览器集成、S4/S5回归、UI一致性复核 | F01–F04、F10–F13、S6-B18–B20的复杂交错、S6-B23、S6-B25、S6-B34、S6-B36、S6-B38、S6-B47、B01–B05；不能用C2补C1缺失的基本安全清理 | 撤销本步新增竞态测试或失败修复；不回退C1已完成的ready/failed、门禁、lifecycle、身份和dispose基础；不把C2失败当作C1可跳过 |
 | S7 远端关闭、完整登出重做与列表反馈 | 依赖S6-C2；修改`frontend/src/pages/HomePage.vue`、`components/session/SessionManager.vue`、`components/terminal/TerminalPane.vue`、`session/{list,takeover}.ts`、`api/sessions.ts`及对应前端测试；必要时扩展`frontend/tests/auth.test.mjs`；无必需新增生产文件 | 远端关闭的完整交互、DELETE可取消等待与幂等重试、logoutPending完整失败/不确定重做、列表失效刷新；基本Pane清理已在C1，不在此重复实现；复用auth/router，不改认证协议 | F10–F13、S6-B23、S6-B25、B01–B05；DELETE/登出成功与失败/不确定、浏览器关闭与迟到响应；只关闭列表不误删SSH，退出后不联网 | 撤销本步退出/关闭/反馈增量；在功能恢复完整前保持新增入口禁用，不回退第四阶段既有logoutPending/stop语义；前序受依赖部分不单独发布 |
 | S8 全集成、真实环境与报告 | 依赖S1–S7及环境授权；扩展上述测试；仅发现有证据缺陷时修改对应责任文件；获准后新增`doc/stage-5-implementation-report.md`，临时浏览器脚本/日志用`/tmp/codex/` | 全量Go/race/前端、真实WS/浏览器、Docker/NPM/SSH验收；记录环境/命令/失败修复/未验项；完成后停止 | §17–20所有门槛；无双有效Binding、无泄漏/旧端抢回、真实场景有证据，不能只靠单测 | 仅撤销本步独立失败修复/测试/报告增量，保留前序审查成果；集成失败不宣称完成、不部署中间补丁；外部环境回滚按事先获准部署方案 |
 
-S0的编码基线检查仍留待获准实施；D1–D3已确认为A，S6所有权已按方案B细化，但本轮仅授权文档修订。所有“必要时修改”都以实际失败或接口适配证据为前提，不预先扩大代码范围。
+S0的编码基线检查仍留待获准实施；D1–D3已确认为A，S6所有权已按方案B细化，但本轮仅授权文档修订。所有“必要时修改”都以实际失败或接口适配证据为前提，不预先扩大代码范围。S6-C1 对 `auth.ts`/`router`/`LoginPage` 的改动仅限登录生命周期 epoch、`/me` 刷新区分和 token 失效；完整登出失败/不确定重做仍属于 S7，不在 C1 提前实现。
 
 ## 16. 文件职责和最小改动控制
 
@@ -1077,17 +1182,19 @@ S0的编码基线检查仍留待获准实施；D1–D3已确认为A，S6所有�
 | `backend/internal/httpapi/sessions.go` | 新列表路由、具名响应/query校验；原Prepare请求形状不变 |
 | `frontend/src/api/sessions.ts` | List DTO运行时校验、查询/关闭HTTP包装；不做UI所有权或绑定循环 |
 | `frontend/src/session/list.ts`（建议新增） | 列表请求身份/Abort/快照状态；不拥有任何TerminalClient |
-| `frontend/src/session/takeover.ts`（建议新增） | 候选Pane唯一主动接管所有者，并提供同文件的小型 `PaneOperationGate`：详情快照/确认候选/取消/sequence/Abort/lease；调用已有Client的stop/connectTakeover；绝不自建WS/重试循环，不建立全局队列 |
+| `frontend/src/session/takeover.ts`（建议新增） | 候选Pane唯一主动接管所有者，并提供同文件的小型 `PaneOperationGate`：详情快照/确认候选/取消/sequence/Abort/lease；捕获并校验`loginEpoch`/页面/Pane token；调用已有Client的stop/connectTakeover；绝不自建WS/重试循环，不建立全局队列 |
+| `frontend/src/session/pane-lifecycle.ts`（可选新增） | 仅为可独立测试而抽出的小型`PaneLifecycle`：不可逆取消、资源登记、`PaneDisposeResult`、进行中Promise共享与失败重试；由HomePage创建和拥有，不是全局Store/事件总线/队列 |
 | `frontend/src/components/session/SessionManager.vue`（建议新增） | 列表展示、筛选、刷新、行“打开”事件；不查详情、不创建Pane、不持有确认、不取消已移交Pane；不在每行创建Client |
-| `frontend/src/pages/HomePage.vue` | 同页唯一Session ID登记（tabs/panes/pending/closing/paneKey）、创建候选Pane、ready/failed匹配、定位、视图切换、页面停止/销毁；不持有详情/确认；列表行数据不能替换运行中Pane对象；交互式closing等待真实dispose |
-| `frontend/src/components/terminal/TerminalPane.vue` | 唯一client/tracker/recovery/takeover/gate、显式`attach/candidate`启动、ready/failed握手、候选UI、焦点/尺寸/提示、真实dispose Promise；初始化失败后不允许迟到ready；stop/dispose先失效门禁和takeover |
+| `frontend/src/pages/HomePage.vue` | 同页唯一Session ID登记（tabs/panes(PaneLifecycle)/pending/closing/paneKey/tombstone）、同步创建lifecycle、创建候选Pane、ready/failed匹配、定位、视图切换、页面停止/销毁；不持有详情/确认；列表行数据不能替换运行中Pane对象；closing只在dispose返回succeeded后释放，失败保留并允许重试 |
+| `frontend/src/components/terminal/TerminalPane.vue` | 接收不可替换`PaneLifecycle`；唯一client/tracker/recovery/takeover/gate、显式`attach/candidate`启动、ready/failed握手、候选UI、焦点/尺寸/提示；每个长期资源创建前和跨await后检查取消；关闭转调`lifecycle.dispose()`并传播`PaneDisposeResult`，失败不吞异常；`closed`仅在成功后发出；初始化失败后不允许迟到ready |
 | `frontend/src/terminal/client.ts` | S5 已冻结；S6 不修改，只调用`connect`/`connectTakeover`/`stop`/`completion`；保持初始mode、有限循环、Promise与socket所有权 |
 | `frontend/src/terminal/recovery.ts` | 保持原两步attach候选；`refresh()`、`recover()`和诊断刷新全部先取Pane门禁lease；不拥有takeover详情/确认，不把主动takeover塞进recover默认路径；门禁拒绝时不发请求、不清状态 |
 | `frontend/src/terminal/output.ts` | 预期无生产改动；只通过现有算法复用与回归验证；发现真实缺陷再说明最小修复 |
-| `frontend/src/stores/auth.ts` | 只增加只读身份代次访问；在accept/clear/logout/expire时推进代次；不新建全局身份Store，不改登出成功边界 |
-| router、config、migrations、go.mod、package锁文件 | 预期不改；既有能力足够。auth测试可扩展，不能借机改登出成功边界 |
+| `frontend/src/stores/auth.ts` | 暴露只读`identityEpoch`；`acceptIdentity()`只刷新展示数据、不推进；新增`beginLoginLifecycle()`在登录成功后推进一次；登出意图开始推进一次，成功清理不重复；`clearIdentity()`/`expireIdentity()`用于服务端确认失效；`checkIdentity()`不推进、不因网络错误清身份；不新建全局身份Store，不改登出成功边界 |
+| `frontend/src/router/index.ts`、`pages/LoginPage.vue` | 登录成功后、导航前调用`beginLoginLifecycle()`；路由`checkIdentity()`只刷新展示；`AUTH_REQUIRED`才按失效处理，网络错误保留身份/epoch并显示可重试提示，不停止Pane |
+| router其他配置、config、migrations、go.mod、package锁文件 | 预期不改；既有能力足够。auth测试可扩展，不能借机改登出成功边界 |
 
-新增控制器为可测试的小型页面所有者，不建立全局store、事件总线或任务队列。S6 方案 B 下，SessionManager 只发打开事件，HomePage 只做唯一登记、ready/failed匹配和 Pane 生命周期，候选 Pane 的 SessionTakeover 是主动接管唯一所有者，SessionRecovery 的所有入口都经过同一 Pane 门禁；不能同时保留“管理视图内确认”和“Pane 内确认”两套所有者。若S6实际能在现有Pane内保持职责清晰且完整测试，可裁减文件数量，但不能删掉ready/failed、门禁或真实dispose信号。生产注释继续中文，测试按真实职责命名。
+新增控制器为可测试的小型页面所有者，不建立全局store、事件总线或任务队列。S6 方案 B 下，SessionManager 只发打开事件，HomePage 只做唯一登记、`PaneLifecycle`、ready/failed匹配和 Pane 生命周期，候选 Pane 的 SessionTakeover 是主动接管唯一所有者，SessionRecovery 的所有入口都经过同一 Pane 门禁；不能同时保留“管理视图内确认”和“Pane 内确认”两套所有者。若S6实际能在现有Pane内保持职责清晰且完整测试，可裁减文件数量，但不能删掉ready/failed、门禁、`PaneLifecycle`创建取消屏障、`PaneDisposeResult`或真实dispose信号。生产注释继续中文，测试按真实职责命名。
 
 ### 16.1 S6 UI 复用实施约束与验收标准
 
@@ -1210,25 +1317,25 @@ Go必须运行 `go test -race ./...`；受控同步点用于固定交错，生�
 | F02 | 列表卸载、隐藏/重新可见、登出、Abort后响应迟到 | 列表卸载只 Abort 列表 GET、移除 visibility listener，不取消已移交 Pane 的详情/确认/takeover；登出才终止页面所有权并 stop/dispose；隐藏终端实例不销毁；迟到列表响应不能发布 |
 | F03 | 列表状态过时、刚被关闭/接管、剩余0 | 详情/提交复查；不把列表CONNECTED当本设备在线，不在客户端到零DELETE |
 | F04 | 首次takeover的HTTP/WS失败、成功后掉线、bind_success丢失 | 自动重试全部attach；G不被列表/详情悄悄更新；原预算耗尽后停止 |
-| F05 | 无Pane重复点击，pending尚未mount，Pane初始化中，初始化失败/重试，多个行不同Session，closing后立即重开 | 每ID至多一个tabs项/pending/Pane/Client；正常初始化只有匹配ready/failed释放pending，关闭/终止作为取消路径；closing等待真实dispose；不同Session可独立；确认前零Prepare/WS |
+| F05 | 无Pane重复点击，pending尚未mount，Pane初始化中，初始化失败/重试，多个行不同Session，closing后立即重开，dispose失败/重试，迟到mount | 每ID至多一个tabs项/pending/PaneLifecycle/Pane/Client；正常初始化只有匹配ready/failed释放pending，关闭/终止作为取消路径；closing只在dispose返回succeeded后释放，失败保留并允许重试；迟到mount不创建长期资源；不同Session可独立；确认前零Prepare/WS |
 | F06 | 在线或replaying Pane从列表打开 | 只定位，不创建第二Client、不自我接管；replaying不被当作恢复中；其他Pane与连接继续 |
 | F07 | 自动恢复处于drain、POST、握手、replay、retry_wait时准备接管，或Recovery refresh/recover持有门禁 | takeover按分类抢占或拒绝；stop同步封准入；旧完成后才新详情/确认/任务；旧回调/old finally不能污染新状态 |
 | F08 | 接管详情失败、用户取消、Prepare失败、提交结果未知 | 原任务不复活；可重试失败仅原预算attach；最终失败可由用户重新查询；真正ended禁止恢复 |
 | F09 | taken_over业务消息、裸4001、通知丢失1006、旧端休眠醒来 | 禁输入/自动抢回；通知丢失只原代次attach遇冲突；终止原因不被迟到close覆写 |
 | F10 | 接管时关闭SSH/取消关闭确认、DELETE失败/响应丢失 | 确认前不停止；确认后封接管、停任务并DELETE；成功不伪报CLOSED；失败查询/幂等重试，不自动恢复 |
 | F11 | Prepare后登出、提交瞬间登出、退出失败/不确定/迟到AUTH_REQUIRED | 保留退出意图与重试，无凭证/WS/标签复活；其他登录Session权限正确 |
-| F12 | SessionManager卸载/重挂载/切换视图、关闭候选Pane、整个Home卸载、登出 | 卸载/切换列表不取消已移交 Pane 的详情、确认或 takeover；重挂载后再次打开定位原Pane；关闭Pane才invalidate/abort/stop/dispose；Home卸载/登出终止全部所有权；均无隐式Session DELETE |
+| F12 | SessionManager卸载/重挂载/切换视图、关闭候选Pane、整个Home卸载、登出、`/me`刷新 | 卸载/切换列表不取消已移交 Pane 的详情、确认或 takeover；重挂载后再次打开定位原Pane；关闭Pane才invalidate/abort/stop/dispose；Home卸载/登出终止全部所有权；同一登录生命周期内`/me`刷新或AuthView对象替换不停止Pane；均无隐式Session DELETE |
 | F13 | 同实例processedOffset、新页面0、截断重建、隐藏Pane/焦点、历史提示 | 字节连续性/输入门禁/尺寸不变；恢复成功清当前提示、历史诊断明确；旧任务不抢焦点 |
 
-#### 17.4.1 S6 方案 B 所有权与异步边界专项（S6-B01–S6-B38）
+#### 17.4.1 S6 方案 B 所有权与异步边界专项（S6-B01–S6-B47）
 
-下表保留用户要求的 25 项方案 B 行为，并补充第二轮审查要求的 ready/failed、Pane 门禁、身份代次、replaying、dispose 和重挂载专项。S6-C1 负责完整安全纵切；S6-C2 只做复杂竞态、集成回归和浏览器验收，不补 C1 缺失的基本生命周期。每项必须使用实际 HomePage/Pane/SessionTakeover/TerminalClient 或可控 fetch/WS/TerminalPort 验证所有权和异步交错，不能只断言点击后出现某段文本。
+下表保留用户要求的 25 项方案 B 行为，并补充第二轮的 ready/failed、Pane 门禁、身份代次、replaying、dispose 和重挂载专项，以及第三轮的 dispose 结果传播、`PaneLifecycle` 创建取消屏障、迟到 mount 和登录生命周期专项。S6-C1 负责完整安全纵切；S6-C2 只做复杂竞态、集成回归和浏览器验收，不补 C1 缺失的基本生命周期。每项必须使用实际 HomePage/Pane/SessionTakeover/TerminalClient 或可控 fetch/WS/TerminalPort 验证所有权和异步交错，不能只断言点击后出现某段文本。
 
 | ID | 场景 | 必须断言 | 阶段 |
 |---|---|---|---|
 | S6-B01 | SessionManager 行点击打开 | SessionManager 只 emit，不 GET 详情、不创建 Pane/Client；HomePage 在同一同步调用栈内检查 `tabs/panes/pending/closing` 并建立 `tabs` 项与 `pending`，预占发生在任何 await 之前 | S6-C1 |
 | S6-B02 | 同一 Session 连续点击 | 只有一个 `tabs` 项、一个 `pending`、挂载后一个 Pane/Client；第二次点击只定位现有候选，不重复创建 | S6-C1 |
-| S6-B03 | Pane 创建及 mount 窗口 | `pending` 存在、`panes` 尚无句柄；并发点击不触发第二次创建或第二个 Client；`setPane` 只登记句柄，不释放 `pending`；正常初始化只有匹配的 `ready`/`failed` 才释放，关闭/终止走取消路径；创建/mount 失败保留同一 `tabs` 项、释放 `pending` 并显示错误，不自动重试、不另 push 并行 Pane；期间无详情 GET/Prepare/WS | S6-C1 |
+| S6-B03 | Pane 创建及 mount 窗口 | `pending` 和 `PaneLifecycle` 已存在、组件 ref 尚未注册；并发点击不触发第二次创建或第二个 Client；`setPane` 只附加 ref，不替换 lifecycle、不释放 `pending`；正常初始化只有匹配的 `ready`/`failed` 才释放，关闭/终止走取消路径；创建/mount 失败保留同一 `tabs` 项、释放 `pending` 并显示错误，不自动重试、不另 push 并行 Pane；期间无详情 GET/Prepare/WS | S6-C1 |
 | S6-B04 | 候选 Pane mount 与 ready | 候选模式 `onMounted` 不调用 attach/connect；Client、Recovery、Takeover 按顺序创建并绑定；只有匹配 `paneKey`/`paneInstanceId` 的 ready 才完成所有权移交；模板 ref 或 `setPane` 不得触发 ready | S6-C1 |
 | S6-B05 | 详情成功、等待确认 | Prepare/POST/WebSocket/SSH 计数均为 0，无自动 attach/takeover；确认按钮是唯一启动入口 | S6-C1 |
 | S6-B06 | SessionManager 在所有权移交后卸载 | 列表组件卸载只取消列表 GET、移除监听；已移交 Pane 的详情 GET、确认界面和 takeover 继续有效，Pane 不 stop、不 dispose | S6-C1 |
@@ -1243,34 +1350,43 @@ Go必须运行 `go test -race ./...`；受控同步点用于固定交错，生�
 | S6-B15 | 用户确认后启动连接 | 只有确认后才调用 S5 既有 `connectTakeover(snapshot.binding_generation)`；首次 Prepare 为 takeover；首次连接 Promise 与长期 completion 分离；不另建 WebSocket、RecoveryTask 或重试循环 | S6-C1 |
 | S6-B16 | 首次 takeover 可重试失败后的重试 | 后续 attempt 全部固定 attach；`initialExpectedGeneration` 不变；不再次 takeover；`confirmedGeneration` 初始为 null，只由合法 bind_success 更新；BIND_CONFLICT 不进入重试 | S6-C1 |
 | S6-B17 | BIND_CONFLICT | 任务停止，不查询详情、不推算 generation + 1、不自动再次 takeover；Pane 保留冲突原因 | S6-C1 |
-| S6-B18 | 候选 Pane 关闭（基础） | 先置门禁 `terminating`，同步 invalidate SessionTakeover、abort 详情 GET、按既有 Client 生命周期 stop/dispose；迟到响应不能改状态或建连接；`closing` 保持到真实 `dispose()` settle，不因模板 ref 消失或 nextTick 释放 | S6-C1 |
-| S6-B19 | HomePage 卸载、登出、登录身份失效（基础） | 页面所有权终止：全部 Pane 先失效门禁，再 invalidate/abort/stop/dispose；迟到凭证、onopen、bind_success、finally 不能建 WS、改代次或复活标签；stop 完成前不为同一 Pane 启动新任务 | S6-C1 |
-| S6-B20 | 关闭后立即重开同一 Session（基础） | `closing` 阻止新 Pane 创建；至多记录一次待重开；旧 Pane 真实 dispose 完成并释放 `closing` 后才生成新 `paneKey`；旧回调不作用于新 Pane，无重叠 | S6-C1 |
+| S6-B18 | 候选 Pane 关闭（基础） | 先同步 `lifecycle.cancelCreation()`、置门禁 `terminating`，再 invalidate SessionTakeover、abort 详情 GET、按既有 Client 生命周期 stop/dispose；迟到响应不能改状态或建连接；`closing` 只在 `dispose()` 返回 `succeeded` 后释放，不因模板 ref 消失或 nextTick 释放 | S6-C1 |
+| S6-B19 | HomePage 卸载、登出、登录身份失效（基础） | 页面所有权终止：全部 Pane 先同步取消 lifecycle、失效门禁，再 invalidate/abort/stop/dispose并记录结果；迟到凭证、onopen、bind_success、finally 不能建 WS、改代次或复活标签；stop 完成前不为同一 Pane 启动新任务；清理失败不得报告成功 | S6-C1 |
+| S6-B20 | 关闭后立即重开同一 Session（基础） | `closing` 阻止新 Pane 创建；至多记录一次待重开；旧 Pane 的 `dispose()` 返回 `succeeded` 并释放 `closing` 后才生成新 `paneKey`；旧回调不作用于新 Pane，无重叠 | S6-C1 |
 | S6-B21 | 不同 Session 并行接管 | 每个 Session 有独立 sequence/controller/Pane/task；一个 Session 的取消、关闭或 stop 不影响另一个的详情、确认或 takeover | S6-C1 |
 | S6-B22 | takeover 成功但 replay 未完成 | 首次连接 Promise 可成功，但输入门禁仍保持；replay 处理完成前不发送输入，完成后才允许正常输入/resize | S6-C1 |
 | S6-B23 | S4 列表刷新与 D1 | 进入、手动刷新、操作完成、重新可见的刷新行为不变；无定时轮询；列表卸载只取消列表 GET，不触发 takeover/停止 Pane | S6-C2 |
 | S6-B24 | S5 方案 A 回归 | 首次 mode 只作用一次、后续 attach、generation 规则、完整 stop 屏障、4001/4002/OUTPUT_GAP 行为均不变；S6 没有新增第二套连接状态机 | S6-C1 |
 | S6-B25 | UI 样式复用 | C1 首次新增确认/失败/门禁提示时即复用 `Modal.vue`、`base.css` 设计令牌和 `.session-*`/`.terminal-*` 样式；没有新颜色/按钮/弹窗/状态体系；新增状态最多使用最小 scoped CSS 且视觉一致；C2 复核集成后仍一致 | S6-C1/C2 |
-| S6-B26 | 初始化/mount 失败与同标签重试 | Pane 初始化或局部 mount 错误进入 failed、旧实例不可能再 ready、释放 pending、保留失败标签和原因；用户显式重试时等待旧实例 dispose，生成新 paneKey 重建，不复用半初始化 Client；旧实例迟到 ready/failed/closed 被忽略 | S6-C1 |
-| S6-B27 | 旧 Pane 迟到 ready/failed | 关闭、重试或页面失效后，旧 paneKey/paneInstanceId 的 ready/failed 不释放新 pending、不改新 initState、不重建 tab、不启动连接 | S6-C1 |
-| S6-B28 | 真实 dispose 与重复关闭 | 从 tabs 删除、nextTick、模板 ref 为 null 均不释放 closing；有句柄时只有 `dispose()` Promise settle 才释放；无句柄的 pending 关闭在创建尝试确认无可清理实例后释放，迟到句柄仍先 dispose；重复关闭复用同一 Promise；dispose 拒绝显示清理失败且不伪造成功 | S6-C1 |
+| S6-B26 | 初始化/mount 失败与同标签重试 | Pane 初始化或局部 mount 错误进入 failed、旧实例不可能再 ready、释放 pending、保留失败标签和原因；用户显式重试时等待旧实例 `dispose()` 返回 `succeeded` 后才生成新 paneKey 重建，不复用半初始化 Client；dispose 失败保留旧标签和重试关闭，不生成新 Pane；旧实例迟到 ready/failed/closed 被忽略 | S6-C1 |
+| S6-B27 | 旧 Pane 迟到事件与 tombstone | 关闭、重试或页面失效后，旧 paneKey/paneInstanceId 的 setPane/ready/failed/closed/dispose结果不释放新 pending、不改新 initState、不重建 tab、不启动连接；tombstone 在页面生命周期内持续有效 | S6-C1 |
+| S6-B28 | 真实 dispose、结果传播与重复关闭 | 从 tabs 删除、nextTick、模板 ref 为 null 均不释放 closing；只有 `dispose()` 返回 `{status:'succeeded'}` 才释放；`failed` 保留 closing、lifecycle和错误，允许重试；重复调用共享进行中Promise且不并行；成功后幂等返回成功；失败后下一次调用发起新清理而非复用失败Promise；内部错误提示不影响HomePage对结果的判断 | S6-C1 |
 | S6-B29 | Recovery refresh 期间启动 takeover | Recovery.refresh 持有 recovery lease 时，takeover 按分类显式抢占：旧 GET abort、旧 lease 失效、先 stop，再详情；旧成功/失败/finally 不能发布候选或启动连接 | S6-C1 |
 | S6-B30 | Recovery recover 期间启动 takeover | Recovery.recover 启动 attach 任务时，takeover 只允许在恢复中/已停止分类抢占；先完整 stop 再详情；不得并行 Prepare/WS；旧 attach 结果不能覆盖 takeover | S6-C1 |
 | S6-B31 | takeover 详情期间手动/诊断刷新 | takeoverPreparing/Review 期间 `recovery.refresh()`、`recover()` 和 `refresh(false, taskId)` 全部被门禁拒绝；诊断刷新跳过时不发 GET、不清快照/候选/错误、不自动重试 | S6-C1 |
 | S6-B32 | stop/drain 期间其他动作 | stop 未完成时点击刷新、手动恢复、重复接管或确认均被拒绝；不 GET 详情、不 Prepare、不建 WS；stop 拒绝进入 blockedStop，只允许重试 stop/关闭 | S6-C1 |
-| S6-B33 | 身份对象替换与迟到详情 | 不先置空而直接替换身份对象时，旧身份 token 失效；旧详情成功/失败/finally 和确认不能在新身份下发布快照、建 WS 或改代次；同一管理员重新登录视为新代次 | S6-C1 |
+| S6-B33 | 同一登录生命周期的 AuthView 刷新 | 同一 epoch 内直接替换 AuthView 对象或重新请求`/me`，只更新展示数据，不推进epoch、不停止终端；原Pane token仍有效，详情/确认继续。只有新登录、登出或服务端确认失效才使旧token失效 | S6-C1 |
 | S6-B34 | SessionManager 重挂载后再次打开 | 卸载只取消列表 GET；重新挂载后再次打开同一 Session 仍定位原 Pane/原候选，不创建第二 Pane，不重启已停止任务 | S6-C2 |
 | S6-B35 | replaying 的 D2 分类 | 已收到合法 bind_success 且正在 replay 的 Pane 属于已连接；列表打开只定位，不触发 takeover、不停止任务、不创建第二 Pane；输入门禁保持到 replay 完成 | S6-C1 |
 | S6-B36 | HomePage 卸载后新页面竞争 | 旧页面 token 失效，旧 Pane 迟到 ready/failed/详情/确认不能操作新页面；新 HomePage 不共享旧 Map，允许新 Pane 由服务端 Binding/generation 仲裁，不出现同页双 Pane | S6-C2 |
 | S6-B37 | 门禁操作中关闭/登出/卸载 | 任一 lease 正在 refresh/recover/detail/confirm 时触发关闭、登出或页面卸载，门禁先 terminating；旧 lease assert 失败，详情 abort、stop/dispose 执行，旧回调不能启动连接 | S6-C1 |
 | S6-B38 | 多 Session 门禁隔离 | 不同 Session 各自 Pane 有独立 gate/lease/sequence/controller；一个 Session 的 stop、取消、关闭或身份失效不影响另一个的详情、确认或 takeover | S6-C2 |
+| S6-B39 | dispose 成功/失败传播 | `lifecycle.dispose()` 始终返回显式结果对象；内部展示错误但HomePage看到`failed`；`succeeded`才释放closing并发`closed`；`failed`保留closing、旧句柄和重试入口；HomePage卸载期间失败不得报告清理成功 | S6-C1 |
+| S6-B40 | dispose 并发、幂等与重试 | 进行中重复调用共享同一底层Promise，不并行执行多个`client.dispose()`；成功后重复调用幂等成功；首次失败后第二次调用发起新清理并可成功；失败Promise不被永久复用 | S6-C1 |
+| S6-B41 | 创建取消屏障：初始化各阶段 | Pane创建后ref注册前、ref注册后onMounted前、onMounted开始但Client未创建、Client已创建但Recovery未创建、Takeover已创建但未ready，关闭均同步置`cancelled`；此后每个资源创建点拒绝登记，已登记资源由旧lifecycle清理 | S6-C1 |
+| S6-B42 | 迟到 mount/ready/failed/closed/dispose结果 | 旧实例在新实例已预占后迟到mount，必须在创建任何长期资源前被拒绝；迟到ready/failed/closed/dispose结果按tombstone丢弃，不覆盖新pending/closing/initState；同一Session不出现两个有效Pane/Client | S6-C1 |
+| S6-B43 | HomePage卸载与未mount Pane | 页面卸载时仍有仅创建lifecycle、尚未mount的Pane；全部同步取消并尽力dispose；未完成/失败结果被记录而非伪报成功；迟到mount不创建资源；页面token失效后旧回调不重建tabs/pending | S6-C1 |
+| S6-B44 | 同一登录生命周期的`/me`刷新 | 重新请求`/me`或替换AuthView对象不推进`loginEpoch`；原Pane token仍有效，终端不stop，详情/确认可继续；路由导航触发`checkIdentity()`同样不停止现有终端 | S6-C1 |
+| S6-B45 | 登出、重登录与旧epoch迟到回调 | 登出意图推进一次epoch，失败重试不重复；登出后重新登录同一管理员得到新epoch；旧epoch的详情GET、确认回调和`connectTakeover()`启动一律丢弃，不能在新登录下创建连接 | S6-C1 |
+| S6-B46 | `/me`网络错误与服务端确认失效 | 网络错误/超时不推进epoch、不清身份、不停止Pane，显示可重试提示；只有`AUTH_REQUIRED`/明确失效才推进epoch并安全终止Pane和候选流程 | S6-C1 |
+| S6-B47 | closing未释放时的复杂重开交错 | closing（含disposeFailed）期间重复打开只记录一次reopenRequested；取消确认前后立即重开、旧dispose完成信号迟到、旧实例迟到mount均不产生旧新Pane重叠；只有succeeded后才按新paneKey重开 | S6-C2 |
 
-F 测试先使用实际类/SFC 与可控 fetch/WS/TerminalPort 隔离异步交错；S6-B 测试同样必须检查真实 Pane/Client 实例数、请求身份、任务身份、stop 屏障和迟到回调，不以文案或按钮可见性代替。浏览器集成另列：
+F 测试先使用实际类/SFC 与可控 fetch/WS/TerminalPort 隔离异步交错；S6-B 测试同样必须检查真实 Pane/Client 实例数、`PaneLifecycle` 状态与资源登记、dispose 结果对象、请求身份、任务身份、stop 屏障、`loginEpoch` 和迟到回调，不以文案或按钮可见性代替。浏览器集成另列：
 
 - **B01**：实际HomePage→会话管理→候选Pane ready→详情确认→真实WS→真实xterm，覆盖A/B/C/D；在候选详情/确认阶段卸载 SessionManager，接管仍继续；另验证replaying只定位和初始化失败重试，不使用未编译的伪组件。
 - **B02**：两个独立浏览器登录上下文A/B、第三竞争者C，同一Session接管、同代次竞争；记录Session ID、服务端代次和原SSH任务连续性。
 - **B03**：A离线/休眠后B接管，A回网不抢回；同Cookie顶层页退出与独立登录退出分别验证，不能混作一类。
-- **B04**：重复点击/旧请求乱序、pending/mount/ready/failed窗口、初始化失败重试、确认取消、closing后立即重开、SessionManager重挂载、列表/Pane/页面退出、身份对象替换、登出失败重试；检查无重复xterm实例或Client、无Pane重叠、无旧lease启动连接、无未处理Promise。
+- **B04**：重复点击/旧请求乱序、pending/mount/ready/failed窗口、初始化失败重试、确认取消、closing后立即重开、dispose失败重试、迟到mount、SessionManager重挂载、列表/Pane/页面退出、同一登录生命周期`/me`刷新、登出失败重试；检查无重复xterm实例或Client、无Pane重叠、无旧lease启动连接、无未处理Promise。
 - **B05**：中文/ANSI/交互程序、持续输出、回放门禁、resize、两步人工attach、UI提示残留修复回归；窄屏只记视口测试，真设备另列。
 
 ## 18. 失败注入、资源观察与验证命令
@@ -1281,7 +1397,7 @@ F 测试先使用实际类/SFC 与可控 fetch/WS/TerminalPort 隔离异步交�
 - 操作门：复用operationAdmitted同步点，让真实SSH调用阻塞；分别释放门与让候选超时。必须统计实际远端调用次数，证明旧未准入项没有副作用。
 - WS：真实Listener包装记录半帧头读取；读端停收导致TCP堵写；记录一次实际write失败；在提交后成功前缀前断开；不把“客户端没看到成功”当服务端未提交。
 - 登录：真实Logout短事务回滚/提交不确定，以及HTTP响应丢失；后两者不能混为同一种服务端状态。
-- 前端：可控fetch在Abort后仍resolve/reject、可控旧socket handler、write callback延迟、task finally迟到、nextTick后Pane销毁；另注入 SessionManager 在候选详情/确认期间卸载、pending 尚未 mount、ready 迟到、初始化失败后同标签重试、closing dispose 未完成、Recovery refresh/recover 与 takeover 竞争、诊断刷新被门禁拒绝、身份对象替换、登出/身份失效与迟到响应竞争。测试实际 sequence/lease/请求/Pane/任务/登录身份检查，而不是只断言调用了 abort 或出现某段文本。
+- 前端：可控fetch在Abort后仍resolve/reject、可控旧socket handler、write callback延迟、task finally迟到、nextTick后Pane销毁；另注入 SessionManager 在候选详情/确认期间卸载、pending 尚未 mount、ready 迟到、初始化失败后同标签重试、closing dispose 未完成、`dispose()` 首次失败后重试成功、重复调用共享进行中Promise、无资源dispose、Recovery refresh/recover 与 takeover 竞争、诊断刷新被门禁拒绝、`/me` 同epoch刷新与AuthView对象替换、网络错误与`AUTH_REQUIRED`、登出/重登录与迟到响应竞争。创建取消屏障必须在Pane创建后ref注册前、ref注册后onMounted前、Client创建前后、Recovery/Takeover创建前后分别注入关闭，并让旧组件迟到mount。测试实际 sequence/lease/请求/Pane/lifecycle资源登记/dispose结果/登录epoch检查，而不是只断言调用了 abort 或出现某段文本。
 - 资源：每轮记录Manager活动数、服务器Lease、WS Count、worker/supervisor/done、凭证数量/TTL、终端/监听器实例数；协程/内存观察允许运行时噪声，但必须有实际完成信号证明回收。
 - 重复100轮接管/半帧头/阻塞/关闭，末轮与应用Stop竞争；旧、新slot分别核对，不仅等待总Count最后归零。
 
@@ -1326,7 +1442,7 @@ git diff --cached --name-only
 | E02 活动发现 | A创建真实Session并启动持续可观察任务，关闭本地标签；B独立登录，从列表按服务器筛选并读详情 | 同一Session ID/创建目标；列表来自当前运行事实；关闭标签不杀SSH；名称编辑不改变旧快照 |
 | E03 在线接管 | A在线输入，B详情→明确确认→takeover，期间持续输出 | Prepare阶段A仍可用；提交后仅B有新输入权；正常A显示被接管且不恢复；原Shell/进程继续，不重建SSH |
 | E04 离线接管与旧端回网 | A断网或后台休眠，B接管；恢复A网络/前台 | B正常；A仅原代次attach并停止，不自动抢回；新设备xterm从0恢复保留后缀，必要截断提示 |
-| E05 同页协调 | B已有在线/replaying/恢复中/停止Pane时从列表选择；重复点接管；取消确认；详情/确认期间卸载 SessionManager；初始化失败重试；SessionManager重挂载 | 按已裁决D2执行，只有一个Pane/Client；replaying只定位；列表卸载不取消已移交 Pane；pending/ready/failed/closing dispose 窗口无 Pane 重叠；门禁无并行详情/恢复；无隐藏第二任务；取消后的状态可解释 |
+| E05 同页协调 | B已有在线/replaying/恢复中/停止Pane时从列表选择；重复点接管；取消确认；详情/确认期间卸载 SessionManager；初始化失败重试；SessionManager重挂载；dispose失败重试；关闭后立即重开；终端打开时触发`/me`刷新和普通路由导航 | 按已裁决D2执行，只有一个Pane/Client；replaying只定位；列表卸载不取消已移交 Pane；pending/ready/failed/closing/disposeFailed窗口无 Pane 重叠，迟到mount不创建资源；门禁无并行详情/恢复；`/me`刷新或AuthView对象替换不停止终端；无隐藏第二任务；取消后的状态可解释 |
 | E06 竞争与失败 | A/B/C同G接管；接管时DELETE、远端exit、独立登录登出；受控阻断新前缀/旧通知 | 合法失败码集合、不双操作、不回滚旧端；DELETE与登出语义独立；响应丢失可显式查询 |
 | E07 输出与终端 | 中文/ANSI、vim/top、stty size、大段输出与粘贴、小缓存和慢浏览器 | 回放/输入门禁、尺寸、有限恢复不变；被接管端输入不补发；不声称后缀完整恢复全屏画面 |
 | E08 关闭与退出 | 新端提交后关网页、关列表、关Pane、logout、SIGTERM/Compose stop分别执行 | 关列表只取消列表 GET、不取消已移交 Pane；关Pane才invalidate/stop/dispose；logout/页面退出终止全部所有权；关闭浏览器不直接DELETE；服务端退出收尾在预算内，重启后旧Session不能恢复 |
@@ -1338,8 +1454,8 @@ git diff --cached --name-only
 
 ### 20.1 编码启动门槛
 
-- [ ] 第二轮修订经人工复审；D1–D3=A已有明确用户裁决记录，不能将该裁决当作编码授权。
-- [ ] S6 方案 B 第二轮定点修订经人工复审：ready/failed 所有权移交、Pane 级门禁、身份代次、SessionManager 卸载/重挂载、pending/closing/dispose、详情/确认异步隔离与测试矩阵一致，且未改变 S5 方案 A。
+- [ ] 第三轮修订经人工复审；D1–D3=A已有明确用户裁决记录，不能将该裁决当作编码授权。
+- [ ] S6 方案 B 第三轮定点修订经人工复审：dispose 成功/失败结果传播、`PaneLifecycle` 创建取消屏障、迟到 mount 拒绝、登录生命周期 `identityEpoch`、ready/failed 所有权移交、Pane 级门禁、SessionManager 卸载/重挂载、pending/closing、详情/确认异步隔离与测试矩阵一致，且未改变 S5 方案 A。
 - [ ] 明确编码授权、当前基线及文件保护完成；若仅授权S1则只执行该子集。
 - [ ] 无新的冻结设计冲突；一旦发现实质冲突标记BLOCKER并暂停受影响部分，不改冻结文档绕过。
 
@@ -1353,12 +1469,15 @@ git diff --cached --name-only
 - [ ] 正常taken_over消息/4001送达；丢失通知仍因代次保护不能抢回；INPUT_BACKPRESSURE、OUTPUT_GAP规则不变。
 - [ ] 提交到Connection登记窗口、旧Reader/Writer/Ping/Close阻塞和旧回调均有真实网络/竞态证据；旧slot不提前归还。
 - [ ] A–E全部覆盖；同页重复点击/已有Pane/恢复中接管不创建第二Client或恢复链；失败取消不复活旧任务。
-- [ ] S6 方案 B 所有权验收：SessionManager 只发打开事件；HomePage 同步预占 `tabs/panes/pending/closing` 并生成 `paneKey`；只有匹配当前实例的 ready 才完成所有权移交；SessionManager 卸载/视图切换不取消已移交流程，重挂载后再次打开定位原 Pane；同一 Session 在创建、初始化、失败重试、closing dispose 窗口不出现两个 Pane/Client。
-- [ ] Pane 初始化失败可观察：failed 释放 pending、保留标签和原因；同标签重试等待旧实例 dispose 并生成新 paneKey；旧实例迟到 ready/failed 不影响新实例；模板 ref、nextTick 或 tabs 删除不能替代 ready/dispose 信号。
+- [ ] S6 方案 B 所有权验收：SessionManager 只发打开事件；HomePage 同步预占 `tabs/panes(PaneLifecycle)/pending/closing`、生成 `paneKey` 和 retired tombstone；只有匹配当前实例的 ready 才完成所有权移交；SessionManager 卸载/视图切换不取消已移交流程，重挂载后再次打开定位原 Pane；同一 Session 在创建、初始化、失败重试、closing/disposeFailed 窗口不出现两个 Pane/Client。
+- [ ] Pane 初始化失败可观察：failed 释放 pending、保留标签和原因；同标签重试等待旧实例 `dispose()` 返回 `succeeded` 并生成新 paneKey；dispose 失败保留旧标签和重试关闭，不生成新 Pane；旧实例迟到 setPane/ready/failed/closed 不影响新实例；模板 ref、nextTick 或 tabs 删除不能替代 ready/dispose 信号。
+- [ ] dispose 结果传播验收：`lifecycle.dispose()` 返回显式 `PaneDisposeResult`；内部提示不改变失败结果；只有 `succeeded` 释放 closing 并发 `closed`；`failed` 保留 closing、旧 lifecycle 和重试入口；重复调用共享进行中 Promise、不并行；成功后幂等，失败后下一次发起新清理；HomePage 卸载期间失败不报告清理成功。
+- [ ] 创建取消屏障验收：关闭在任何初始化阶段都同步置不可逆 `cancelled`；TerminalPane 在每个长期资源创建前和跨 await 后检查；迟到 mount 不创建 Client/Terminal/Recovery/Takeover/监听器；旧实例只清理自己已登记资源；旧 ready/failed/closed/dispose 结果按 tombstone 丢弃；同一 Session 不同时存在两个有效 Pane/Client。
+- [ ] 登录生命周期验收：同一登录生命周期内 `/me` 刷新、AuthView 对象替换和普通路由导航不推进 epoch、不停止 Pane；登录成功推进一次，登出意图推进一次且失败重试不重复，服务端确认失效推进，登出后重登录同一管理员推进；旧 epoch 的详情、确认和 `connectTakeover()` 迟到回调被丢弃；`/me` 网络错误不被当作确定登出。
 - [ ] Pane 级门禁验收：`SessionRecovery.refresh()`、`recover()`、`refresh(false, taskId)` 与 takeover 准备/详情/确认共用同一 lease；D2 stop/drain 完成前无详情、Prepare、WS 或 Recovery；诊断刷新被拒绝时不发 GET、不清状态；stop 拒绝进入 blockedStop；取消后旧任务不复活，显式操作才可重新恢复。
 - [ ] 确认前零 Prepare/零 WebSocket；详情取消后的迟到成功、失败和 finally 不能发布快照、重新展示确认或启动连接；确认必须校验 lease、快照/Pane 实例/任务/页面 token/身份代次且防重复提交；takeover 成功后门禁保持到 completion settle。
 - [ ] `replaying` 被归类为已连接：列表打开只定位，不触发 takeover、不停止任务、不创建第二 Pane；输入门禁在 replay 完成前保持。
-- [ ] S6-B01–S6-B38 有实际组件/控制器/可控异步证据；C1 必须包含基础 ready/failed、门禁、身份、关闭/登出/身份失效清理和真实 dispose，C2 只验证复杂竞态与集成回归；不能以按钮点击后出现文案代替所有权、唯一性、stop 屏障和迟到回调断言。
+- [ ] S6-B01–S6-B47 有实际组件/控制器/可控异步证据；C1 必须包含基础 ready/failed、门禁、`PaneLifecycle`、dispose 结果、登录生命周期、关闭/登出/身份失效清理，C2 只验证复杂竞态与集成回归；不能以按钮点击后出现文案代替所有权、唯一性、stop 屏障、dispose 结果和迟到回调断言。
 - [ ] 关闭、登出、列表卸载、Pane关闭与网页关闭区分清楚；未完成退出始终保留意图和重试。
 - [ ] 第四阶段attach、两步人工恢复、所有重试预算、偏移/截断/drain、网络UI提示修复回归通过。
 - [ ] Go普通/race/vet/build、前端实际测试与构建、真实WS/浏览器测试有结果；不能将单元测试当接管全验收。
@@ -1372,7 +1491,7 @@ git diff --cached --name-only
 
 不得把本计划的测试勾选为已完成，不沿用第四阶段历史测试次数作为第五阶段统计。完成后停止并等待下一步授权；提交、推送、部署及第六阶段不是本计划自动授权。
 
-## 21. 用户裁决、第二轮修订与复审边界
+## 21. 用户裁决、第三轮修订与复审边界
 
 ### 21.1 已冻结，不再征求重新设计
 
@@ -1388,7 +1507,7 @@ git diff --cached --name-only
 |---|---|---|
 | D1 `用户已确认：A` | 进入、手动、操作结果、重新可见时按需刷新；序号+Abort；保留明确标注旧快照；GET仅主动/生命周期取消；无轮询/新配置；状态本地过滤四态、剩余时间先显示查询值 | 不采用原D1-B（仅进入/手动刷新）；落实§6/图1/U10/F01–F03、S4 |
 | D2 `用户已确认：A` | 在线已有Pane只定位；replaying视为已连接，只定位不takeover；恢复中/停止的原Pane显式停止准备→完整stop/drain→新详情→确认，复用原Client/tracker；取消/最终失败不自动复活原任务；协议规定的有限attach重试保持 | 不采用原D2-B（在线直接主动重连），不建立第二Pane/Client；落实§8/图3/§11/F06–F08、S6-C1 |
-| D3 `用户已确认：A` | 建立唯一不自动连接的候选Pane承载详情/确认；候选Pane初始化完成、绑定SessionTakeover并发出匹配ready后即拥有详情/确认/取消/takeover，不以用户确认或离开列表为移交点；成功成为正常标签，失败保留原因并支持同标签重试；SessionManager卸载/视图切换只取消列表GET，不取消已移交流程；关闭Pane、HomePage卸载、登出或身份失效才stop/dispose | 不采用原D3-B（管理视图先确认、再挂载Pane）；未启动候选取消可移除，原有Pane不因取消删除；落实§8/图2/§12.1/F05/F12/S6-B01–S6-B38、S6-C1/S6-C2 |
+| D3 `用户已确认：A` | 建立唯一不自动连接的候选Pane承载详情/确认；候选Pane初始化完成、绑定SessionTakeover并发出匹配ready后即拥有详情/确认/取消/takeover，不以用户确认或离开列表为移交点；成功成为正常标签，失败保留原因并支持同标签重试；SessionManager卸载/视图切换只取消列表GET，不取消已移交流程；关闭Pane、HomePage卸载、登出或身份失效才stop/dispose | 不采用原D3-B（管理视图先确认、再挂载Pane）；未启动候选取消可移除，原有Pane不因取消删除；落实§8/图2/§12.1/F05/F12/S6-B01–S6-B47、S6-C1/S6-C2 |
 
 本表的“原D1-B、原D2-B、原D3-B”是D1–D3各自未采用的产品备选，与2026-11-18用户裁决的“S6方案B”不是同一概念；S6方案B是在D3=A内部确定候选Pane所有权和生命周期，不改变D1–D3的产品选择。当前没有D1–D3待裁决项。上述选择补齐产品交互，不修改服务端冻结契约，也不等于授权编码。具体内部函数名仍为常规实现细节，但 UI 必须遵守 §16.1 的现有组件、设计令牌和样式类复用约束；§7内部接口及并发伪代码作为本轮修订提交人工复审。
 
@@ -1398,6 +1517,8 @@ git diff --cached --name-only
 
 2026-11-18 S6 方案 B 第二轮定点修订进一步明确：SessionManager 只发打开事件；HomePage 在首次 await 前同步登记 `tabs/panes/pending/closing`、生成 `paneKey` 并创建候选 Pane；候选 Pane 初始化完成、绑定 SessionTakeover 且发出匹配 ready 后才完成所有权移交；SessionManager 卸载、管理页切换或列表刷新只取消列表 GET，重挂载后再次打开定位原 Pane；PaneOperationGate 统一约束 SessionRecovery 三个入口和 SessionTakeover 准备/详情/确认；D2 stop/drain 完成前无详情、Prepare、WS 或 Recovery；身份代次替代仅非空判断；closing 等待真实 dispose；C1 包含完整安全纵切，C2 只做复杂竞态与集成回归；测试矩阵扩展为 S6-B01–S6-B38。
 
+2026-11-18 S6 方案 B 第三轮定点修订进一步明确：`PaneLifecycle` 在同步预占时由 HomePage 创建并传给 Pane，取消标记不可逆，所有长期资源必须通过 lifecycle 登记并在每个 await 后复查；关闭只在 `dispose()` 返回 `{status:'succeeded'}` 后释放 closing，失败保留 lifecycle/closing/错误并允许重试，重复调用共享进行中 Promise、不并行，失败 Promise 不复用；`identityEpoch` 改为登录生命周期代次，`acceptIdentity()` 只刷新展示，登录成功/登出/服务端确认失效才推进，同一生命周期内 `/me` 刷新、AuthView 对象替换和路由导航不推进，网络错误不视为身份失效；Pane token 由 `loginEpoch + pageToken + paneKey/paneInstanceId` 组成；测试矩阵扩展为 S6-B01–S6-B47。
+
 如后续确需修订其他文档，只提出建议并单独获得授权：可补充第四阶段报告的真实环境验收与UI修复记录，更新历史“尚未实现”措辞的状态说明；本轮未修改它们。不得以本计划覆盖冻结协议或新增未批准API。
 
 ### 21.4 本次交付结论
@@ -1405,7 +1526,7 @@ git diff --cached --name-only
 1. 第五阶段详细计划已覆盖任务要求，结构、实现入口、并发处理、文件职责、测试和真实验收均可审查。
 2. 冻结Binding事务、锁序、API/协议字段、错误码/关闭码和第四阶段恢复/登出语义保持。修正的是原计划提前取消及发送准入未明确同步边界的问题，不以修改冻结设计绕过。
 3. D1、D2、D3=A已确认；本次未发现其他必须用户裁决的设计空白或冻结文档冲突BLOCKER。内部失效处置/发送准入接口及交接窗口已给出设计，正确性仍须人工复审及未来T1–T4实测，不能宣称当前业务代码已修复。
-4. S6 方案 B 第二轮修订已消除两个 BLOCKER：候选 Pane 通过匹配实例的 ready/failed 完成 pending 释放和所有权移交；SessionRecovery 与 SessionTakeover 共用 Pane 级门禁。另已修正 S5 过期基线、replaying 分类、身份代次、C1/C2 边界和 closing 真实 dispose。SessionManager 卸载或视图切换仍不取消已移交流程；确认前零 Prepare/零 WebSocket；S5 方案 A 的 mode、generation、stop、4001/4002/OUTPUT_GAP 契约未改变。该修订仅完成文档一致性，不构成编码授权。
+4. S6 方案 B 第二轮修订已消除两个 BLOCKER：候选 Pane 通过匹配实例的 ready/failed 完成 pending 释放和所有权移交；SessionRecovery 与 SessionTakeover 共用 Pane 级门禁。第三轮修订进一步关闭 dispose 失败被吞、无句柄关闭后迟到 mount 创建资源、`/me` 刷新误推进 identityEpoch 三个边界：dispose 使用显式结果对象并保留失败 closing；HomePage 同步创建 PaneLifecycle 和 tombstone，迟到 mount 在创建长期资源前被拒绝；identityEpoch 只表示登录生命周期。SessionManager 卸载或视图切换仍不取消已移交流程；确认前零 Prepare/零 WebSocket；S5 方案 A 的 mode、generation、stop、4001/4002/OUTPUT_GAP 契约未改变。该修订仅完成文档一致性，不构成编码授权。
 5. 本轮完成后停止，等待人工复审与另行编码授权；不再次要求D1–D3裁决，不因其已确认自行进入编码。S0–S8总体边界和依赖顺序保持，仅细化S2/S3内部职责、接口与测试；S6-C1 未开始。
 6. 后续获得编码授权后的第一项业务改动应为S1：在Manager增加只读List及GET /api/sessions，先验证空列表、四活动态/CLOSED、server_id、排序、快照并发与安全DTO，再进入takeover事务。
 
