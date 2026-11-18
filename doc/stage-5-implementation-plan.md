@@ -2,6 +2,7 @@
 
 - 编写日期：2026-11-16。
 - 状态：第二轮修订审查稿；D1、D2、D3 的 A 方案已由用户在本轮明确确认。Binding终止和Writer准入设计已修订，等待人工复审；未开始编码。
+- 2026-11-18 S6 设计修订：用户已冻结候选 Pane 所有权方案 B，并裁决 U1–U9（见 §21.5）。本文中与方案 B 冲突的前端旧规则（§8.1、§8.2、§8.3、§11.3、§12.1、§15 S6/S7 行、§16、F12、§21.2 D3 行）已逐处标注“已被方案 B 替代”，原文保留供追溯；S6 前端细节以 `doc/stage-5-s6-design-plan.md` 为准。后端、协议、S5 连接契约和其他章节不变。
 - 阶段：会话管理与跨设备接管。
 - 首轮代码检查基线：`8dc739d90034abb16bd60009d21e3af944654c7e`。第二轮文档基线：分支 `codex/第五阶段`，HEAD `56ed63809ae8b7420362301bb768a610a2caa166`；本轮开始已有用户修改 `luan-qi-ba-zao.txt` 和未跟踪 `web-ssh-stage5.zip`，暂存区为空，均原样保护。
 - 本轮只修订本文件。不修改业务代码、冻结设计、第四阶段计划和历史报告，不安装依赖，不提交、推送或执行分支整合。首轮文档已按此前授权提交；该授权不用于本轮修订。
@@ -387,13 +388,15 @@ Connection.mu是现有WS调度锁，本次把已有 `Connection.mu→Detach/Sess
 
 用户已确认 D2=A、D3=A：HomePage 保存 `Session ID → 唯一 Pane/正在准备的记录`，在首次 await 前预占目标操作；Pane 拥有唯一 client/tracker/recovery，另持主动动作的查询/确认状态，所有动作共用一个本地互斥意图，不增加恢复循环。候选详情与 SessionRecovery 的人工 attach 候选分别存储并互相失效。
 
+> **S6 修订（2026-11-18，方案 B）**：HomePage 以单一 `records` 同步预占 Session ID；Pane 初始化成功并 emit ready 后，候选接管动作的所有权移交给 Pane，HomePage 和 SessionManager 不再持有或取消它。上段“所有动作共用一个本地互斥意图”在 S6 中的实现方式为 Pane 级：Recovery 的注入准入包含“takeover 空闲”，takeover 自身用 phase 加 sequence 令牌，不新增页面级或全局互斥对象，不修改 `recovery.ts`。主动动作对象为 `frontend/src/terminal/takeover.ts`。
+
 新建 Session 的 Pane 仍按创建 DTO 首次 attach。列表打开已有 Session 的 Pane 必须是“未自动连接”的候选模式，mount 本身不调用 connect；用户确认时只启动一次 takeover。可以先建立不可操作的待接管标签以容纳唯一 Client，成功前缀后转为正常标签；不能成功后再创建另一个 Client 把候选 WS 搬过去。失败保留该 Pane 和原因供查询/关闭，不自动创建另一个标签（D3）。
 
 建议在 client 保持现有 `connect(expected)`/`run(expected)` 默认 attach 外观，增加明确的用户主动入口或受类型限制的初始模式参数；具体命名不是外部契约。初始 mode 固定在该 RecoveryTask，第一次 Prepare 可为 takeover；下一次循环无论第一次是否拿到凭证，都必须改为 attach。用独立的“首次尝试已消费”标记，不能根据 retries==0 判断模式，因为稳定资格可能把 retries 重置为0。重复点击不重新 start，不延长预算。
 
 ### 8.2 从列表到终端的步骤
 
-1. 用户点某行“打开/主动接管”；HomePage 按 Session ID 查当前页 tabs、panes 及待创建记录，预占操作，绝不按服务器名称去重。
+1. 用户点某行“打开/主动接管”；HomePage 按 Session ID 查当前页记录（S6 方案 B 中为单一 `records`，含尚未 ready 的预占记录；原“tabs、panes 及待创建记录”三处状态已被替代），预占操作，绝不按服务器名称去重。
 2. 已有在线 Pane 按 D2 优先定位，结束本次列表动作，不发 takeover；已有恢复/停止 Pane 走 §11 的显式流程。无 Pane 按 D3 建立唯一待接管 Pane，默认不联网。
 3. 主动接管准备阶段，封闭原人工候选；若存在旧任务，显式停止并等待 client.stop、发送与 drain 收尾后才继续。按D2=A，恢复中任务在用户点击“停止恢复并准备接管”时先停止，之后取消确认也不自动复活；在线端只定位，不悄悄暂停。
 4. 用可取消详情 GET 获取完整 SessionView。检查任务、Pane、页面和登录身份；展示 Session 快照目标、状态、代次、离线期限。CONNECTING/CLOSING/NOT_FOUND 禁止接管；CONNECTED/DISCONNECTED 才可确认。GET 无本地自动超时。
@@ -402,7 +405,7 @@ Connection.mu是现有WS调度锁，本次把已有 `Connection.mu→Detach/Sess
 7. 凭证 POST 使用独立 credential_timeout；迟到/取消响应不创建 WS。通过后新建候选 WS，设置 arraybuffer/handlers，onopen 前再次检查身份，发送首条 bind。
 8. 服务端按 §7 依次验证、取操作门、快照与原子提交；HTTP 成功、WS OPEN 或 bind 已发送都不等于已接管。
 9. 客户端校验 bind_success 代次与前缀；connection Promise 完整前缀才反馈成功，长期 completion 仍运行。成功后聚焦同一标签、同步有效尺寸；回放未处理完显示“正在回放”，不提前启用输入。
-10. 标记列表需刷新；列表数据不能反向驱动终端。旧浏览器收到 taken_over/4001 立即停输入和自动恢复，有限排空，保留明确状态。
+10. 标记列表需刷新（S6 实现为 Pane emit `changed`，HomePage 仅在管理视图时调用列表刷新）；列表数据不能反向驱动终端。旧浏览器收到 taken_over/4001 立即停输入和自动恢复，有限排空，保留明确状态。
 11. 初次或后续可重试失败按原预算只 attach、只使用已成功获知代次；BIND_CONFLICT 停止。结果不确定不自动采用详情新代次再 takeover，要求新一轮用户详情/确认。
 
 同实例复用先 drain 再读取 processedOffset；新设备、新页面、新 xterm 或排空失败重建从 0。无论已有 Pane 与否，都不得使用另一设备、列表或服务端发送游标作偏移。
@@ -443,6 +446,8 @@ sequenceDiagram
         P->>P: 失效候选；无凭证/WS，显示结果
     end
 ```
+
+> **S6 修订（2026-11-18，方案 B）**：上图中“先 GET 详情、确认后再 stop”的顺序和“HomePage 创建待确认 Pane 后由 P 直接 GET”的描述，已被以下现行顺序替代（原图保留供追溯）：Pane 初始化成功并 emit ready 后，由 Pane 内的 SessionTakeover 执行 `prepare()`：准入检查 → `client.stop()` 屏障（候选 Pane 无任务，只做本地 settle）→ GET 详情 → 再次准入检查 → 确认框 → 用户确认 → 紧贴调用前的最终准入检查 → `connectTakeover(G)`。“聚焦并标记列表需刷新”实现为 Pane emit `changed`。取消后候选 Pane 保留（U4），不自动关闭。
 
 ### 8.4 时序图 3：当前页已有 Pane（D2=A 已确认）
 
@@ -633,21 +638,27 @@ B按已确认D2=A执行“定位”，不触发无提示attach或自我接管；
 
 页面为每个 Session 的接管、人工恢复、明确关闭和标签dispose设置共同的同步意图边界。关闭SSH确认前不停止旧端；确认后关闭意图优先取消正在准备/进行的接管，调用stop并发出DELETE，不等待本地排空。重复takeover不能绕过关闭意图；重复DELETE可在前次结果后幂等重试。关闭标签则取消本地所有者并dispose，不调用DELETE。
 
+> **S6 修订（2026-11-18，方案 B）**：上段“页面为每个 Session 设置共同的同步意图边界”在 S6 中由 Pane 承担，不在 HomePage 设置：Pane 的 `allowed`（生命周期、身份、remoteBusy、closeRequested）同时注入 Client、Recovery 和 SessionTakeover。“关闭 SSH 会话”按钮不因接管进行中而禁用；关闭确认框打开期间接管的准入检查失败，确认关闭后经 Pane `stop()` 使接管失效。关闭意图优先、确认前不停止旧端、DELETE 语义保持不变。
+
 列表更新、详情读取、onMounted、ononline、visibilitychange 均不获得用户操作身份。只有明确按钮确认创建初始takeover任务；可将“候选已确认并消费”的局部对象传给Pane，不提供全局可随意改mode的恢复状态。
 
 ## 12. 关闭、登出、页面退出与任务取消
 
 ### 12.1 页面关闭和所有权转移（D3=A，用户已确认）
 
-按D3=A以“用户确认启动终端任务”为边界：确认前，管理视图拥有查询/确认动作，离开管理页取消查询/确认并移除未启动候选；确认后任务归该 Pane，管理列表的隐藏/卸载仅取消列表GET，不暗中停止用户已打开的终端。UI明确显示正在接管的目标标签；用户可在Pane停止或关闭标签取消它。
+> **S6 修订（2026-11-18，方案 B）**：下一段（历史原文）中“确认前，管理视图拥有查询/确认动作，离开管理页取消查询/确认并移除未启动候选”**已被方案 B 替代，不再有效**。现行规则：所有权边界是“Pane 初始化成功并 emit ready”，而不是“用户确认启动终端任务”。ready 之后候选的详情查询、确认、取消都归 Pane；SessionManager 卸载、切换视图、刷新列表只影响列表 GET，不取消 Pane 的动作，也不移除候选 Pane。用户取消接管后候选 Pane 保留（U4），只能由用户关闭标签；Session ID 预占只在 Pane 清理成功（emit closed）后释放。
 
-因此“takeover HTTP 已发出后关闭管理页面”有三种明确情况：仅切回工作区时Pane任务继续；关闭对应终端标签时stop/dispose；离开整个HomePage或关闭浏览器网页时所有Pane同步封闭准入、取消请求/handler并dispose。不能把关闭一个列表组件等同于关闭SSH。
+（历史原文，已替代）按D3=A以“用户确认启动终端任务”为边界：确认前，管理视图拥有查询/确认动作，离开管理页取消查询/确认并移除未启动候选；确认后任务归该 Pane，管理列表的隐藏/卸载仅取消列表GET，不暗中停止用户已打开的终端。UI明确显示正在接管的目标标签；用户可在Pane停止或关闭标签取消它。
+
+因此“takeover HTTP 已发出后关闭管理页面”有三种明确情况：仅切回工作区时Pane任务继续；关闭对应终端标签时stop/dispose；离开整个HomePage或关闭浏览器网页时所有Pane同步封闭准入、取消请求/handler并dispose。不能把关闭一个列表组件等同于关闭SSH。按方案 B，上述三种情况同样适用于确认前的候选动作：只关闭管理页面时，候选的查询和确认继续由 Pane 持有。
 
 用户关闭网页时无法保证异步drain或网络Close握手实际完成，不依赖beforeunload发送DELETE；服务端靠现有断线/心跳/Supervisor回收Binding与WS，SSH继续离线保留。已提交后即刻关闭网页只Detach新端，不恢复旧端；尚未提交的候选关闭不撤销其他旧Binding。
 
 ### 12.2 登出顺序和迟到响应
 
 沿用第四阶段计划 §11/13 与实际 auth store：HomePage 首次await前设置logoutPending，使页面任务身份失效，取消列表/详情/确认、待挂载任务和凭证请求、停止全部Pane。logout HTTP与本地排空并行，不等drain后才请求撤销。
+
+> **S6 补充（2026-11-18，U9）**：S6 只做最小适配，不提前实现 S7 完整登出语义。顺序保持并行：同步设置 logoutPending（Pane watcher 同步 stop，接管动作失效）→ 同步对已登记 Pane 发起 stop → 立即 logout → 等待 stop 结果 → logout 成功后 close 全部 Pane → 跳转登录页。stop 失败（任务可能未完全停止）与 close 失败（本地终端资源未释放）分别统计、按 Session ID 记录日志并反馈给用户；登出成功优先，清理失败不阻止退出。logout 失败时保持“退出未完成”行为，不 close。
 
 Prepare成功但候选未提交时登出：浏览器Abort/stop防止继续发布；服务端登录写锁先使本登录无效，锁外清凭证和所属全部WS。候选如果已提交则扫描Detach它；如果来自另一独立登录的旧Binding尚有效，登出候选登录不能误撤销旧端。过期同样使用当前登录归属检查。
 
@@ -802,8 +813,8 @@ sequenceDiagram
 | S3 WebSocket终止及交接 | 依赖S2；修改`backend/internal/websocket/connection.go`、`protocol.go`、`connection_test.go`、`backend/internal/httpapi/sessions_test.go`；新增`backend/internal/websocket/takeover_test.go` | taken_over具名DTO/4001、先定原因再取消、失效退出分流、Writer双锁原子准入、提交登记窗口、slot与Supervisor复用 | W01–W06、R06–R08、T1–T4；真实HTTP/WS/SSH验证新旧端消息和操作；Reader/Writer堵塞不阻挡新端、旧slot不早还；失败允许合法首因 | 先撤销本步WS/HTTP测试及实现hunk；若放弃整个接管后端，还须逆序撤销S2，不能保留缺发送链路的公开takeover能力；S1保持 |
 | S4 列表前端及异步查询 | 依赖S1与D1；修改`frontend/src/api/sessions.ts`、`frontend/src/pages/HomePage.vue`、必要的`frontend/src/styles/base.css`；新增`frontend/src/session/list.ts`、`frontend/src/components/session/SessionManager.vue`、`frontend/tests/session-list.test.mjs` | 列表解析/单请求所有者/序号/Abort、服务器和本地状态筛选、独立管理视图、loading/error/empty；保持Pane挂载；接管按钮此步不开放未完成链路 | U10、F01–F03；乱序、旧finally、卸载/登出、可见刷新、失败保留快照；列表任何刷新无POST/WS；实际组件测试 | 撤销列表组件挂载/样式/API增量，移除仅本步文件；原服务器页/终端与后端列表保留，无依赖清单变化 |
 | S5 Client初始takeover模式 | 依赖S3，推荐在S4后审查；修改`frontend/src/terminal/client.ts`、`frontend/tests/terminal.test.mjs`；无必需新增生产文件 | 初始用户模式、后续固定attach；保持两种Promise/同一任务/预算/offset；明确连接结果和停止原因 | U11、F04；首POST是takeover、所有重试是attach、未知提交不换代；既有attach/4001/4002/稳定预算/drain测试全部通过 | 撤销mode增量及新增测试，保留原connect/run默认attach；不删除旧恢复实现，不引入输出算法变更 |
-| S6 Pane与同页标签协调 | 依赖S4/S5、D2/D3；修改`frontend/src/components/terminal/TerminalPane.vue`、`frontend/src/terminal/recovery.ts`、`frontend/src/pages/HomePage.vue`、`frontend/src/components/session/SessionManager.vue`、`frontend/tests/terminal-pane.test.mjs`；新增`frontend/src/session/takeover.ts`、`frontend/tests/session-takeover.test.mjs` | HomePage唯一ID登记/候选Pane；新的小型主动动作所有者只管详情/确认/取消并调用既有Client；mount模式显式；A–E场景、复用实例、停止旧链、失败保留状态 | F05–F09；重复点击/挂载窗口/在线定位/恢复中接管/失败取消/晚回调；同Session一个Pane/Client，旧任务完成前无新任务；两步人工attach原样通过 | 先撤销UI入口，再撤销Pane启动与所有权增量，移除本步专属控制器/测试；恢复原mounted attach，仅保留创建Session入口，S4列表仍可只读 |
-| S7 关闭/登出/视图退出与列表反馈 | 依赖S6；修改`frontend/src/pages/HomePage.vue`、`components/session/SessionManager.vue`、`components/terminal/TerminalPane.vue`、`session/{list,takeover}.ts`、`api/sessions.ts`及对应前端测试；必要时扩展`frontend/tests/auth.test.mjs`；无必需新增生产文件 | 同目标关闭与接管互斥、DELETE可取消等待、隐藏列表/关闭Pane区分、logoutPending同步封闭新任务、列表失效刷新；复用auth/router，不改认证协议 | F10–F13、B01–B05；DELETE/登出成功与失败/不确定、任务转移、浏览器关闭与迟到响应；只关闭列表不误删SSH，退出后不联网 | 撤销本步退出/关闭/反馈增量；在功能恢复完整前保持新增入口禁用，不回退第四阶段既有logoutPending/stop语义；前序受依赖部分不单独发布 |
+| S6 Pane与同页标签协调 | 依赖S4/S5、D2/D3；修改`frontend/src/components/terminal/TerminalPane.vue`、`frontend/src/pages/HomePage.vue`、`frontend/src/components/session/SessionManager.vue`、`frontend/tests/terminal-pane.test.mjs`、`frontend/tests/session-list.test.mjs`；新增`frontend/src/terminal/takeover.ts`、`frontend/tests/session-takeover.test.mjs`（S6 修订 2026-11-18：原“修改`recovery.ts`”“新增`session/takeover.ts`”已被方案 B 替代——`recovery.ts`不修改，通过注入准入实现互斥；接管对象放在`terminal/`，U8；细分为 C1/C2，见 S6 设计） | HomePage以`records`同步预占/候选Pane，ready后动作归Pane；新的小型主动动作所有者只管详情/确认/取消并调用既有Client；mount模式显式；A–E场景、复用实例、停止旧链、失败保留状态 | F05–F09；重复点击/挂载窗口/在线定位/恢复中接管/失败取消/晚回调；同Session一个Pane/Client，旧任务完成前无新任务；两步人工attach原样通过 | 先撤销UI入口，再撤销Pane启动与所有权增量，移除本步专属控制器/测试；恢复原mounted attach，仅保留创建Session入口，S4列表仍可只读 |
+| S7 关闭/登出/视图退出与列表反馈 | 依赖S6；修改`frontend/src/pages/HomePage.vue`、`components/session/SessionManager.vue`、`components/terminal/TerminalPane.vue`、`session/list.ts`、`terminal/takeover.ts`、`api/sessions.ts`及对应前端测试；必要时扩展`frontend/tests/auth.test.mjs`；无必需新增生产文件（S6 修订：原`session/{list,takeover}.ts`中接管对象路径改为`terminal/takeover.ts`） | 同目标关闭与接管互斥、DELETE可取消等待、隐藏列表/关闭Pane区分（方案 B：隐藏或卸载列表不取消已归 Pane 的候选动作）、logoutPending同步封闭新任务、列表失效刷新；复用auth/router，不改认证协议 | F10–F13、B01–B05；DELETE/登出成功与失败/不确定、任务转移、浏览器关闭与迟到响应；只关闭列表不误删SSH，退出后不联网 | 撤销本步退出/关闭/反馈增量；在功能恢复完整前保持新增入口禁用，不回退第四阶段既有logoutPending/stop语义；前序受依赖部分不单独发布 |
 | S8 全集成、真实环境与报告 | 依赖S1–S7及环境授权；扩展上述测试；仅发现有证据缺陷时修改对应责任文件；获准后新增`doc/stage-5-implementation-report.md`，临时浏览器脚本/日志用`/tmp/codex/` | 全量Go/race/前端、真实WS/浏览器、Docker/NPM/SSH验收；记录环境/命令/失败修复/未验项；完成后停止 | §17–20所有门槛；无双有效Binding、无泄漏/旧端抢回、真实场景有证据，不能只靠单测 | 仅撤销本步独立失败修复/测试/报告增量，保留前序审查成果；集成失败不宣称完成、不部署中间补丁；外部环境回滚按事先获准部署方案 |
 
 S0的编码基线检查仍留待获准实施；D1–D3已在本轮确认为A，但本轮仅授权文档修订。所有“必要时修改”都以实际失败或接口适配证据为前提，不预先扩大代码范围。
@@ -818,12 +829,12 @@ S0的编码基线检查仍留待获准实施；D1–D3已在本轮确认为A，�
 | `backend/internal/httpapi/sessions.go` | 新列表路由、具名响应/query校验；原Prepare请求形状不变 |
 | `frontend/src/api/sessions.ts` | List DTO运行时校验、查询/关闭HTTP包装；不做UI所有权或绑定循环 |
 | `frontend/src/session/list.ts`（建议新增） | 列表请求身份/Abort/快照状态；不拥有任何TerminalClient |
-| `frontend/src/session/takeover.ts`（建议新增） | 单Pane主动动作的详情/候选/确认身份和取消；依赖已有Client，绝不自建WS/重试循环 |
+| `frontend/src/terminal/takeover.ts`（新增；S6 修订：原建议路径`frontend/src/session/takeover.ts`已被替代，U8） | 单Pane主动动作的详情/候选/确认身份和取消；依赖已有Client，绝不自建WS/重试循环 |
 | `frontend/src/components/session/SessionManager.vue`（建议新增） | 列表展示、筛选、刷新、独立关闭/打开意图；把动作交给页面/目标Pane，不在每行创建Client |
 | `frontend/src/pages/HomePage.vue` | 同页唯一ID登记、视图切换、Pane引用、页面停止/销毁；列表行数据不能替换运行中Pane对象 |
 | `frontend/src/components/terminal/TerminalPane.vue` | 唯一client/tracker/recovery、主动动作控制器、mount入口、焦点/尺寸/提示；只本地扩展职责 |
 | `frontend/src/terminal/client.ts` | 明确初始mode、原有限循环、Promise与socket所有权；自动分支固定attach |
-| `frontend/src/terminal/recovery.ts` | 保持原两步attach候选，只补主动意图互斥/失效协作；不把主动takeover塞进recover默认路径 |
+| `frontend/src/terminal/recovery.ts` | 保持原两步attach候选；不把主动takeover塞进recover默认路径。S6 修订：原“只补主动意图互斥/失效协作”已被替代——S6 不修改本文件，Pane 在注入的`allowed`中加入“takeover 空闲”实现互斥，接管准备时调用既有`invalidate()`使人工候选失效 |
 | `frontend/src/terminal/output.ts` | 预期无生产改动；只通过现有算法复用与回归验证；发现真实缺陷再说明最小修复 |
 | auth/router、config、migrations、go.mod、package锁文件 | 预期不改；既有能力足够。auth测试可扩展，不能借机改登出成功边界 |
 
@@ -939,7 +950,7 @@ Go必须运行 `go test -race ./...`；受控同步点用于固定交错，生�
 | F09 | taken_over业务消息、裸4001、通知丢失1006、旧端休眠醒来 | 禁输入/自动抢回；通知丢失只原代次attach遇冲突；终止原因不被迟到close覆写 |
 | F10 | 接管时关闭SSH/取消关闭确认、DELETE失败/响应丢失 | 确认前不停止；确认后封接管、停任务并DELETE；成功不伪报CLOSED；失败查询/幂等重试，不自动恢复 |
 | F11 | Prepare后登出、提交瞬间登出、退出失败/不确定/迟到AUTH_REQUIRED | 保留退出意图与重试，无凭证/WS/标签复活；其他登录Session权限正确 |
-| F12 | 确认前离开列表、确认后关闭列表、关闭Pane、整个Home卸载 | 分别取消未确认动作/继续Pane任务/dispose本地/停止全部；均无隐式Session DELETE |
+| F12 | 确认前离开列表、确认后关闭列表、关闭Pane、整个Home卸载 | 方案 B（S6 修订）：确认前离开列表**不取消**已归 Pane 的候选动作，候选 Pane 和确认状态保留/确认后继续Pane任务/dispose本地/停止全部；均无隐式Session DELETE。原“确认前离开列表取消未确认动作”已被替代 |
 | F13 | 同实例processedOffset、新页面0、截断重建、隐藏Pane/焦点、历史提示 | 字节连续性/输入门禁/尺寸不变；恢复成功清当前提示、历史诊断明确；旧任务不抢焦点 |
 
 F测试先使用实际类/SFC与可控fetch/WS/TerminalPort隔离异步交错。浏览器集成另列：
@@ -1057,7 +1068,7 @@ git diff --cached --name-only
 |---|---|---|
 | D1 `用户已确认：A` | 进入、手动、操作结果、重新可见时按需刷新；序号+Abort；保留明确标注旧快照；GET仅主动/生命周期取消；无轮询/新配置；状态本地过滤四态、剩余时间先显示查询值 | 不采用仅进入/手动刷新B；落实§6/图1/U10/F01–F03、S4 |
 | D2 `用户已确认：A` | 在线已有Pane只定位；恢复中/停止的原Pane显式停止准备→新详情→确认，复用原Client/tracker；取消/最终失败不自动复活原任务；协议规定的有限attach重试保持 | 不采用在线直接主动重连B，不建立第二Pane/Client；落实§8/图3/§11/F06–F08、S6 |
-| D3 `用户已确认：A` | 建立唯一不自动连接的候选Pane承载详情/确认；确认后任务归Pane，成功成为正常标签，失败保留原因；离开列表取消未确认动作，已确认任务继续；关闭整个HomePage时stop/dispose | 不采用管理视图先确认、再挂载Pane的B；未启动候选取消可移除，原有Pane不因取消删除；落实§8/图2/§12.1/F05/F12、S6/S7 |
+| D3 `用户已确认：A` | 建立唯一不自动连接的候选Pane承载详情/确认；确认后任务归Pane，成功成为正常标签，失败保留原因；关闭整个HomePage时stop/dispose。S6 修订（方案 B）：原“离开列表取消未确认动作”已被替代——Pane ready 后候选动作即归 Pane，离开列表不取消 | 不采用管理视图先确认、再挂载Pane的B；原“未启动候选取消可移除”已被替代——取消后候选Pane保留，只由用户关闭（U4）；原有Pane不因取消删除；落实§8/图2/§12.1/F05/F12、S6/S7 |
 
 当前没有D1–D3待裁决项。上述选择补齐产品交互，不修改服务端冻结契约，也不等于授权编码。具体CSS、类名和内部函数名仍为常规实现细节；§7内部接口及并发伪代码作为本轮修订提交人工复审。
 
@@ -1076,3 +1087,25 @@ git diff --cached --name-only
 5. 后续获得编码授权后的第一项业务改动应为S1：在Manager增加只读List及GET /api/sessions，先验证空列表、四活动态/CLOSED、server_id、排序、快照并发与安全DTO，再进入takeover事务。
 
 本次仅修订指定计划文档，完成后停止等待人工复审；不修改业务代码/冻结文档，不执行commit、push或破坏性Git操作。
+
+### 21.5 S6 设计修订：方案 B 与 U1–U9 用户裁决（2026-11-18）
+
+术语说明：此处“方案 B”指 S6 候选 Pane 所有权方案，与 §21.2 表中各决策“未采用的原 B 方案”无关；D1、D2、D3 仍为 A。
+
+**方案 B（已冻结）**：SessionManager 只负责列表展示、筛选、刷新和触发打开事件；HomePage 同步预占 Session ID，创建并登记候选 Pane；Pane mount 不自动连接、不申请凭证、不创建 WebSocket；Pane 初始化成功并 emit ready 后，候选接管流程归 Pane；管理页面卸载、SessionManager 卸载、列表刷新不取消已移交给 Pane 的动作；Pane 关闭、HomePage 卸载、登出、身份失效时使动作失效、取消请求、停止任务并隔离迟到回调；用户确认后调用 S5 已有的 `connectTakeover()`，成功后继续使用同一 Pane、Client 和 Tracker，后续自动恢复遵循 S5 的 attach 规则。
+
+**被替代的旧规则**：§8.1 页面级共同互斥意图的实现方式、§8.2 第 1 步的 tabs/panes/待创建记录、§8.3 图 2 的“先 GET 后 stop”顺序、§11.3 页面级意图边界、§12.1“离开管理页取消未确认动作并移除未启动候选”、§15 S6 行的`recovery.ts`修改和`session/takeover.ts`、S7 行的`session/takeover.ts`、§16 两行、F12、§21.2 D3 行的相关表述。各处原文保留并标注，现行规则以方案 B 和 `doc/stage-5-s6-design-plan.md` 为准。
+
+| 编号 | 用户裁决 |
+|---|---|
+| U1 | dispose 失败后保留 Pane 记录和 Session ID 预占，不提供原地重试；提示用户刷新页面重新开始 |
+| U2 | 候选 Pane ready 后自动 GET 详情并显示确认框；GET 不申请凭证、不创建 WebSocket |
+| U3 | 取消 takeover 后保留原有人工两步 attach 能力，但不自动连接 |
+| U4 | 取消 takeover 后保留候选 Pane，不自动关闭 |
+| U5 | 初始化失败不提供原地重试；关闭成功后重新打开创建新实例 |
+| U6 | S6 不修改 auth/router，记录现有网络错误与 identity 清理行为的风险，留待独立处理 |
+| U7 | 修订本计划中与方案 B 冲突的旧规则（即本节及上述标注） |
+| U8 | 使用独立的 `frontend/src/terminal/takeover.ts` |
+| U9 | 登出成功优先，本地清理失败不阻止退出，但必须记录和反馈失败 |
+
+本次修订只涉及前端 S6/S7 相关描述；后端、协议、错误码、S5 连接契约、S0–S8 依赖顺序不变。本修订不构成编码授权。
