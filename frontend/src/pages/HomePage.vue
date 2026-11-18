@@ -1,5 +1,12 @@
 <script setup lang="ts">
-import { computed, ref, onMounted, onBeforeUnmount, watch } from 'vue'
+import {
+  computed,
+  markRaw,
+  ref,
+  onMounted,
+  onBeforeUnmount,
+  watch,
+} from 'vue'
 import { useRouter } from 'vue-router'
 import {
   request,
@@ -8,7 +15,12 @@ import {
   type ServerView,
   type Probe,
 } from '../api/management'
-import { logout, identity, logoutPending } from '../stores/auth'
+import {
+  logout,
+  identity,
+  logoutPending,
+  authNotice,
+} from '../stores/auth'
 import { createSession, type SessionView } from '../api/sessions'
 import TerminalPane from '../components/terminal/TerminalPane.vue'
 import ThemeButton from '../components/layout/ThemeButton.vue'
@@ -16,23 +28,125 @@ import Modal from '../components/layout/Modal.vue'
 import ServerForm from '../components/server/ServerForm.vue'
 import HostKeyDialog from '../components/server/HostKeyDialog.vue'
 import SessionManager from '../components/session/SessionManager.vue'
-const tabs = ref<SessionView[]>([])
+
+type PaneStartMode = 'attach' | 'candidate'
+interface PaneHandle {
+  stop(): Promise<void>
+  close(): Promise<void>
+}
+interface PaneRecord {
+  key: number
+  session: SessionView
+  startMode: PaneStartMode
+  handle: PaneHandle | null
+}
+interface PaneEntry {
+  sessionId: string
+  handle: PaneHandle
+}
+
+const records = ref<PaneRecord[]>([])
+let nextPaneKey = 0
+let pageDisposed = false
+const manager = ref<{ refresh(): void } | null>(null)
 const signingOut = ref(false)
 const view = ref<'servers' | 'sessions'>('servers')
-const panes = new Map<
-  string,
-  { stop(): Promise<void>; dispose(): Promise<void> }
->()
-function setPane(id: string, pane: unknown): void {
-  if (pane)
-    panes.set(id, pane as { stop(): Promise<void>; dispose(): Promise<void> })
-  else panes.delete(id)
-}
 const activeTab = ref('')
 const probeAction = ref<'test' | 'connect'>('test')
-function removeTab(id: string): void {
-  tabs.value = tabs.value.filter((tab) => tab.id !== id)
-  if (activeTab.value === id) activeTab.value = tabs.value.at(-1)?.id ?? ''
+
+function findRecord(sessionId: string): PaneRecord | undefined {
+  return records.value.find((record) => record.session.id === sessionId)
+}
+function focusRecord(sessionId: string): void {
+  view.value = 'servers'
+  activeTab.value = sessionId
+  sidebar.value = false
+}
+function reserveRecord(
+  session: SessionView,
+  startMode: PaneStartMode,
+): void {
+  // 同步预占：push 之后到 Pane ready 之间，重复打开会命中本记录。
+  records.value.push({
+    key: ++nextPaneKey,
+    session: { ...session },
+    startMode,
+    handle: null,
+  })
+  focusRecord(session.id)
+}
+function openSession(item: SessionView): void {
+  if (pageDisposed || !identity.value || logoutPending.value) return
+  if (findRecord(item.id)) {
+    focusRecord(item.id) // D2：已有记录（任何状态）只定位
+    return
+  }
+  if (item.status === 'CONNECTING') {
+    notice.value = 'Session 正在建立，暂不能打开，请稍后刷新列表'
+    return
+  }
+  if (item.status === 'CLOSING') {
+    notice.value = 'Session 正在关闭，不能打开'
+    return
+  }
+  notice.value = ''
+  reserveRecord(item, 'candidate') // D3
+}
+function registerPane(key: number, handle: PaneHandle): void {
+  if (pageDisposed) return
+  const record = records.value.find((item) => item.key === key)
+  if (!record || record.handle) return
+  record.handle = markRaw(handle)
+}
+function paneClosed(key: number): void {
+  if (pageDisposed) return
+  const index = records.value.findIndex((item) => item.key === key)
+  if (index < 0) return
+  const [record] = records.value.splice(index, 1)
+  if (activeTab.value === record.session.id)
+    activeTab.value = records.value.at(-1)?.session.id ?? ''
+}
+function paneChanged(): void {
+  // D1：操作完成后刷新；不在管理视图时，下次进入会在挂载时刷新。
+  if (!pageDisposed && view.value === 'sessions') manager.value?.refresh()
+}
+function registeredPanes(): PaneEntry[] {
+  return records.value.flatMap((record) =>
+    record.handle
+      ? [{ sessionId: record.session.id, handle: record.handle }]
+      : [],
+  )
+}
+function rejectedSessions(
+  entries: PaneEntry[],
+  results: PromiseSettledResult<void>[],
+  action: string,
+): string[] {
+  const failed: string[] = []
+  results.forEach((result, index) => {
+    if (result.status === 'fulfilled') return
+    failed.push(entries[index].sessionId)
+    console.error(
+      `退出登录时终端${action}失败`,
+      entries[index].sessionId,
+      result.reason,
+    )
+  })
+  return failed
+}
+function stopSummary(failed: string[]): string {
+  return failed.length > 0 ? `；${failed.length} 个终端未确认停止` : ''
+}
+function cleanupSummary(
+  stopFailed: string[],
+  closeFailed: string[],
+): string {
+  const parts: string[] = []
+  if (stopFailed.length > 0)
+    parts.push(`${stopFailed.length} 个终端未确认停止`)
+  if (closeFailed.length > 0)
+    parts.push(`${closeFailed.length} 个终端本地资源未释放`)
+  return `已退出登录；${parts.join('，')}，建议刷新页面`
 }
 async function connectServer(id = selected.value?.id): Promise<void> {
   if (!id || busy.value || !identity.value || logoutPending.value) return
@@ -48,10 +162,8 @@ async function connectServer(id = selected.value?.id): Promise<void> {
       operations.signal,
     )
     if (operations.signal.aborted) return
-    tabs.value.push(session)
-    activeTab.value = session.id
-    view.value = 'servers'
-    sidebar.value = false
+    if (findRecord(session.id)) focusRecord(session.id)
+    else reserveRecord(session, 'attach')
   } catch (error) {
     if (operations.signal.aborted) return
     const found = confirmation(error)
@@ -127,6 +239,7 @@ watch([search, group], () => {
 })
 onMounted(load)
 onBeforeUnmount(() => {
+  pageDisposed = true
   query?.abort()
   operations.abort()
   clearTimeout(debounce)
@@ -240,24 +353,36 @@ function openSessionManager(): void {
 async function signOut(): Promise<void> {
   if (signingOut.value) return
   signingOut.value = true
-  logoutPending.value = true
+  logoutPending.value = true // 同步：Pane watcher 调用 stop()，候选接管同步失效
   operations.abort()
   query?.abort()
   clearTimeout(debounce)
   probe.value = null
-  const stopped = Promise.allSettled(
-    [...panes.values()].map((pane) => pane.stop()),
+  const entries = registeredPanes()
+  const stopTask = Promise.allSettled(
+    entries.map((entry) => entry.handle.stop()),
   )
   try {
-    await logout()
-    await stopped
-    await Promise.allSettled(
-      [...panes.values()].map((pane) => pane.dispose()),
+    try {
+      await logout() // 与本地排空并行，不等 drain
+    } catch (error) {
+      const stopFailed = rejectedSessions(entries, await stopTask, '停止')
+      notice.value =
+        '退出未完成，请重试。' + message(error) + stopSummary(stopFailed)
+      return
+    }
+    const stopFailed = rejectedSessions(entries, await stopTask, '停止')
+    const closeFailed = rejectedSessions(
+      entries,
+      await Promise.allSettled(
+        entries.map((entry) => entry.handle.close()),
+      ),
+      '本地资源释放',
     )
-    tabs.value = []
-    await router.replace('/login')
-  } catch (error) {
-    notice.value = '退出未完成，请重试。' + message(error)
+    await router.replace('/login') // close 失败不阻止跳转
+    // 跳转时路由守卫可能改写 authNotice，所以清理反馈在跳转完成后写入。
+    if (stopFailed.length > 0 || closeFailed.length > 0)
+      authNotice.value = cleanupSummary(stopFailed, closeFailed)
   } finally {
     signingOut.value = false
   }
@@ -363,7 +488,7 @@ async function signOut(): Promise<void> {
     </aside>
     <main class="main">
       <nav
-        v-if="view === 'servers' && tabs.length"
+        v-if="view === 'servers' && records.length"
         class="terminal-tabs"
         aria-label="终端标签"
       >
@@ -371,28 +496,33 @@ async function signOut(): Promise<void> {
           服务器
         </button>
         <button
-          v-for="tab in tabs"
-          :key="tab.id"
-          :class="{ selected: activeTab === tab.id }"
-          @click="activeTab = tab.id"
+          v-for="record in records"
+          :key="record.key"
+          :class="{ selected: activeTab === record.session.id }"
+          @click="activeTab = record.session.id"
         >
-          {{ tab.name }} · {{ tab.id.slice(-4) }}
+          {{ record.session.name }} · {{ record.session.id.slice(-4) }}
         </button>
       </nav>
       <TerminalPane
-        v-for="tab in tabs"
-        :key="tab.id"
-        v-show="view === 'servers' && activeTab === tab.id"
-        :ref="(pane) => setPane(tab.id, pane)"
-        :session="tab"
-        :active="view === 'servers' && activeTab === tab.id"
-        @closed="removeTab(tab.id)"
+        v-for="record in records"
+        :key="record.key"
+        v-show="view === 'servers' && activeTab === record.session.id"
+        :session="record.session"
+        :start-mode="record.startMode"
+        :active="view === 'servers' && activeTab === record.session.id"
+        @ready="(handle) => registerPane(record.key, handle)"
+        @failed="(handle) => registerPane(record.key, handle)"
+        @closed="paneClosed(record.key)"
+        @changed="paneChanged"
       />
       <SessionManager
         v-if="view === 'sessions'"
+        ref="manager"
         :servers="items"
         :can-refresh="identity !== null && !logoutPending"
         :auth-token="identity"
+        @open="openSession"
       />
       <section
         v-else-if="selected && !activeTab"

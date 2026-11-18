@@ -20,6 +20,8 @@ const props = defineProps<{
   authToken: unknown
 }>()
 
+const emit = defineEmits<{ open: [item: SessionView] }>()
+
 const serverFilter = ref('')
 const statusFilter = ref<SessionStatus | 'ALL'>('ALL')
 const statusOptions: Array<{ value: SessionStatus | 'ALL'; label: string }> = [
@@ -251,6 +253,7 @@ defineExpose({
             <th>断开时间</th>
             <th>离线期限</th>
             <th>剩余</th>
+            <th>操作</th>
           </tr>
         </thead>
         <tbody>
@@ -275,6 +278,14 @@ defineExpose({
             <td>{{ formatTime(item.disconnected_at) }}</td>
             <td>{{ formatTime(item.offline_expires_at) }}</td>
             <td>{{ formatRemaining(item) }}</td>
+            <td>
+              <button
+                :disabled="!canRefresh"
+                @click="emit('open', item)"
+              >
+                打开
+              </button>
+            </td>
           </tr>
         </tbody>
       </table>

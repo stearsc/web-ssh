@@ -3,14 +3,25 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { compileScript, parse } from '@vue/compiler-sfc'
 import ts from 'typescript'
-import { createRenderer, nextTick } from 'vue'
-import { acceptIdentity, clearIdentity } from '../src/stores/auth.ts'
+import {
+  createRenderer,
+  defineComponent,
+  h,
+  nextTick,
+  reactive,
+} from 'vue'
+import {
+  acceptIdentity,
+  clearIdentity,
+  logoutPending,
+} from '../src/stores/auth.ts'
 
 // 挂载实际 SFC 和 TerminalClient，仅替换浏览器与 xterm 外部接口。
 const sourceURL = new URL(
   '../src/components/terminal/TerminalPane.vue',
   import.meta.url,
 )
+const vueModuleURL = import.meta.resolve('vue')
 const { descriptor } = parse(await readFile(sourceURL, 'utf8'))
 const compiled = compileScript(descriptor, {
   id: 'terminal-pane-test',
@@ -29,11 +40,27 @@ const code = ts
   .replace(/from ['"]([^'"]+)['"]/g, (_match, specifier) => {
     let url
     if (specifier === '@xterm/xterm')
-      url = moduleURL('export const Terminal = globalThis.__paneTerminal')
+      url = moduleURL(
+        'export class Terminal { constructor(...args) { return new globalThis.__paneTerminal(...args) } }',
+      )
     else if (specifier === '@xterm/addon-fit')
       url = moduleURL(
-        'export class FitAddon { proposeDimensions() { return { cols: 80, rows: 24 } } }',
+        'export class FitAddon { constructor(...args) { return new globalThis.__paneFitAddon(...args) } }',
       )
+    else if (specifier.endsWith('Modal.vue'))
+      url = moduleURL(`
+        import { defineComponent, h } from ${JSON.stringify(vueModuleURL)}
+        export default defineComponent({
+          props: ['title'],
+          emits: ['close'],
+          setup(props, { slots }) {
+            return () => h('dialog', { class: 'modal-stub' }, [
+              h('h2', { class: 'modal-title' }, props.title),
+              slots.default ? slots.default() : null,
+            ])
+          },
+        })
+      `)
     else if (specifier.endsWith('.vue'))
       url = moduleURL('export default { render() { return null } }')
     else if (specifier.startsWith('.'))
@@ -100,18 +127,186 @@ const renderer = createRenderer({
   nextSibling: (el) =>
     el.parent?.children[el.parent.children.indexOf(el) + 1] ?? null,
 })
-function texts(root, className) {
-  const text = (el) => el.text + el.children.map(text).join('')
+function textContent(el) {
+  return (
+    String(el.text ?? '') +
+    el.children.map((child) => textContent(child)).join('')
+  ).trim()
+}
+function findAll(root, predicate) {
   const found = []
   const visit = (el) => {
-    if (String(el.props.class).split(' ').includes(className))
-      found.push(text(el).trim())
+    if (predicate(el)) found.push(el)
     el.children.forEach(visit)
   }
   visit(root)
   return found
 }
-async function mountPane(t, online = true) {
+function texts(root, className) {
+  return findAll(root, (el) =>
+    String(el.props.class ?? '').split(/\s+/).includes(className),
+  ).map(textContent)
+}
+function byType(root, type) {
+  return findAll(root, (el) => el.type === type)
+}
+function button(root, label) {
+  return byType(root, 'button').find((el) => textContent(el) === label)
+}
+function click(el) {
+  assert.ok(el)
+  el.props.onClick?.({ type: 'click' })
+}
+
+const session = {
+  id: 'a'.repeat(32),
+  server_id: 'b'.repeat(32),
+  name: 'test',
+  host: 'localhost',
+  port: 22,
+  username: 'test',
+  status: 'CONNECTED',
+  binding_generation: 0,
+  current_cols: 80,
+  current_rows: 24,
+  created_at: '2026-11-17T00:00:00Z',
+  disconnected_at: null,
+  last_attached_at: null,
+  offline_expires_at: null,
+  remaining_seconds: null,
+}
+function detail(overrides = {}) {
+  return {
+    ...session,
+    binding_generation: 5,
+    status: 'CONNECTED',
+    ...overrides,
+  }
+}
+
+class TerminalStub {
+  static instances = []
+  constructor() {
+    this.cols = 80
+    this.rows = 24
+    this.options = {}
+    this.disposed = 0
+    this.loaded = 0
+    this.opened = 0
+    this.subscriptions = []
+    TerminalStub.instances.push(this)
+  }
+  loadAddon() {
+    this.loaded++
+    if (this.loadAddonThrows) throw this.loadAddonThrows
+  }
+  open() {
+    this.opened++
+    if (this.openThrows) throw this.openThrows
+  }
+  focus() {}
+  dispose() {
+    this.disposed++
+    if (this.disposeThrows) throw this.disposeThrows
+  }
+  resize(cols, rows) {
+    this.cols = cols
+    this.rows = rows
+  }
+  subscription(kind) {
+    const item = {
+      kind,
+      disposed: 0,
+      dispose() {
+        this.disposed++
+      },
+    }
+    this.subscriptions.push(item)
+    return item
+  }
+  onData() {
+    if (this.onDataThrows) throw this.onDataThrows
+    return this.subscription('data')
+  }
+  onBinary() {
+    if (this.onBinaryThrows) throw this.onBinaryThrows
+    return this.subscription('binary')
+  }
+  onResize() {
+    if (this.onResizeThrows) throw this.onResizeThrows
+    return this.subscription('resize')
+  }
+  write(_bytes, callback) {
+    callback()
+  }
+}
+class FitAddonStub {
+  static instances = []
+  constructor() {
+    if (globalThis.__paneFitAddonThrows) throw globalThis.__paneFitAddonThrows
+    FitAddonStub.instances.push(this)
+  }
+  proposeDimensions() {
+    return { cols: 80, rows: 24 }
+  }
+}
+class ObserverStub {
+  static instances = []
+  constructor(callback) {
+    if (globalThis.__paneObserverThrows) throw globalThis.__paneObserverThrows
+    this.callback = callback
+    this.disconnected = 0
+    this.observed = 0
+    ObserverStub.instances.push(this)
+  }
+  observe() {
+    this.observed++
+    if (globalThis.__paneObserveThrows) throw globalThis.__paneObserveThrows
+  }
+  disconnect() {
+    this.disconnected++
+  }
+}
+class TrackedWindow extends EventTarget {
+  added = []
+  removed = []
+  addEventListener(type, callback, options) {
+    this.added.push(type)
+    return super.addEventListener(type, callback, options)
+  }
+  removeEventListener(type, callback, options) {
+    this.removed.push(type)
+    return super.removeEventListener(type, callback, options)
+  }
+}
+class Socket {
+  static OPEN = 1
+  static CLOSING = 2
+  static CLOSED = 3
+  readyState = 0
+  bufferedAmount = 0
+  sent = []
+  constructor() {}
+  send(value) {
+    this.sent.push(value)
+  }
+  close() {
+    this.readyState = 3
+  }
+  open() {
+    this.readyState = 1
+    this.onopen?.()
+  }
+  message(value) {
+    this.onmessage?.({ data: JSON.stringify(value) })
+  }
+}
+Socket.instances = []
+
+async function mountPane(t, options = {}) {
+  TerminalStub.instances = []
+  FitAddonStub.instances = []
+  ObserverStub.instances = []
   const keys = [
     'fetch',
     'WebSocket',
@@ -123,108 +318,120 @@ async function mountPane(t, online = true) {
     'ResizeObserver',
     'MutationObserver',
     '__paneTerminal',
+    '__paneFitAddon',
+    '__paneFitAddonThrows',
+    '__paneObserverThrows',
+    '__paneObserveThrows',
   ]
   const originals = keys.map((key) => [
     key,
     Object.getOwnPropertyDescriptor(globalThis, key),
   ])
-  const sockets = [],
-    requests = []
-  globalThis.window = new EventTarget()
+  const sockets = []
+  const requests = []
+  const window = new TrackedWindow()
+  globalThis.window = window
   Object.defineProperty(globalThis, 'navigator', {
     configurable: true,
-    value: { onLine: online },
+    value: { onLine: options.online ?? true },
   })
-  class Observer {
-    observe() {}
-    disconnect() {}
+  const ResizeObserverClass = options.ResizeObserver ?? ObserverStub
+  const MutationObserverClass = options.MutationObserver ?? ObserverStub
+  globalThis.ResizeObserver = ResizeObserverClass
+  globalThis.MutationObserver = MutationObserverClass
+  globalThis.document = {
+    visibilityState: 'visible',
+    documentElement: {},
   }
-  globalThis.ResizeObserver = globalThis.MutationObserver = Observer
-  globalThis.document = { visibilityState: 'visible', documentElement: {} }
   globalThis.getComputedStyle = () => ({ getPropertyValue: () => '' })
-  globalThis.__paneTerminal = class {
-    cols = 80
-    rows = 24
-    options = {}
-    loadAddon() {}
-    open() {}
-    focus() {}
-    dispose() {}
-    resize(cols, rows) {
-      this.cols = cols
-      this.rows = rows
-    }
-    onData() {
-      return { dispose() {} }
-    }
-    onBinary() {
-      return { dispose() {} }
-    }
-    onResize() {
-      return { dispose() {} }
-    }
-    write(_bytes, callback) {
-      callback()
-    }
-  }
-  class Socket {
-    static OPEN = 1
-    static CLOSING = 2
-    readyState = 0
-    bufferedAmount = 0
-    sent = []
-    constructor() {
+  const TerminalClass = options.Terminal ?? TerminalStub
+  globalThis.__paneTerminal = TerminalClass
+  globalThis.__paneFitAddon = options.FitAddon ?? FitAddonStub
+  globalThis.__paneFitAddonThrows = options.fitAddonThrows ?? null
+  globalThis.__paneObserverThrows = options.observerThrows ?? null
+  globalThis.__paneObserveThrows = options.observeThrows ?? null
+  Socket.instances = sockets
+  globalThis.WebSocket = class extends Socket {
+    constructor(url) {
+      super(url)
       sockets.push(this)
     }
-    send(value) {
-      this.sent.push(value)
-    }
-    close() {
-      this.readyState = 3
-    }
-    open() {
-      this.readyState = 1
-      this.onopen?.()
-    }
-    message(value) {
-      this.onmessage?.({ data: JSON.stringify(value) })
-    }
   }
-  globalThis.WebSocket = Socket
+  globalThis.WebSocket.OPEN = Socket.OPEN
+  globalThis.WebSocket.CLOSING = Socket.CLOSING
+  globalThis.WebSocket.CLOSED = Socket.CLOSED
   globalThis.location = { href: 'http://localhost/', protocol: 'http:' }
-  globalThis.fetch = async (path, options) => {
-    requests.push({ path, body: JSON.parse(options.body) })
-    return Response.json({
-      code: 0,
-      message: 'ok',
-      data: {
-        credential: 'a'.repeat(43),
-        expires_at: '2099-01-01T00:00:00Z',
-      },
-    })
+  globalThis.fetch = async (path, init = {}) => {
+    const record = {
+      path,
+      method: init.method ?? 'GET',
+      body: init.body === undefined ? undefined : JSON.parse(init.body),
+      signal: init.signal,
+    }
+    requests.push(record)
+    if (options.fetch) {
+      const custom = await options.fetch(record)
+      if (custom !== undefined) return custom
+    }
+    if (record.method === 'GET' && path.startsWith('/api/sessions/'))
+      return Response.json({
+        code: 0,
+        message: 'ok',
+        data: options.detail ?? detail(),
+      })
+    if (record.method === 'POST' && path.endsWith('/takeover'))
+      return Response.json({
+        code: 0,
+        message: 'ok',
+        data: {
+          credential: 'a'.repeat(43),
+          expires_at: '2099-01-01T00:00:00Z',
+        },
+      })
+    if (record.method === 'DELETE')
+      return Response.json({ code: 0, message: 'ok', data: {} })
+    throw new Error(`unexpected request: ${record.method} ${path}`)
   }
-  acceptIdentity({
-    expires_at: '2099-01-01T00:00:00Z',
-    client_settings: settings,
-  })
+  if (options.identity === false) clearIdentity()
+  else
+    acceptIdentity({
+      expires_at: '2099-01-01T00:00:00Z',
+      client_settings: options.settings ?? settings,
+    })
   const { default: Pane } = await import(moduleURL(code))
-  const root = node('root')
-  const app = renderer.createApp(Pane, {
-    active: true,
-    session: {
-      id: 'a'.repeat(32),
-      name: 'test',
-      host: 'localhost',
-      port: 22,
-      username: 'test',
-      binding_generation: 0,
-      current_cols: 80,
-      current_rows: 24,
+  const events = { ready: [], failed: [], closed: 0, changed: 0 }
+  const props = reactive({
+    active: options.active ?? true,
+    session: options.session ?? session,
+    startMode: options.startMode ?? 'attach',
+  })
+  let pane
+  const Root = defineComponent({
+    setup() {
+      return () =>
+        h(Pane, {
+          ...props,
+          ref: (value) => {
+            pane = value
+          },
+          onReady: (handle) => events.ready.push(handle),
+          onFailed: (handle) => events.failed.push(handle),
+          onClosed: () => {
+            events.closed++
+          },
+          onChanged: () => {
+            events.changed++
+          },
+        })
     },
   })
-  const pane = app.mount(root)
+  const root = node('root')
+  const app = renderer.createApp(Root)
+  app.mount(root)
   t.after(async () => {
-    await pane.dispose()
+    try {
+      await pane?.close()
+    } catch {}
     app.unmount()
     clearIdentity()
     for (const [key, descriptor] of originals) {
@@ -233,7 +440,18 @@ async function mountPane(t, online = true) {
     }
   })
   await flush()
-  return { sockets, requests, root, pane }
+  return {
+    sockets,
+    requests,
+    root,
+    pane,
+    events,
+    props,
+    window,
+    terminalInstances: TerminalStub.instances,
+    fitInstances: FitAddonStub.instances,
+    observers: ObserverStub.instances,
+  }
 }
 function bind(socket, generation, start = 0, end = 0) {
   socket.open()
@@ -434,7 +652,7 @@ test('离线期间旧连接关闭：保持真实重试预算，迟到旧消息�
       { mode: 'attach', expected_generation: 1 },
     ],
   )
-  await h.pane.dispose()
+  await h.pane.close()
   const before = texts(h.root, 'connection-state')
   window.dispatchEvent(new Event('offline'))
   await flush()
@@ -442,7 +660,7 @@ test('离线期间旧连接关闭：保持真实重试预算，迟到旧消息�
 })
 
 test('挂载时已经离线，联网事件本身不恢复已连接显示', async (t) => {
-  const h = await mountPane(t, false)
+  const h = await mountPane(t, { online: false })
   assert.deepEqual(texts(h.root, 'connection-state'), [
     '网络已断开，等待网络恢复',
   ])
@@ -459,4 +677,501 @@ test('挂载时已经离线，联网事件本身不恢复已连接显示', async
   h.sockets[0].onmessage({ data: Uint8Array.of(65).buffer })
   await flush()
   assert.deepEqual(texts(h.root, 'connection-state'), ['已连接'])
+})
+
+function deferredValue() {
+  let resolve
+  let reject
+  const promise = new Promise((ok, fail) => {
+    resolve = ok
+    reject = fail
+  })
+  return { promise, resolve, reject }
+}
+function takeoverPosts(h) {
+  return h.requests.filter(
+    (item) =>
+      item.method === 'POST' &&
+      item.path.endsWith('/takeover') &&
+      item.body?.mode === 'takeover',
+  )
+}
+function modalText(h) {
+  return texts(h.root, 'modal-stub').join('\n')
+}
+
+test('S6-T13 候选 Pane：ready 一次，仅 GET 详情，零 POST takeover、零 WS', async (t) => {
+  const h = await mountPane(t, { startMode: 'candidate' })
+  assert.equal(h.events.ready.length, 1)
+  assert.equal(h.events.failed.length, 0)
+  assert.equal(h.requests.length, 1)
+  assert.equal(h.requests[0].method, 'GET')
+  assert.equal(takeoverPosts(h).length, 0)
+  assert.equal(h.sockets.length, 0)
+  assert.match(modalText(h), /接管 Session/)
+  assert.ok(button(h.root, '确认接管'))
+})
+
+test('S6-T14 attach Pane：ready 一次，首请求仍为 attach', async (t) => {
+  const h = await mountPane(t)
+  assert.equal(h.events.ready.length, 1)
+  assert.deepEqual(h.requests[0].body, {
+    mode: 'attach',
+    expected_generation: 0,
+  })
+  assert.equal(h.sockets.length, 1)
+})
+
+test('S6-T15 前置校验失败：failed 一次，零资源、零请求，关闭成功', async (t) => {
+  const cases = [
+    {
+      name: '非法 client_settings',
+      options: { settings: { max_cols: 80 } },
+    },
+    { name: '无 identity', options: { identity: false } },
+  ]
+  for (const item of cases) {
+    await t.test(item.name, async (t) => {
+      const h = await mountPane(t, item.options)
+      assert.equal(h.events.ready.length, 0)
+      assert.equal(h.events.failed.length, 1)
+      assert.equal(h.requests.length, 0)
+      assert.equal(h.sockets.length, 0)
+      assert.equal(h.terminalInstances.length, 0)
+      await h.pane.close()
+      assert.equal(h.events.closed, 1)
+    })
+  }
+  await t.test('logoutPending', async (t) => {
+    clearIdentity()
+    logoutPending.value = true
+    t.after(() => {
+      logoutPending.value = false
+    })
+    const h = await mountPane(t, { identity: false })
+    assert.equal(h.events.ready.length, 0)
+    assert.equal(h.events.failed.length, 1)
+    assert.equal(h.requests.length, 0)
+    assert.equal(h.terminalInstances.length, 0)
+    await h.pane.close()
+    assert.equal(h.events.closed, 1)
+  })
+})
+
+test('S6-T16 候选确认：POST 为 takeover 加详情代次，xterm 只构造一次', async (t) => {
+  const h = await mountPane(t, { startMode: 'candidate' })
+  click(button(h.root, '确认接管'))
+  await flush()
+  assert.equal(takeoverPosts(h).length, 1)
+  assert.deepEqual(takeoverPosts(h)[0].body, {
+    mode: 'takeover',
+    expected_generation: 5,
+  })
+  assert.equal(h.sockets.length, 1)
+  assert.equal(h.terminalInstances.length, 1)
+  bind(h.sockets[0], 6)
+  await flush()
+  assert.deepEqual(texts(h.root, 'connection-state'), ['已连接'])
+})
+
+test('S6-T17 接管 BIND_CONFLICT：Pane 保留，展示原因，不再发 takeover', async (t) => {
+  const h = await mountPane(t, {
+    startMode: 'candidate',
+    fetch: (record) =>
+      record.method === 'POST' && record.path.endsWith('/takeover')
+        ? Response.json(
+            { code: 'BIND_CONFLICT', message: '绑定代次冲突', data: {} },
+            { status: 409 },
+          )
+        : undefined,
+  })
+  click(button(h.root, '确认接管'))
+  await flush()
+  assert.equal(takeoverPosts(h).length, 1)
+  assert.equal(h.sockets.length, 0)
+  assert.match(texts(h.root, 'notice').join(), /绑定代次冲突/)
+  assert.equal(button(h.root, '确认接管'), undefined)
+  await flush()
+  assert.equal(takeoverPosts(h).length, 1)
+})
+
+test('S6-T18 D2：retry_wait 时停止恢复后再 GET，取消后无 Prepare/WS', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const h = await mountPane(t)
+  bind(h.sockets[0], 1)
+  await flush()
+  h.sockets[0].onclose({ code: 1006 })
+  await flush()
+  assert.deepEqual(texts(h.root, 'connection-state'), ['等待自动恢复 1/10'])
+  click(button(h.root, '停止恢复并准备接管'))
+  await flush()
+  const gets = h.requests.filter((item) => item.method === 'GET')
+  assert.equal(gets.length, 1)
+  assert.equal(takeoverPosts(h).length, 0)
+  assert.match(modalText(h), /接管 Session/)
+  click(button(h.root, '取消'))
+  await flush()
+  assert.equal(takeoverPosts(h).length, 0)
+  assert.equal(h.sockets.length, 1)
+})
+
+test('S6-T19 在线或回放的 Pane 不显示接管按钮', async (t) => {
+  const h = await mountPane(t)
+  bind(h.sockets[0], 1)
+  await flush()
+  assert.equal(button(h.root, '准备接管'), undefined)
+  assert.equal(button(h.root, '停止恢复并准备接管'), undefined)
+})
+
+test('S6-T20 loading 阶段关闭标签：GET 被 abort，dispose 成功后才 closed', async (t) => {
+  const pending = deferredValue()
+  const h = await mountPane(t, {
+    startMode: 'candidate',
+    fetch: () => pending.promise,
+  })
+  assert.equal(h.requests.length, 1)
+  await h.pane.close()
+  assert.equal(h.requests[0].signal.aborted, true)
+  assert.equal(h.events.closed, 1)
+  pending.resolve(
+    Response.json({ code: 0, message: 'ok', data: detail() }),
+  )
+  await flush()
+})
+
+test('S6-T21 dispose 失败：不 closed，进入清理失败，再次关闭返回同一失败', async (t) => {
+  class FailingDispose extends TerminalStub {
+    constructor() {
+      super()
+      this.disposeThrows = new Error('dispose failed')
+    }
+  }
+  const h = await mountPane(t, { Terminal: FailingDispose })
+  await assert.rejects(h.pane.close(), /dispose failed/)
+  assert.equal(h.events.closed, 0)
+  assert.deepEqual(texts(h.root, 'connection-state'), ['终端清理失败'])
+  await assert.rejects(h.pane.close(), /dispose failed/)
+  assert.equal(h.events.closed, 0)
+})
+
+test('S6-T22-A confirming 时身份失效清空候选', async (t) => {
+  const h = await mountPane(t, { startMode: 'candidate' })
+  assert.match(modalText(h), /接管 Session/)
+  clearIdentity()
+  await flush()
+  assert.equal(button(h.root, '确认接管'), undefined)
+  assert.equal(takeoverPosts(h).length, 0)
+})
+
+test('S6-T22-B acceptIdentity 替换对象不 stop', async (t) => {
+  const h2 = await mountPane(t)
+  bind(h2.sockets[0], 1)
+  await flush()
+  acceptIdentity({
+    expires_at: '2099-01-01T00:00:00Z',
+    client_settings: settings,
+  })
+  await flush()
+  assert.deepEqual(texts(h2.root, 'connection-state'), ['已连接'])
+  assert.equal(h2.sockets.length, 1)
+})
+
+test('S6-T23 takeover 进行中：手动恢复与刷新状态禁用，提供取消准备', async (t) => {
+  const pending = deferredValue()
+  const h = await mountPane(t, {
+    startMode: 'candidate',
+    fetch: () => pending.promise,
+  })
+  assert.deepEqual(texts(h.root, 'connection-state'), [
+    '正在查询 Session 状态',
+  ])
+  assert.equal(button(h.root, '手动恢复').props.disabled, true)
+  assert.equal(button(h.root, '刷新 Session 状态').props.disabled, true)
+  assert.ok(button(h.root, '取消准备'))
+  pending.resolve(
+    Response.json({ code: 0, message: 'ok', data: detail() }),
+  )
+  await flush()
+})
+
+test('S6-T24 closeRemote 与 takeover 互斥：关闭意图优先，零 takeover POST', async (t) => {
+  const pending = deferredValue()
+  const h = await mountPane(t, {
+    startMode: 'candidate',
+    fetch: () => pending.promise,
+  })
+  assert.equal(button(h.root, '关闭 SSH 会话').props.disabled, false)
+  click(button(h.root, '关闭 SSH 会话'))
+  await flush()
+  assert.ok(button(h.root, '确认关闭'))
+  pending.resolve(
+    Response.json({ code: 0, message: 'ok', data: detail() }),
+  )
+  await flush()
+  assert.equal(button(h.root, '确认接管'), undefined)
+  click(button(h.root, '确认关闭'))
+  await flush()
+  assert.equal(h.requests.some((item) => item.method === 'DELETE'), true)
+  assert.equal(takeoverPosts(h).length, 0)
+  assert.ok(h.events.changed >= 1)
+})
+
+test('S6-T25 接管结束与 closeRemote 结束各 emit changed 一次', async (t) => {
+  await t.test('接管结束', async (t) => {
+    const h = await mountPane(t, { startMode: 'candidate' })
+    click(button(h.root, '确认接管'))
+    await flush()
+    bind(h.sockets[0], 6)
+    await flush()
+    assert.equal(h.events.changed, 1)
+  })
+  await t.test('closeRemote 结束', async (t) => {
+    const h = await mountPane(t)
+    bind(h.sockets[0], 1)
+    await flush()
+    click(button(h.root, '关闭 SSH 会话'))
+    await flush()
+    click(button(h.root, '确认关闭'))
+    await flush()
+    assert.equal(h.events.changed, 1)
+  })
+})
+
+test('S6-T26 非 active 不渲染确认框，active 后渲染', async (t) => {
+  const h = await mountPane(t, {
+    startMode: 'candidate',
+    active: false,
+  })
+  assert.equal(modalText(h), '')
+  h.props.active = true
+  await flush()
+  assert.match(modalText(h), /接管 Session/)
+})
+
+test('S6-T46 终端工厂各步骤失败均回滚已创建资源', async (t) => {
+  t.mock.method(console, 'error', () => {})
+  const cases = [
+    ['loadAddon', { loadAddonThrows: new Error('load failed') }, 0],
+    ['open', { openThrows: new Error('open failed') }, 0],
+    ['onData', { onDataThrows: new Error('data failed') }, 0],
+    ['onBinary', { onBinaryThrows: new Error('binary failed') }, 1],
+    ['onResize', { onResizeThrows: new Error('resize failed') }, 2],
+  ]
+  for (const [name, patch, subscriptions] of cases) {
+    await t.test(name, async (t) => {
+      class FailingTerminal extends TerminalStub {
+        constructor() {
+          super()
+          Object.assign(this, patch)
+        }
+      }
+      const h = await mountPane(t, { Terminal: FailingTerminal })
+      assert.equal(h.events.failed.length, 1)
+      assert.equal(h.events.ready.length, 0)
+      assert.equal(h.requests.length, 0)
+      assert.equal(h.sockets.length, 0)
+      assert.equal(h.terminalInstances.length, 1)
+      const term = h.terminalInstances[0]
+      assert.equal(term.disposed, 1)
+      assert.equal(term.subscriptions.length, subscriptions)
+      assert.equal(
+        term.subscriptions.every((item) => item.disposed === 1),
+        true,
+      )
+      await h.pane.close()
+      assert.equal(h.events.closed, 1)
+    })
+  }
+  await t.test('回滚本身失败', async (t) => {
+    class FailingTerminal extends TerminalStub {
+      constructor() {
+        super()
+        this.openThrows = new Error('open failed')
+        this.disposeThrows = new Error('dispose failed')
+      }
+    }
+    const h = await mountPane(t, { Terminal: FailingTerminal })
+    assert.equal(h.events.failed.length, 1)
+    assert.match(texts(h.root, 'notice').join(), /open failed/)
+    await assert.rejects(h.pane.close(), /dispose failed/)
+    assert.equal(h.events.closed, 0)
+    assert.deepEqual(texts(h.root, 'connection-state'), ['终端清理失败'])
+    await assert.rejects(h.pane.close(), /dispose failed/)
+  })
+})
+
+test('S6-T46-A Terminal 构造失败：无实例可释放，零资源、零请求，close 成功', async (t) => {
+  t.mock.method(console, 'error', () => {})
+  class ThrowingTerminal {
+    constructor() {
+      throw new Error('terminal ctor failed')
+    }
+  }
+  class CountingFitAddon {
+    static count = 0
+    constructor() {
+      CountingFitAddon.count++
+    }
+    proposeDimensions() {
+      return { cols: 80, rows: 24 }
+    }
+  }
+  CountingFitAddon.count = 0
+  const h = await mountPane(t, {
+    Terminal: ThrowingTerminal,
+    FitAddon: CountingFitAddon,
+  })
+  assert.equal(CountingFitAddon.count, 0)
+  assert.equal(h.events.failed.length, 1)
+  assert.equal(h.events.ready.length, 0)
+  assert.equal(h.requests.length, 0)
+  assert.equal(h.sockets.length, 0)
+  assert.match(texts(h.root, 'notice').join(), /terminal ctor failed/)
+  await h.pane.close()
+  assert.equal(h.events.closed, 1)
+})
+
+test('S6-T46-B FitAddon 构造失败：Terminal 回滚一次；回滚失败则 close 失败', async (t) => {
+  t.mock.method(console, 'error', () => {})
+  await t.test('B1 回滚成功', async (t) => {
+    class ThrowingFitAddon {
+      constructor() {
+        throw new Error('fit ctor failed')
+      }
+    }
+    const h = await mountPane(t, { FitAddon: ThrowingFitAddon })
+    assert.equal(h.events.failed.length, 1)
+    assert.match(texts(h.root, 'notice').join(), /fit ctor failed/)
+    const term = h.terminalInstances[0]
+    assert.equal(term.disposed, 1)
+    assert.equal(term.loaded, 0)
+    assert.equal(term.opened, 0)
+    assert.equal(term.subscriptions.length, 0)
+    await h.pane.close()
+    assert.equal(h.events.closed, 1)
+  })
+  await t.test('B2 回滚失败', async (t) => {
+    class ThrowingFitAddon {
+      constructor() {
+        throw new Error('fit ctor failed')
+      }
+    }
+    class FailingDispose extends TerminalStub {
+      constructor() {
+        super()
+        this.disposeThrows = new Error('dispose failed')
+      }
+    }
+    const h = await mountPane(t, {
+      FitAddon: ThrowingFitAddon,
+      Terminal: FailingDispose,
+    })
+    assert.match(texts(h.root, 'notice').join(), /fit ctor failed/)
+    await assert.rejects(h.pane.close(), /dispose failed/)
+    assert.equal(h.events.closed, 0)
+    assert.deepEqual(texts(h.root, 'connection-state'), ['终端清理失败'])
+    await assert.rejects(h.pane.close(), /dispose failed/)
+  })
+})
+
+test('S6-T47 Observer 创建或 observe 失败：回滚 Client、移除监听', async (t) => {
+  t.mock.method(console, 'error', () => {})
+  const cases = [
+    [
+      'ResizeObserver 构造',
+      {
+        ResizeObserver: class {
+          constructor() {
+            throw new Error('resize ctor failed')
+          }
+        },
+      },
+      'resize ctor failed',
+    ],
+    [
+      'ResizeObserver observe',
+      {
+        ResizeObserver: class {
+          constructor() {
+            this.disconnected = 0
+          }
+          observe() {
+            throw new Error('resize observe failed')
+          }
+          disconnect() {
+            this.disconnected++
+          }
+        },
+      },
+      'resize observe failed',
+    ],
+    [
+      'MutationObserver 构造',
+      {
+        MutationObserver: class {
+          constructor() {
+            throw new Error('theme ctor failed')
+          }
+        },
+      },
+      'theme ctor failed',
+    ],
+    [
+      'MutationObserver observe',
+      {
+        MutationObserver: class {
+          constructor() {
+            this.disconnected = 0
+          }
+          observe() {
+            throw new Error('theme observe failed')
+          }
+          disconnect() {
+            this.disconnected++
+          }
+        },
+      },
+      'theme observe failed',
+    ],
+  ]
+  for (const [name, options, text] of cases) {
+    await t.test(name, async (t) => {
+      const h = await mountPane(t, options)
+      assert.equal(h.events.failed.length, 1)
+      assert.match(texts(h.root, 'notice').join(), new RegExp(text))
+      assert.equal(h.requests.length, 0)
+      assert.equal(h.sockets.length, 0)
+      assert.equal(h.terminalInstances[0].disposed, 1)
+      assert.equal(h.window.removed.includes('offline'), true)
+      assert.equal(h.window.removed.includes('online'), true)
+      await h.pane.close()
+      assert.equal(h.events.closed, 1)
+    })
+  }
+  await t.test('回滚 dispose 失败', async (t) => {
+    class FailingDispose extends TerminalStub {
+      constructor() {
+        super()
+        this.disposeThrows = new Error('dispose failed')
+      }
+    }
+    class BadResize {
+      constructor() {
+        this.disconnected = 0
+      }
+      observe() {
+        throw new Error('resize observe failed')
+      }
+      disconnect() {
+        this.disconnected++
+      }
+    }
+    const h = await mountPane(t, {
+      Terminal: FailingDispose,
+      ResizeObserver: BadResize,
+    })
+    await assert.rejects(h.pane.close(), /dispose failed/)
+    assert.equal(h.events.closed, 0)
+    assert.deepEqual(texts(h.root, 'connection-state'), ['终端清理失败'])
+  })
 })
