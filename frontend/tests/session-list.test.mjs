@@ -748,8 +748,14 @@ async function mountHomePage(t, options = {}) {
   const root = node('root')
   const app = renderer.createApp(HomePage)
   app.mount(root)
-  t.after(() => {
+  let mounted = true
+  const unmount = () => {
+    if (!mounted) return
+    mounted = false
     app.unmount()
+  }
+  t.after(() => {
+    unmount()
     clearIdentity()
     authNotice.value = ''
     logoutPending.value = false
@@ -777,6 +783,7 @@ async function mountHomePage(t, options = {}) {
     root,
     instances: globalThis.__homePaneInstances,
     routerReplaces: globalThis.__routerReplaces,
+    unmount,
   }
 }
 
@@ -1045,6 +1052,105 @@ test('S6-T37 connectServer 仍以 attach 创建并同 id 去重', async (t) => {
   await flush()
   assert.equal(h.instances.length, 1)
   assert.equal(posts().length, 2)
+})
+
+test('S6-T39 HomePage 各阶段卸载：无新请求、无迟到记录变更', async (t) => {
+  for (const stage of ['opening', 'ready', 'failed']) {
+    await t.test(stage, async (t) => {
+      const h = await mountHomePage(t, {
+        paneBehavior: { auto: stage === 'opening' ? 'none' : stage },
+      })
+      click(button(h.root, '会话管理'))
+      await flush()
+      globalThis.__managerOpen(view('a'))
+      await flush()
+      const pane = h.instances[0]
+      assert.ok(pane)
+      const before = h.requests.length
+      h.unmount()
+      pane.emitReady()
+      pane.emitFailed()
+      pane.emitClosed()
+      pane.emitChanged()
+      await flush()
+      assert.equal(h.requests.length, before)
+      assert.equal(globalThis.__managerRefreshes, 0)
+      assert.equal(globalThis.__managerUnmounts, 1)
+      assert.equal(globalThis.__homePaneUnmounts, 1)
+    })
+  }
+
+  await t.test('列表查询中卸载会 abort 且迟到结果不触发新请求', async (t) => {
+    const pending = deferred()
+    const h = await mountHomePage(t, {
+      fetch: (record) =>
+        record.path.startsWith('/api/servers?') ? pending.promise : undefined,
+    })
+    assert.equal(h.requests.length, 1)
+    h.unmount()
+    assert.equal(h.requests[0].options.signal.aborted, true)
+    pending.resolve(
+      Response.json({
+        code: 0,
+        message: 'ok',
+        data: { items: [server] },
+      }),
+    )
+    await flush()
+    assert.equal(h.requests.length, 1)
+    assert.equal(globalThis.__managerRefreshes, 0)
+  })
+})
+
+test('S6-T40 多个 Pane 并发：记录、句柄和事件互不影响', async (t) => {
+  const h = await mountHomePage(t)
+  click(button(h.root, '会话管理'))
+  await flush()
+  globalThis.__managerOpen(view('a'))
+  await flush()
+  globalThis.__managerOpen(view('b'))
+  await flush()
+  assert.equal(h.instances.length, 2)
+  const [a, b] = h.instances
+  assert.notEqual(a.sessionId, b.sessionId)
+  assert.notEqual(a.handle, b.handle)
+
+  globalThis.__homePaneStop = (id) =>
+    id === a.sessionId
+      ? Promise.resolve()
+      : Promise.reject(new Error('other pane must not stop'))
+  await a.handle.stop()
+  assert.equal(a.handle.stopCalls, 1)
+  assert.equal(b.handle.stopCalls, 0)
+
+  click(button(h.root, '会话管理'))
+  await flush()
+  a.emitChanged()
+  await flush()
+  assert.equal(globalThis.__managerRefreshes, 1)
+  assert.equal(b.handle.stopCalls, 0)
+
+  a.emitClosed()
+  await flush()
+  assert.equal(h.instances.length, 2)
+  assert.equal(byClass(h.root, 'terminal-pane-stub').length, 1)
+  click(button(h.root, '返回服务器'))
+  await flush()
+  const secondTab = byType(h.root, 'button').find((item) =>
+    textContent(item).includes('session-b'),
+  )
+  assert.ok(secondTab)
+  click(secondTab)
+  await flush()
+  assert.equal(b.active, true)
+
+  globalThis.__homePaneClose = (id) =>
+    id === a.sessionId
+      ? Promise.resolve()
+      : Promise.reject(new Error('other pane must not close'))
+  await a.handle.close()
+  assert.equal(a.handle.closeCalls, 1)
+  assert.equal(b.handle.closeCalls, 0)
 })
 
 test('S6-T50 logout 成功时分别统计 stop/close 失败并在跳转后反馈', async (t) => {

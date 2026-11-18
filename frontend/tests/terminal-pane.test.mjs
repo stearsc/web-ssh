@@ -700,6 +700,168 @@ function modalText(h) {
   return texts(h.root, 'modal-stub').join('\n')
 }
 
+class HeldWriteTerminal extends TerminalStub {
+  constructor() {
+    super()
+    this.pendingWrite = null
+  }
+  write(_bytes, callback) {
+    this.pendingWrite = callback
+  }
+  releaseWrite() {
+    const callback = this.pendingWrite
+    this.pendingWrite = null
+    callback?.()
+  }
+}
+
+async function mountRacePane(t, clientPhase) {
+  const initialCredential = deferredValue()
+  const takeoverCredential = deferredValue()
+  const detailResponse = deferredValue()
+  const h = await mountPane(t, {
+    Terminal:
+      clientPhase === 'stopping' ? HeldWriteTerminal : TerminalStub,
+    fetch: (record) => {
+      if (record.method === 'GET' && record.path.startsWith('/api/sessions/'))
+        return detailResponse.promise
+      if (
+        record.method === 'POST' &&
+        record.path.endsWith('/takeover') &&
+        record.body?.mode === 'attach' &&
+        clientPhase === 'preparing'
+      )
+        return initialCredential.promise
+      if (
+        record.method === 'POST' &&
+        record.path.endsWith('/takeover') &&
+        record.body?.mode === 'takeover'
+      )
+        return takeoverCredential.promise
+      return undefined
+    },
+  })
+  const releaseCredential = async () => {
+    initialCredential.resolve(
+      Response.json({
+        code: 0,
+        message: 'ok',
+        data: {
+          credential: 'a'.repeat(43),
+          expires_at: '2099-01-01T00:00:00Z',
+        },
+      }),
+    )
+    for (const terminal of h.terminalInstances)
+      if (terminal instanceof HeldWriteTerminal) terminal.releaseWrite()
+    await flush()
+  }
+  const releaseTakeoverCredential = async () => {
+    takeoverCredential.resolve(
+      Response.json({
+        code: 0,
+        message: 'ok',
+        data: {
+          credential: 'b'.repeat(43),
+          expires_at: '2099-01-01T00:00:00Z',
+        },
+      }),
+    )
+    await flush()
+  }
+  const releaseDetail = async () => {
+    detailResponse.resolve(
+      Response.json({ code: 0, message: 'ok', data: detail() }),
+    )
+    await flush()
+  }
+  const release = async () => {
+    await releaseCredential()
+    await releaseTakeoverCredential()
+    await releaseDetail()
+  }
+  t.after(release)
+
+  if (clientPhase === 'preparing') {
+    assert.deepEqual(texts(h.root, 'connection-state'), [
+      '正在申请连接凭证',
+    ])
+  } else if (clientPhase === 'connecting') {
+    assert.equal(h.sockets.length, 1)
+    assert.deepEqual(texts(h.root, 'connection-state'), ['正在连接'])
+  } else if (clientPhase === 'replaying') {
+    bind(h.sockets[0], 1, 0, 2)
+    await flush()
+    assert.deepEqual(texts(h.root, 'connection-state'), ['正在回放'])
+  } else if (clientPhase === 'retry_wait') {
+    bind(h.sockets[0], 1)
+    h.sockets[0].onclose({ code: 1006 })
+    await flush()
+    assert.deepEqual(texts(h.root, 'connection-state'), [
+      '等待自动恢复 1/10',
+    ])
+  } else if (clientPhase === 'stopping') {
+    bind(h.sockets[0], 1)
+    h.sockets[0].onmessage({ data: Uint8Array.of(1).buffer })
+    await flush()
+    assert.equal(h.terminalInstances[0].pendingWrite !== null, true)
+    void h.pane.stop()
+    await flush()
+    assert.deepEqual(texts(h.root, 'connection-state'), ['正在停止'])
+  } else {
+    throw new Error(`unknown client phase: ${clientPhase}`)
+  }
+
+  return {
+    ...h,
+    release,
+    releaseCredential,
+    releaseTakeoverCredential,
+    releaseDetail,
+  }
+}
+
+async function enterTakeoverPhase(h, phase) {
+  if (phase === 'stopping') {
+    const prepare = button(h.root, '停止恢复并准备接管')
+    assert.ok(prepare, textContent(h.root))
+    click(prepare)
+    await nextTick()
+    assert.deepEqual(texts(h.root, 'connection-state'), [
+      '正在停止原恢复任务',
+    ])
+    return
+  }
+
+  const prepare = button(h.root, '停止恢复并准备接管')
+  assert.ok(prepare, textContent(h.root))
+  click(prepare)
+  await h.releaseCredential()
+  await flush()
+  if (phase === 'loading') {
+    assert.deepEqual(texts(h.root, 'connection-state'), [
+      '正在查询 Session 状态',
+    ])
+    return
+  }
+
+  await h.releaseDetail()
+  if (phase === 'confirming') {
+    assert.match(modalText(h), /接管 Session/)
+    return
+  }
+
+  click(button(h.root, '确认接管'))
+  await flush()
+  assert.deepEqual(texts(h.root, 'connection-state'), [
+    '正在申请连接凭证',
+  ])
+}
+
+function networkRequests(h) {
+  return h.requests.map((item) => `${item.method} ${item.path}`)
+}
+
 test('S6-T13 候选 Pane：ready 一次，仅 GET 详情，零 POST takeover、零 WS', async (t) => {
   const h = await mountPane(t, { startMode: 'candidate' })
   assert.equal(h.events.ready.length, 1)
@@ -946,6 +1108,162 @@ test('S6-T26 非 active 不渲染确认框，active 后渲染', async (t) => {
   h.props.active = true
   await flush()
   assert.match(modalText(h), /接管 Session/)
+})
+
+test('S6-T38 接管阶段 × 抢占动作：无复活、无确认前连接、无状态卡死', async (t) => {
+  const phases = ['stopping', 'loading', 'confirming', 'connecting']
+  const actions = ['stop', 'close', 'identity', 'closeRemote']
+
+  for (const takeoverPhase of phases) {
+    for (const action of actions) {
+      // confirming 使用 showModal 独占界面，用户无法同时打开关闭 SSH 确认框。
+      if (takeoverPhase === 'confirming' && action === 'closeRemote')
+        continue
+      await t.test(`${takeoverPhase} × ${action}`, async (t) => {
+        const clientPhase =
+          takeoverPhase === 'stopping'
+            ? 'stopping'
+            : takeoverPhase === 'loading'
+              ? 'preparing'
+              : 'connecting'
+        const h = await mountRacePane(t, clientPhase)
+        await enterTakeoverPhase(h, takeoverPhase)
+        const before = networkRequests(h)
+        const allowedTakeoverPosts = takeoverPhase === 'connecting' ? 1 : 0
+
+        if (action === 'stop') {
+          const stopping = h.pane.stop()
+          await h.release()
+          await stopping
+          assert.equal(
+            takeoverPosts(h).length,
+            allowedTakeoverPosts,
+          )
+        } else if (action === 'close') {
+          const closing = h.pane.close()
+          await h.release()
+          await closing
+          assert.equal(h.events.closed, 1)
+          assert.equal(
+            takeoverPosts(h).length,
+            allowedTakeoverPosts,
+          )
+        } else if (action === 'identity') {
+          clearIdentity()
+          await h.release()
+          await flush()
+          assert.equal(button(h.root, '确认接管'), undefined)
+          assert.equal(
+            takeoverPosts(h).length,
+            allowedTakeoverPosts,
+          )
+        } else {
+          click(button(h.root, '关闭 SSH 会话'))
+          await flush()
+          click(button(h.root, '确认关闭'))
+          await h.release()
+          await flush()
+          assert.equal(
+            h.requests.filter((item) => item.method === 'DELETE').length,
+            1,
+          )
+          assert.equal(
+            takeoverPosts(h).length,
+            allowedTakeoverPosts,
+          )
+        }
+
+        const after = networkRequests(h)
+        const newTakeoverPosts = after
+          .slice(before.length)
+          .filter(
+            (item) =>
+              item === `POST /api/sessions/${session.id}/takeover`,
+          )
+        assert.equal(newTakeoverPosts.length, 0)
+        assert.equal(h.sockets.length <= 1, true)
+        assert.equal(button(h.root, '确认接管'), undefined)
+      })
+    }
+  }
+})
+
+test('S6-T38 客户端阶段 × stop/close：停止屏障和资源所有权一致', async (t) => {
+  for (const clientPhase of [
+    'preparing',
+    'connecting',
+    'replaying',
+    'retry_wait',
+    'stopping',
+  ]) {
+    await t.test(`${clientPhase} × stop`, async (t) => {
+      const h = await mountRacePane(t, clientPhase)
+      if (clientPhase === 'replaying') {
+        // 回放中按设计不显示接管入口，只能验证直接 stop 屏障。
+        assert.equal(button(h.root, '停止恢复并准备接管'), undefined)
+        const stopping = h.pane.stop()
+        await h.release()
+        await stopping
+      } else {
+        await enterTakeoverPhase(h, 'stopping')
+        const stopping = h.pane.stop()
+        await h.release()
+        await stopping
+      }
+      assert.equal(takeoverPosts(h).length, 0)
+      assert.equal(button(h.root, '确认接管'), undefined)
+      assert.deepEqual(texts(h.root, 'connection-state'), ['未连接'])
+    })
+
+    await t.test(`${clientPhase} × close`, async (t) => {
+      const h = await mountRacePane(t, clientPhase)
+      const closing = h.pane.close()
+      await h.release()
+      await closing
+      assert.equal(h.events.closed, 1)
+      assert.equal(takeoverPosts(h).length, 0)
+    })
+  }
+})
+
+test('S6-T38 connecting 的客户端子阶段 × 抢占动作：迟到回调被隔离', async (t) => {
+  for (const clientPhase of ['preparing', 'connecting', 'replaying']) {
+    for (const action of ['stop', 'close', 'identity', 'closeRemote']) {
+      await t.test(`${clientPhase} × ${action}`, async (t) => {
+        const h = await mountRacePane(t, clientPhase)
+        if (clientPhase === 'replaying') {
+          // 回放态不显示 takeover 入口，由上面的直接 stop/close 用例覆盖。
+          assert.equal(button(h.root, '停止恢复并准备接管'), undefined)
+          return
+        }
+        await enterTakeoverPhase(h, 'connecting')
+        const before = takeoverPosts(h).length
+
+        if (action === 'stop') {
+          const stopping = h.pane.stop()
+          await h.release()
+          await stopping
+        } else if (action === 'close') {
+          const closing = h.pane.close()
+          await h.release()
+          await closing
+          assert.equal(h.events.closed, 1)
+        } else if (action === 'identity') {
+          clearIdentity()
+          await h.release()
+          await flush()
+        } else {
+          click(button(h.root, '关闭 SSH 会话'))
+          await flush()
+          click(button(h.root, '确认关闭'))
+          await h.release()
+          await flush()
+        }
+        assert.equal(takeoverPosts(h).length, before)
+        assert.equal(button(h.root, '确认接管'), undefined)
+      })
+    }
+  }
 })
 
 test('S6-T46 终端工厂各步骤失败均回滚已创建资源', async (t) => {

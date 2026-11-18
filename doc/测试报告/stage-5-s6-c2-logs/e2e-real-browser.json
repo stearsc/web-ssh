@@ -1,0 +1,243 @@
+{
+  "startedAt": "2026-11-18T15:34:00.628Z",
+  "browser": "Chrome 157.0.8103.79 (headless, Windows)",
+  "base": "http://127.0.0.1:5173/",
+  "checks": {
+    "t41A4001": true,
+    "t41AStable": {
+      "state": {
+        "connection": "未连接",
+        "recoveryPhase": "stopped",
+        "takeoverPhase": "idle",
+        "life": "ready",
+        "connected": false,
+        "notice": "此会话已由其他连接接管",
+        "tabs": [
+          "服务器",
+          "S6-C2 E2E 1795016040751 · 5872"
+        ]
+      },
+      "requestsAfter4001": [],
+      "sockets": 1
+    },
+    "t41BInteractive": {
+      "focused": true,
+      "echoed": true,
+      "token": "S6C2_1795016046144_OK",
+      "rowsBefore": " ",
+      "rowsText": "S6C2_1795016046144_OK "
+    },
+    "t41Generation": "2",
+    "t43BeforeCancel": {
+      "requests": [
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:5173/api/sessions/b2a29adefe94ee07d1110c23a7c6d7bc",
+          "at": 1795016047150,
+          "id": "4032.346"
+        }
+      ],
+      "sockets": []
+    },
+    "t43AfterCancel": {
+      "toolbar": {
+        "connection": "未连接",
+        "notices": [],
+        "buttons": [
+          {
+            "text": "准备接管",
+            "disabled": false
+          },
+          {
+            "text": "手动恢复",
+            "disabled": true
+          },
+          {
+            "text": "刷新 Session 状态",
+            "disabled": false
+          },
+          {
+            "text": "关闭标签",
+            "disabled": false
+          },
+          {
+            "text": "关闭 SSH 会话",
+            "disabled": false
+          }
+        ],
+        "tabCount": 3
+      },
+      "state": {
+        "connection": "未连接",
+        "recoveryPhase": "idle",
+        "takeoverPhase": "idle",
+        "life": "ready",
+        "connected": false,
+        "notice": "",
+        "tabs": [
+          "服务器",
+          "S6-C2 E2E 1795016040751 · 5872",
+          "S6-C2 E2E 1795016040751 · d7bc"
+        ]
+      }
+    },
+    "t44Modal": {
+      "title": "接管 Session？",
+      "text": "接管 Session？\n×\n\n如果其他浏览器或设备正在连接该 Session，它将被断开并停止自动恢复；本标签将成为唯一连接端。\n\nS6-C2 E2E 1795016040751\n\ntester@127.0.0.1:34505\n\n状态：已断开 · 代次 0 · 离线保留 7192 秒（查询时）\n\n取消\n确认接管",
+      "buttons": [
+        {
+          "text": "×",
+          "disabled": false
+        },
+        {
+          "text": "取消",
+          "disabled": false
+        },
+        {
+          "text": "确认接管",
+          "disabled": false
+        }
+      ],
+      "rect": {
+        "x": 450,
+        "y": 256.53125,
+        "width": 540,
+        "height": 386.9375
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      }
+    },
+    "t42Retry": {
+      "connection": "等待自动恢复 1/10",
+      "recoveryPhase": "retry_wait",
+      "takeoverPhase": "idle",
+      "life": "ready",
+      "connected": false,
+      "notice": "连接已结束（4002）",
+      "tabs": [
+        "服务器",
+        "S6-C2 E2E 1795016040751 · 5872",
+        "S6-C2 E2E 1795016040751 · d7bc"
+      ]
+    },
+    "t42": {
+      "clickAt": 1795016050612,
+      "retryState": {
+        "connection": "等待自动恢复 1/10",
+        "recoveryPhase": "retry_wait",
+        "takeoverPhase": "idle",
+        "life": "ready",
+        "connected": false,
+        "notice": "连接已结束（4002）",
+        "tabs": [
+          "服务器",
+          "S6-C2 E2E 1795016040751 · 5872",
+          "S6-C2 E2E 1795016040751 · d7bc"
+        ]
+      },
+      "detailGet": {
+        "url": "/api/sessions/13a229b86113344cfba9676e30fb5872",
+        "method": "GET",
+        "t": 1795016050613,
+        "recoveryPhase": "stopped",
+        "takeoverPhase": "loading",
+        "connection": "正在停止原恢复任务"
+      },
+      "fetchLog": [
+        {
+          "url": "/api/sessions/13a229b86113344cfba9676e30fb5872",
+          "method": "GET",
+          "t": 1795016050613,
+          "recoveryPhase": "stopped",
+          "takeoverPhase": "loading",
+          "connection": "正在停止原恢复任务"
+        }
+      ],
+      "network": [
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:5173/api/sessions/13a229b86113344cfba9676e30fb5872",
+          "at": 1795016050613,
+          "id": "4032.349"
+        }
+      ]
+    },
+    "console": {
+      "A": {
+        "errors": [],
+        "exceptions": []
+      },
+      "B": {
+        "errors": [],
+        "exceptions": []
+      }
+    }
+  },
+  "screenshots": [
+    "C:\\Users\\x\\.codex\\visualizations\\2026\\11\\18\\01a1eeb6-9a1d-76e3-be54-79a2111c8d07\\s6-c2-ui-screenshots\\01-a-takeover-modal-real.png",
+    "C:\\Users\\x\\.codex\\visualizations\\2026\\11\\18\\01a1eeb6-9a1d-76e3-be54-79a2111c8d07\\s6-c2-ui-screenshots\\02-a-online-real.png",
+    "C:\\Users\\x\\.codex\\visualizations\\2026\\11\\18\\01a1eeb6-9a1d-76e3-be54-79a2111c8d07\\s6-c2-ui-screenshots\\03-b-takeover-modal-real.png",
+    "C:\\Users\\x\\.codex\\visualizations\\2026\\11\\18\\01a1eeb6-9a1d-76e3-be54-79a2111c8d07\\s6-c2-ui-screenshots\\04-b-online-real.png",
+    "C:\\Users\\x\\.codex\\visualizations\\2026\\11\\18\\01a1eeb6-9a1d-76e3-be54-79a2111c8d07\\s6-c2-ui-screenshots\\05-a-4001-real.png",
+    "C:\\Users\\x\\.codex\\visualizations\\2026\\11\\18\\01a1eeb6-9a1d-76e3-be54-79a2111c8d07\\s6-c2-ui-screenshots\\06-b-second-modal-real.png",
+    "C:\\Users\\x\\.codex\\visualizations\\2026\\11\\18\\01a1eeb6-9a1d-76e3-be54-79a2111c8d07\\s6-c2-ui-screenshots\\07-b-cancelled-candidate-real.png",
+    "C:\\Users\\x\\.codex\\visualizations\\2026\\11\\18\\01a1eeb6-9a1d-76e3-be54-79a2111c8d07\\s6-c2-ui-screenshots\\08-b-session-table-light.png",
+    "C:\\Users\\x\\.codex\\visualizations\\2026\\11\\18\\01a1eeb6-9a1d-76e3-be54-79a2111c8d07\\s6-c2-ui-screenshots\\09-b-session-table-dark.png",
+    "C:\\Users\\x\\.codex\\visualizations\\2026\\11\\18\\01a1eeb6-9a1d-76e3-be54-79a2111c8d07\\s6-c2-ui-screenshots\\10-b-toolbar-light.png",
+    "C:\\Users\\x\\.codex\\visualizations\\2026\\11\\18\\01a1eeb6-9a1d-76e3-be54-79a2111c8d07\\s6-c2-ui-screenshots\\11-b-toolbar-dark.png",
+    "C:\\Users\\x\\.codex\\visualizations\\2026\\11\\18\\01a1eeb6-9a1d-76e3-be54-79a2111c8d07\\s6-c2-ui-screenshots\\12-b-takeover-modal-dark-real.png",
+    "C:\\Users\\x\\.codex\\visualizations\\2026\\11\\18\\01a1eeb6-9a1d-76e3-be54-79a2111c8d07\\s6-c2-ui-screenshots\\13-b-takeover-modal-light-real.png",
+    "C:\\Users\\x\\.codex\\visualizations\\2026\\11\\18\\01a1eeb6-9a1d-76e3-be54-79a2111c8d07\\s6-c2-ui-screenshots\\14-b-retry-wait-real.png",
+    "C:\\Users\\x\\.codex\\visualizations\\2026\\11\\18\\01a1eeb6-9a1d-76e3-be54-79a2111c8d07\\s6-c2-ui-screenshots\\15-b-drain-confirm-real.png"
+  ],
+  "errors": [],
+  "server": {
+    "id": "36f5971e71320b5aa516e24c3f3cdc9c",
+    "name": "S6-C2 E2E 1795016040751",
+    "host": "127.0.0.1",
+    "port": 34505,
+    "username": "tester",
+    "group_name": "",
+    "remark": "",
+    "host_key": null,
+    "created_at": "2026-11-18T15:34:00.754Z",
+    "updated_at": "2026-11-18T15:34:00.754Z"
+  },
+  "first": {
+    "id": "13a229b86113344cfba9676e30fb5872",
+    "server_id": "36f5971e71320b5aa516e24c3f3cdc9c",
+    "name": "S6-C2 E2E 1795016040751",
+    "host": "127.0.0.1",
+    "username": "tester",
+    "port": 34505,
+    "status": "DISCONNECTED",
+    "created_at": "2026-11-18T15:34:00.759Z",
+    "disconnected_at": "2026-11-18T15:34:00.761Z",
+    "last_attached_at": null,
+    "offline_expires_at": "2026-11-18T17:34:00.761Z",
+    "remaining_seconds": 7200,
+    "binding_generation": 0,
+    "current_cols": 80,
+    "current_rows": 24
+  },
+  "second": {
+    "id": "b2a29adefe94ee07d1110c23a7c6d7bc",
+    "server_id": "36f5971e71320b5aa516e24c3f3cdc9c",
+    "name": "S6-C2 E2E 1795016040751",
+    "host": "127.0.0.1",
+    "username": "tester",
+    "port": 34505,
+    "status": "DISCONNECTED",
+    "created_at": "2026-11-18T15:34:00.763Z",
+    "disconnected_at": "2026-11-18T15:34:00.765Z",
+    "last_attached_at": null,
+    "offline_expires_at": "2026-11-18T17:34:00.765Z",
+    "remaining_seconds": 7200,
+    "binding_generation": 0,
+    "current_cols": 80,
+    "current_rows": 24
+  },
+  "finishedAt": "2026-11-18T15:34:11.042Z"
+}
