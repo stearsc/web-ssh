@@ -161,7 +161,13 @@ function stoppedState(state: RecoveryState): void {
       ? `等待自动恢复 ${state.attempt}/${state.max}`
       : ''
   if (live()) {
-    connectionNotice.value = state.message
+    // 接管结果已由 takeover.message 展示；不要再用连接通知重复同一失败原因。
+    const takeoverMessage = takeover.value?.message ?? ''
+    const duplicateTakeoverResult =
+      takeoverMessage !== '' &&
+      state.message !== '' &&
+      takeoverMessage.includes(state.message)
+    if (!duplicateTakeoverResult) connectionNotice.value = state.message
     if (state.phase === 'retry_wait')
       lastConnectionDiagnostic.value = state.message
   }
