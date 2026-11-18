@@ -73,4 +73,4 @@ sudo chmod 700 ./data
 
 
 
-git archive --format=zip --output=web-ssh-stage6-01.zip fe6fb9c0
+git archive --format=zip --output=web-ssh-stage6-2.zip 4ebe6682
