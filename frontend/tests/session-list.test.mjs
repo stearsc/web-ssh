@@ -87,9 +87,11 @@ const homeCode = ts
           emits: ['ready', 'failed', 'closed', 'changed'],
           setup(props, { emit }) {
             const behavior = globalThis.__homePaneBehavior
+            let closeTask = null
             const handle = {
               sessionId: props.session.id,
               stopCalls: 0,
+              closeAttempts: 0,
               closeCalls: 0,
               stop() {
                 handle.stopCalls++
@@ -97,9 +99,23 @@ const homeCode = ts
                 return globalThis.__homePaneStop?.(handle.sessionId) ?? Promise.resolve()
               },
               close() {
+                handle.closeAttempts++
+                if (closeTask) return closeTask
                 handle.closeCalls++
                 globalThis.__managerEvents?.push('close')
-                return globalThis.__homePaneClose?.(handle.sessionId) ?? Promise.resolve()
+                const result =
+                  globalThis.__homePaneClose?.(handle.sessionId) ??
+                  Promise.resolve()
+                closeTask = Promise.resolve(result).then(
+                  () => {
+                    instance.life = 'closed'
+                  },
+                  (error) => {
+                    instance.life = 'dispose_failed'
+                    throw error
+                  },
+                )
+                return closeTask
               },
             }
             const instance = {
@@ -108,9 +124,21 @@ const homeCode = ts
               closeHandle: props.closeHandle,
               handle,
               mounted: false,
+              life:
+                behavior?.auto === 'failed'
+                  ? 'init_failed'
+                  : behavior?.auto === 'none'
+                    ? 'mounting'
+                    : 'ready',
               get active() { return props.active },
-              emitReady() { emit('ready', handle) },
-              emitFailed() { emit('failed', handle) },
+              emitReady() {
+                instance.life = 'ready'
+                emit('ready', handle)
+              },
+              emitFailed() {
+                instance.life = 'init_failed'
+                emit('failed', handle)
+              },
               emitClosed() { emit('closed') },
               emitChanged() { emit('changed') },
             }
@@ -1298,6 +1326,137 @@ test('S7-4 router.replace reject 不改变登出成功结果，仍写清理反�
     logged.some((args) => String(args[0]).includes('跳转失败')),
   )
   assert.equal(button(h.root, '退出登录').props.disabled, false)
+})
+
+test('S7-4/A1 init_failed Pane 参与 signOut，stop 失败不阻断其他 Pane', async (t) => {
+  const logged = []
+  t.mock.method(console, 'error', (...args) => logged.push(args))
+  const h = await mountHomePage(t)
+  click(button(h.root, '会话管理'))
+  await flush()
+  const normalItem = view('a')
+  const failedItem = view('b')
+  globalThis.__managerOpen(normalItem)
+  await flush()
+  click(button(h.root, '会话管理'))
+  await flush()
+
+  // 第二个 Pane 通过既有 failed 入口构造为真实 init_failed 生命周期。
+  globalThis.__homePaneBehavior = { auto: 'failed' }
+  globalThis.__managerOpen(failedItem)
+  await flush()
+  click(button(h.root, '会话管理'))
+  await flush()
+  assert.equal(h.instances.length, 2)
+  const normal = h.instances[0]
+  const failed = h.instances[1]
+  assert.equal(normal.life, 'ready')
+  assert.equal(failed.life, 'init_failed')
+
+  globalThis.__homePaneStop = (id) => {
+    if (id === failed.sessionId) throw new Error('init stop failed')
+    return Promise.reject(new Error('normal stop failed'))
+  }
+  const before = h.requests.length
+  const webSockets = globalThis.__webSocketCreates
+
+  click(button(h.root, '退出登录'))
+  assert.equal(logoutPending.value, true)
+  assert.equal(normal.handle.stopCalls, 1)
+  assert.equal(failed.handle.stopCalls, 1)
+  assert.equal(globalThis.__managerEvents[0], 'invalidate')
+  assert.ok(
+    globalThis.__managerEvents.indexOf('logout') >
+      globalThis.__managerEvents.indexOf('stop'),
+  )
+
+  await flush()
+  assert.equal(normal.handle.closeCalls, 1)
+  assert.equal(failed.handle.closeCalls, 1)
+  assert.equal(normal.life, 'closed')
+  assert.equal(failed.life, 'closed')
+  assert.deepEqual(h.routerReplaces, ['/login'])
+  assert.equal(deleteRequests(h).length, 0)
+  assert.deepEqual(
+    h.requests
+      .slice(before)
+      .map((item) => `${item.method} ${item.path}`),
+    ['POST /api/auth/logout'],
+  )
+  assert.equal(globalThis.__webSocketCreates, webSockets)
+  assert.equal(
+    authNotice.value,
+    '已退出登录；2 个终端未确认停止，建议刷新页面',
+  )
+  assert.equal(logged.length, 2)
+})
+
+test('S7-4/A2 dispose_failed Pane 仍参与 stop，close 失败不影响其他 Pane', async (t) => {
+  const logged = []
+  t.mock.method(console, 'error', (...args) => logged.push(args))
+  const h = await mountHomePage(t)
+  click(button(h.root, '会话管理'))
+  await flush()
+  const normalItem = view('a')
+  const failedItem = view('b')
+  globalThis.__managerOpen(normalItem)
+  await flush()
+  globalThis.__managerOpen(failedItem)
+  await flush()
+  click(button(h.root, '会话管理'))
+  await flush()
+  assert.equal(h.instances.length, 2)
+  const normal = h.instances[0]
+  const failed = h.instances[1]
+  const stop = deferred()
+
+  // 真实 TerminalPane.close() 失败后会缓存 rejected closeTask 并保持 dispose_failed。
+  globalThis.__homePaneStop = (id) =>
+    id === normal.sessionId ? stop.promise : Promise.resolve()
+  globalThis.__homePaneClose = (id) =>
+    id === failed.sessionId
+      ? Promise.reject(new Error('dispose failed'))
+      : Promise.resolve()
+  await assert.rejects(failed.handle.close(), /dispose failed/)
+  assert.equal(failed.life, 'dispose_failed')
+  assert.equal(failed.handle.closeCalls, 1)
+  assert.equal(failed.handle.closeAttempts, 1)
+
+  const before = h.requests.length
+  globalThis.__managerEvents.length = 0
+  click(button(h.root, '退出登录'))
+  assert.equal(logoutPending.value, true)
+  assert.equal(normal.handle.stopCalls, 1)
+  assert.equal(failed.handle.stopCalls, 1)
+  assert.equal(normal.handle.closeCalls, 0)
+  assert.equal(failed.handle.closeAttempts, 1)
+  assert.equal(globalThis.__managerEvents[0], 'invalidate')
+  assert.ok(
+    globalThis.__managerEvents.indexOf('logout') >
+      globalThis.__managerEvents.indexOf('stop'),
+  )
+  assert.deepEqual(
+    h.requests
+      .slice(before)
+      .map((item) => `${item.method} ${item.path}`),
+    ['POST /api/auth/logout'],
+  )
+
+  stop.resolve()
+  await flush()
+  assert.equal(normal.handle.closeCalls, 1)
+  assert.equal(failed.handle.closeAttempts, 2)
+  assert.equal(failed.handle.closeCalls, 1)
+  assert.equal(failed.life, 'dispose_failed')
+  assert.equal(failed.mounted, true)
+  assert.deepEqual(h.routerReplaces, ['/login'])
+  assert.equal(deleteRequests(h).length, 0)
+  assert.equal(globalThis.__webSocketCreates, 0)
+  assert.equal(
+    authNotice.value,
+    '已退出登录；1 个终端本地资源未释放，建议刷新页面',
+  )
+  assert.equal(logged.length, 1)
 })
 
 test('S6-T37 connectServer 仍以 attach 创建并同 id 去重', async (t) => {

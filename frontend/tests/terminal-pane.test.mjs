@@ -1899,6 +1899,34 @@ test('S7-5 takeover loading 时卸载：零新 WebSocket，迟到详情不发布
   assert.equal(h.closeHandle.snapshot().state, 'idle')
 })
 
+test('S7-5 takeover loading 阶段卸载：真实 prepare 流程的迟到请求隔离', async (t) => {
+  const h = await mountRacePane(t, 'connecting')
+  await enterTakeoverPhase(h, 'loading')
+  assert.deepEqual(texts(h.root, 'connection-state'), [
+    '正在查询 Session 状态',
+  ])
+  assert.ok(button(h.root, '取消准备'))
+  assert.equal(button(h.root, '确认接管'), undefined)
+
+  const beforeRequests = h.requests.length
+  const beforeSockets = h.sockets.length
+  const beforeTakeoverPosts = takeoverPosts(h).length
+  const beforeChanged = h.events.changed
+
+  h.unmount()
+  await h.pane.close()
+  await h.releaseDetail()
+  await flush()
+
+  assert.equal(h.requests.length, beforeRequests)
+  assert.equal(h.sockets.length, beforeSockets)
+  assert.equal(takeoverPosts(h).length, beforeTakeoverPosts)
+  assert.equal(h.events.changed, beforeChanged)
+  // 卸载后才完成的 close 不能把 closed 事件送达已销毁的父级。
+  assert.equal(h.events.closed, 0)
+  assert.equal(h.closeHandle.snapshot().state, 'idle')
+})
+
 test('S7-5 recovery retry_wait 时卸载：不自动恢复', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const h = await mountRacePane(t, 'retry_wait')
