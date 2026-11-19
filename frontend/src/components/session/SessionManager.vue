@@ -19,7 +19,7 @@ const props = defineProps<{
   canRefresh: boolean
   authToken: unknown
   // 结束与否由 HomePage 的协调器裁决，列表只按该结果禁用入口。
-  isEnded?: (sessionId: string) => boolean
+  endedIds?: readonly string[]
 }>()
 
 const emit = defineEmits<{
@@ -110,7 +110,7 @@ function formatRemaining(item: SessionView): string {
 }
 
 function closeDisabled(item: SessionView): boolean {
-  return !props.canRefresh || props.isEnded?.(item.id) === true
+  return !props.canRefresh || (props.endedIds?.includes(item.id) ?? false)
 }
 
 function requestClose(item: SessionView): void {

@@ -22,7 +22,7 @@ import {
   authNotice,
 } from '../stores/auth'
 import { createSession, type SessionView } from '../api/sessions'
-import { CloseCoordinator } from '../session/close'
+import { CloseCoordinator, type CloseSnapshot } from '../session/close'
 import TerminalPane from '../components/terminal/TerminalPane.vue'
 import ThemeButton from '../components/layout/ThemeButton.vue'
 import Modal from '../components/layout/Modal.vue'
@@ -51,6 +51,9 @@ let nextPaneKey = 0
 let pageDisposed = false
 // 页面级唯一关闭所有者：Pane 与后续无 Pane 入口共用同一状态机。
 const closeCoordinator = new CloseCoordinator()
+// 协调器不是 Vue 响应式对象；这里只桥接 ended tombstone 供列表禁用入口。
+const endedSessionIds = ref<string[]>([])
+const closeUnsubscribes = new Map<number, () => void>()
 const manager = ref<{ refresh(): void } | null>(null)
 const signingOut = ref(false)
 const view = ref<'servers' | 'sessions'>('servers')
@@ -70,13 +73,33 @@ function reserveRecord(
   startMode: PaneStartMode,
 ): void {
   // 同步预占：push 之后到 Pane ready 之间，重复打开会命中本记录。
-  records.value.push({
+  const record: PaneRecord = {
     key: ++nextPaneKey,
     session: { ...session },
     startMode,
     handle: null,
-  })
+  }
+  records.value.push(record)
+  trackCloseState(record.key, session.id)
   focusRecord(session.id)
+}
+function markSessionEnded(sessionId: string): void {
+  if (!endedSessionIds.value.includes(sessionId))
+    endedSessionIds.value = [...endedSessionIds.value, sessionId]
+}
+function trackCloseState(key: number, sessionId: string): void {
+  if (closeUnsubscribes.has(key)) return
+  closeUnsubscribes.set(
+    key,
+    closeCoordinator.handle(sessionId).subscribe((snapshot) => {
+      if (!pageDisposed && snapshot.state === 'ended')
+        markSessionEnded(sessionId)
+    }),
+  )
+}
+function untrackCloseState(key: number): void {
+  closeUnsubscribes.get(key)?.()
+  closeUnsubscribes.delete(key)
 }
 function openSession(item: SessionView): void {
   if (pageDisposed || !identity.value || logoutPending.value) return
@@ -86,6 +109,7 @@ function openSession(item: SessionView): void {
   }
   const closeState = closeCoordinator.getCloseState(item.id).state
   if (closeState === 'ended') {
+    markSessionEnded(item.id)
     notice.value = 'Session 已结束或正在完成关闭（远端已不可接管）'
     return
   }
@@ -114,6 +138,7 @@ function paneClosed(key: number): void {
   const index = records.value.findIndex((item) => item.key === key)
   if (index < 0) return
   const [record] = records.value.splice(index, 1)
+  untrackCloseState(record.key)
   if (activeTab.value === record.session.id)
     activeTab.value = records.value.at(-1)?.session.id ?? ''
 }
@@ -121,12 +146,10 @@ function paneChanged(): void {
   // D1：操作完成后刷新；不在管理视图时，下次进入会在挂载时刷新。
   if (!pageDisposed && view.value === 'sessions') manager.value?.refresh()
 }
-function isSessionEnded(sessionId: string): boolean {
-  return closeCoordinator.getCloseState(sessionId).state === 'ended'
-}
 function requestSessionClose(item: SessionView): void {
   if (pageDisposed || !identity.value || logoutPending.value) return
-  if (isSessionEnded(item.id)) {
+  if (closeCoordinator.getCloseState(item.id).state === 'ended') {
+    markSessionEnded(item.id)
     notice.value = 'Session 已结束或正在完成关闭（远端已不可接管）'
     return
   }
@@ -136,16 +159,37 @@ function requestSessionClose(item: SessionView): void {
 function cancelSessionClose(): void {
   closeTarget.value = null
 }
+function closeResultNotice(snapshot: CloseSnapshot): string {
+  switch (snapshot.state) {
+    case 'requested':
+      return '关闭请求已提交；服务端仍在回收，尚未完全关闭'
+    case 'unknown':
+      return '关闭请求结果未知，请刷新列表确认 Session 状态'
+    case 'failed':
+      return '关闭请求未被服务端接受'
+    case 'ended':
+      return 'Session 已结束或正在完成关闭（远端已不可接管）'
+    case 'pending':
+      return '关闭请求仍在进行，请稍后刷新列表确认'
+    default:
+      return ''
+  }
+}
 async function confirmSessionClose(): Promise<void> {
   const target = closeTarget.value
   closeTarget.value = null
   // 确认期间可能已开始登出；登出后不得再发起关闭请求。
   if (!target || pageDisposed || logoutPending.value) return
+  // 有记录时定位到 Pane，由它展示关闭状态；无 Pane 时由页面反馈结果。
+  const record = findRecord(target.id)
   // 唯一关闭所有者仍是协调器：有 Pane 时由它调用已注册的本地 stop，再发 DELETE。
   const task = closeCoordinator.requestClose(target.id)
-  if (findRecord(target.id)) focusRecord(target.id)
-  await task
+  if (record) focusRecord(target.id)
+  const snapshot = await task
   if (pageDisposed) return
+  if (snapshot.state === 'ended') markSessionEnded(target.id)
+  // 关闭结束时仍无 Pane 才需要页面级反馈；有 Pane 时由其自身展示状态。
+  if (!findRecord(target.id)) notice.value = closeResultNotice(snapshot)
   paneChanged()
 }
 function registeredPanes(): PaneEntry[] {
@@ -281,6 +325,8 @@ onBeforeUnmount(() => {
   pageDisposed = true
   query?.abort()
   operations.abort()
+  for (const unsubscribe of closeUnsubscribes.values()) unsubscribe()
+  closeUnsubscribes.clear()
   closeCoordinator.dispose()
   clearTimeout(debounce)
   probe.value = null
@@ -564,7 +610,7 @@ async function signOut(): Promise<void> {
         :servers="items"
         :can-refresh="identity !== null && !logoutPending"
         :auth-token="identity"
-        :is-ended="isSessionEnded"
+        :ended-ids="endedSessionIds"
         @open="openSession"
         @close="requestSessionClose"
       />
