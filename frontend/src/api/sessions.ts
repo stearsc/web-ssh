@@ -41,7 +41,10 @@ export function closeSession(
   id: string,
   signal?: AbortSignal,
 ): Promise<unknown> {
-  return request(`/api/sessions/${id}`, 'DELETE', {}, signal)
+  // 只有 HTTP 200 且 {code:0} 才能证明服务端处理了关闭请求；其他 2xx 一律视为未知。
+  return request(`/api/sessions/${id}`, 'DELETE', {}, signal, {
+    expectedStatus: 200,
+  })
 }
 
 // 详情是人工恢复唯一代次来源；不能用类型断言或旧 props 填补缺失字段。

@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { CloseCoordinator } from '../src/session/close.ts'
-import { onAuthExpired } from '../src/api/management.ts'
+import { onAuthExpired, request } from '../src/api/management.ts'
 
 const ID = 'a'.repeat(32)
 const OTHER = 'b'.repeat(32)
@@ -480,6 +480,15 @@ test('S7-C29 双重准入矩阵：详情不解除关闭意图，NOT_FOUND 进入
 test('S7-C30 DELETE 分类：除合法 200 {code:0} 外全部 unknown，不产生 failed', async (t) => {
   const cases = [
     ['合法 200', () => envelope(0), 'requested'],
+    ['HTTP 201 + code 0', () => envelope(0, 'ok', {}, 201), 'unknown'],
+    ['HTTP 202 + code 0', () => envelope(0, 'ok', {}, 202), 'unknown'],
+    ['HTTP 203 + code 0', () => envelope(0, 'ok', {}, 203), 'unknown'],
+    ['HTTP 204 无响应体', () => new Response(null, { status: 204 }), 'unknown'],
+    [
+      'HTTP 200 非法响应结构',
+      () => Response.json({ code: 0 }, { status: 200 }),
+      'unknown',
+    ],
     [
       '代理同形 AUTH_REQUIRED',
       () => envelope('AUTH_REQUIRED', '需要登录', {}, 401),
@@ -553,4 +562,11 @@ test('S7-C30 DELETE 分类：除合法 200 {code:0} 外全部 unknown，不产�
   }
   // AUTH_REQUIRED 保留既有全局副作用，但不参与 failed 分类。
   assert.equal(expired, 1)
+})
+
+test('通用 request 保持 response.ok 语义：其他 2xx 仍按原行为成功', async (t) => {
+  installFetch(t, async () =>
+    Response.json({ code: 0, message: 'ok', data: { value: 1 } }, { status: 201 }),
+  )
+  assert.deepEqual(await request('/api/anything', 'POST', {}), { value: 1 })
 })

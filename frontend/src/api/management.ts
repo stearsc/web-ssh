@@ -51,11 +51,16 @@ export function onAuthExpired(callback: () => void): void {
 export function notifyAuthExpired(): void {
   onExpired()
 }
+export interface RequestOptions {
+  // 仅用于需要严格校验 HTTP 状态码的调用方；未设置时保持原有 response.ok 语义。
+  expectedStatus?: number
+}
 export async function request<T>(
   path: string,
   method = 'GET',
   data?: unknown,
   signal?: AbortSignal,
+  options?: RequestOptions,
 ): Promise<T> {
   const response = await fetch(path, {
     method,
@@ -76,6 +81,18 @@ export async function request<T>(
     !('data' in body)
   )
     throw new ApiError('INVALID_RESPONSE', '服务返回了无法识别的响应')
+  if (
+    options?.expectedStatus !== undefined &&
+    response.status !== options.expectedStatus
+  ) {
+    // 严格模式只影响显式传入 expectedStatus 的调用方；AUTH_REQUIRED 副作用保持不变。
+    if (body.code === 'AUTH_REQUIRED') onExpired()
+    throw new ManagementError(
+      typeof body.code === 'string' ? body.code : 'INVALID_RESPONSE',
+      body.message,
+      body.data,
+    )
+  }
   if (!response.ok || body.code !== 0) {
     if (body.code === 'AUTH_REQUIRED') onExpired()
     throw new ManagementError(
