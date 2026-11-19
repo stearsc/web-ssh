@@ -53,7 +53,8 @@ let pageDisposed = false
 const closeCoordinator = new CloseCoordinator()
 // 协调器不是 Vue 响应式对象；这里只桥接 ended tombstone 供列表禁用入口。
 const endedSessionIds = ref<string[]>([])
-const closeUnsubscribes = new Map<number, () => void>()
+// 订阅属于页面而非 Pane：Pane 销毁后，迟到的详情 GET 仍要能更新 ended。
+const closeUnsubscribes = new Map<string, () => void>()
 const manager = ref<{ refresh(): void } | null>(null)
 const signingOut = ref(false)
 const view = ref<'servers' | 'sessions'>('servers')
@@ -80,26 +81,22 @@ function reserveRecord(
     handle: null,
   }
   records.value.push(record)
-  trackCloseState(record.key, session.id)
+  trackCloseState(session.id)
   focusRecord(session.id)
 }
 function markSessionEnded(sessionId: string): void {
   if (!endedSessionIds.value.includes(sessionId))
     endedSessionIds.value = [...endedSessionIds.value, sessionId]
 }
-function trackCloseState(key: number, sessionId: string): void {
-  if (closeUnsubscribes.has(key)) return
+function trackCloseState(sessionId: string): void {
+  if (closeUnsubscribes.has(sessionId)) return
   closeUnsubscribes.set(
-    key,
+    sessionId,
     closeCoordinator.handle(sessionId).subscribe((snapshot) => {
       if (!pageDisposed && snapshot.state === 'ended')
         markSessionEnded(sessionId)
     }),
   )
-}
-function untrackCloseState(key: number): void {
-  closeUnsubscribes.get(key)?.()
-  closeUnsubscribes.delete(key)
 }
 function openSession(item: SessionView): void {
   if (pageDisposed || !identity.value || logoutPending.value) return
@@ -138,7 +135,6 @@ function paneClosed(key: number): void {
   const index = records.value.findIndex((item) => item.key === key)
   if (index < 0) return
   const [record] = records.value.splice(index, 1)
-  untrackCloseState(record.key)
   if (activeTab.value === record.session.id)
     activeTab.value = records.value.at(-1)?.session.id ?? ''
 }

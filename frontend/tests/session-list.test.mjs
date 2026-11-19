@@ -12,6 +12,7 @@ import {
 } from 'vue'
 import { ApiError } from '../src/api/client.ts'
 import { listSessions, sessionList } from '../src/api/sessions.ts'
+import { CloseCoordinator } from '../src/session/close.ts'
 import { SessionListController } from '../src/session/list.ts'
 import {
   acceptIdentity,
@@ -1790,5 +1791,136 @@ test('S7-2/D1 HomePage：卸载后 ended 订阅失效，不产生无效更新', 
   pane.closeHandle.markEnded()
   await flush()
   assert.equal(pane.closeHandle.snapshot().state, 'idle')
+  assert.deepEqual(globalThis.__managerEndedIds, endedBefore)
+})
+
+test('S7-2/D1 Pane 关闭后迟到的 SESSION_NOT_FOUND 仍更新 ended 按钮', async (t) => {
+  const detail = deferred()
+  const h = await mountHomePage(t, {
+    fetch: (record) => {
+      if (record.method === 'DELETE')
+        return Response.json({ code: 0, message: 'ok', data: {} })
+      if (
+        record.method === 'GET' &&
+        record.path === `/api/sessions/${view('a').id}`
+      )
+        return detail.promise
+      return undefined
+    },
+  })
+  click(button(h.root, '会话管理'))
+  await flush()
+  globalThis.__managerOpen(view('a'))
+  await flush()
+  const pane = h.instances[0]
+  await pane.closeHandle.requestClose()
+  assert.equal(pane.closeHandle.snapshot().state, 'requested')
+
+  const refreshing = pane.closeHandle.refreshClose()
+  assert.equal(
+    h.requests.filter(
+      (item) =>
+        item.method === 'GET' &&
+        item.path === `/api/sessions/${view('a').id}`,
+    ).length,
+    1,
+  )
+
+  // 详情 GET 仍在途时关闭 Pane，record 被释放。
+  pane.emitClosed()
+  await flush()
+  assert.equal(pane.mounted, false)
+  assert.equal(byClass(h.root, 'terminal-pane-stub').length, 0)
+
+  click(button(h.root, '会话管理'))
+  await flush()
+  assert.deepEqual(globalThis.__managerEndedIds, [])
+  const refreshes = globalThis.__managerRefreshes
+
+  // 迟到的详情 GET 走真实协调器订阅路径，而不是直接 markEnded。
+  detail.resolve(
+    Response.json(
+      { code: 'SESSION_NOT_FOUND', message: '会话不存在', data: {} },
+      { status: 404 },
+    ),
+  )
+  await refreshing
+  await flush()
+
+  assert.equal(pane.closeHandle.snapshot().state, 'ended')
+  assert.deepEqual(globalThis.__managerEndedIds, [view('a').id])
+  // 不依赖列表刷新即可更新按钮。
+  assert.equal(globalThis.__managerRefreshes, refreshes)
+  assert.equal(deleteRequests(h).length, 1)
+})
+
+test('S7-2/D1 同一 Session 只建立一个 ended 订阅，Pane 重开不重复订阅', async (t) => {
+  const subscribe = t.mock.method(
+    CloseCoordinator.prototype,
+    'subscribeClose',
+  )
+  const h = await mountHomePage(t)
+  click(button(h.root, '会话管理'))
+  await flush()
+  globalThis.__managerOpen(view('a'))
+  await flush()
+  assert.equal(subscribe.mock.callCount(), 1)
+  const pane = h.instances[0]
+
+  // 已有记录再次打开只定位，不新建订阅。
+  globalThis.__managerOpen(view('a'))
+  await flush()
+  assert.equal(h.instances.length, 1)
+  assert.equal(subscribe.mock.callCount(), 1)
+
+  // Pane 关闭后重开同一 Session，仍复用页面级唯一订阅。
+  pane.emitClosed()
+  await flush()
+  globalThis.__managerOpen(view('a'))
+  await flush()
+  assert.equal(h.instances.length, 2)
+  assert.equal(subscribe.mock.callCount(), 1)
+
+  click(button(h.root, '会话管理'))
+  await flush()
+  h.instances[1].closeHandle.markEnded()
+  await flush()
+  assert.deepEqual(globalThis.__managerEndedIds, [view('a').id])
+})
+
+test('S7-2/D1 HomePage 销毁时注销全部 ended 订阅，销毁后不再更新', async (t) => {
+  const original = CloseCoordinator.prototype.subscribeClose
+  const unsubscribed = []
+  const subscribe = t.mock.method(
+    CloseCoordinator.prototype,
+    'subscribeClose',
+    function (sessionId, listener) {
+      const unsubscribe = original.call(this, sessionId, listener)
+      return () => {
+        unsubscribed.push(sessionId)
+        unsubscribe()
+      }
+    },
+  )
+  const h = await mountHomePage(t)
+  click(button(h.root, '会话管理'))
+  await flush()
+  globalThis.__managerOpen(view('a'))
+  await flush()
+  globalThis.__managerOpen(view('b'))
+  await flush()
+  assert.equal(subscribe.mock.callCount(), 2)
+  const [a, b] = h.instances
+
+  h.unmount()
+  assert.deepEqual(
+    unsubscribed.sort(),
+    [view('a').id, view('b').id].sort(),
+  )
+
+  const endedBefore = [...globalThis.__managerEndedIds]
+  a.closeHandle.markEnded()
+  b.closeHandle.markEnded()
+  await flush()
   assert.deepEqual(globalThis.__managerEndedIds, endedBefore)
 })
