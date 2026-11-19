@@ -13,6 +13,7 @@ import {
   type SessionView,
 } from '../../api/sessions.ts'
 import { SessionListController } from '../../session/list.ts'
+import { logoutPending } from '../../stores/auth.ts'
 
 const props = defineProps<{
   servers: ServerView[]
@@ -45,7 +46,9 @@ const statusLabels: Record<SessionStatus, string> = {
 
 const controller = new SessionListController({
   load: listSessions,
-  isAllowed: () => props.canRefresh,
+  // 登出状态直接从 auth store 同步读取，不依赖父组件 props 的更新时机。
+  isAllowed: () =>
+    props.canRefresh && props.authToken != null && !logoutPending.value,
   currentIdentity: () => props.authToken,
 })
 const filteredItems = computed(() => {
@@ -110,12 +113,21 @@ function formatRemaining(item: SessionView): string {
 }
 
 function closeDisabled(item: SessionView): boolean {
-  return !props.canRefresh || (props.endedIds?.includes(item.id) ?? false)
+  return !props.canRefresh || isEnded(item)
 }
 
 function requestClose(item: SessionView): void {
   if (closeDisabled(item)) return
   emit('close', item)
+}
+
+function isEnded(item: SessionView): boolean {
+  return props.endedIds?.includes(item.id) ?? false
+}
+
+function openSession(item: SessionView): void {
+  if (!props.canRefresh || isEnded(item)) return
+  emit('open', item)
 }
 
 watch(serverFilter, refresh)
@@ -133,6 +145,9 @@ watch(
     refresh()
   },
 )
+watch(logoutPending, (pending) => {
+  if (pending) controller.invalidate()
+})
 
 let wasHidden = false
 function onVisibilityChange(): void {
@@ -284,6 +299,9 @@ defineExpose({
               >
                 {{ statusLabels[item.status] }}
               </span>
+              <span v-if="isEnded(item)" class="session-ended">
+                已结束（不可接管）
+              </span>
             </td>
             <td>{{ item.binding_generation }}</td>
             <td>{{ item.current_cols }} × {{ item.current_rows }}</td>
@@ -294,8 +312,8 @@ defineExpose({
             <td>{{ formatRemaining(item) }}</td>
             <td>
               <button
-                :disabled="!canRefresh"
-                @click="emit('open', item)"
+                :disabled="!canRefresh || isEnded(item)"
+                @click="openSession(item)"
               >
                 打开
               </button>

@@ -22,7 +22,11 @@ import {
   authNotice,
 } from '../stores/auth'
 import { createSession, type SessionView } from '../api/sessions'
-import { CloseCoordinator, type CloseSnapshot } from '../session/close'
+import {
+  CloseCoordinator,
+  type CloseSnapshot,
+  type CloseState,
+} from '../session/close'
 import TerminalPane from '../components/terminal/TerminalPane.vue'
 import ThemeButton from '../components/layout/ThemeButton.vue'
 import Modal from '../components/layout/Modal.vue'
@@ -55,11 +59,22 @@ const closeCoordinator = new CloseCoordinator()
 const endedSessionIds = ref<string[]>([])
 // 订阅属于页面而非 Pane：Pane 销毁后，迟到的详情 GET 仍要能更新 ended。
 const closeUnsubscribes = new Map<string, () => void>()
-const manager = ref<{ refresh(): void } | null>(null)
+const manager = ref<{
+  refresh(): void
+  invalidate(): void
+} | null>(null)
 const signingOut = ref(false)
 const view = ref<'servers' | 'sessions'>('servers')
 const activeTab = ref('')
 const probeAction = ref<'test' | 'connect'>('test')
+const CLOSE_REFRESH_STATES: ReadonlySet<CloseState> = new Set([
+  'requested',
+  'unknown',
+  'failed',
+  'ended',
+])
+let changedQueued = false
+let refreshPending = false
 
 function findRecord(sessionId: string): PaneRecord | undefined {
   return records.value.find((record) => record.session.id === sessionId)
@@ -93,8 +108,10 @@ function trackCloseState(sessionId: string): void {
   closeUnsubscribes.set(
     sessionId,
     closeCoordinator.handle(sessionId).subscribe((snapshot) => {
-      if (!pageDisposed && snapshot.state === 'ended')
-        markSessionEnded(sessionId)
+      if (pageDisposed) return
+      if (snapshot.state === 'ended') markSessionEnded(sessionId)
+      // 关闭状态落地后统一走合并刷新，Pane 与无 Pane 路径共用同一入口。
+      if (CLOSE_REFRESH_STATES.has(snapshot.state)) scheduleRefresh()
     }),
   )
 }
@@ -138,9 +155,25 @@ function paneClosed(key: number): void {
   if (activeTab.value === record.session.id)
     activeTab.value = records.value.at(-1)?.session.id ?? ''
 }
+function scheduleRefresh(): void {
+  if (changedQueued) return
+  changedQueued = true
+  queueMicrotask(() => {
+    changedQueued = false
+    if (pageDisposed || logoutPending.value || !identity.value) return
+    if (view.value !== 'sessions') {
+      // 隐藏期间只标记；进入列表时由挂载的初始 GET 统一加载。
+      refreshPending = true
+      return
+    }
+    refreshPending = false
+    manager.value?.refresh()
+  })
+}
 function paneChanged(): void {
-  // D1：操作完成后刷新；不在管理视图时，下次进入会在挂载时刷新。
-  if (!pageDisposed && view.value === 'sessions') manager.value?.refresh()
+  if (pageDisposed || logoutPending.value || !identity.value) return
+  if (view.value !== 'sessions') return
+  scheduleRefresh()
 }
 function requestSessionClose(item: SessionView): void {
   if (pageDisposed || !identity.value || logoutPending.value) return
@@ -178,6 +211,8 @@ async function confirmSessionClose(): Promise<void> {
   if (!target || pageDisposed || logoutPending.value) return
   // 有记录时定位到 Pane，由它展示关闭状态；无 Pane 时由页面反馈结果。
   const record = findRecord(target.id)
+  // 无 Pane 的关闭也要有页面级订阅，才能把状态变化合并到列表刷新。
+  trackCloseState(target.id)
   // 唯一关闭所有者仍是协调器：有 Pane 时由它调用已注册的本地 stop，再发 DELETE。
   const task = closeCoordinator.requestClose(target.id)
   if (record) focusRecord(target.id)
@@ -186,7 +221,6 @@ async function confirmSessionClose(): Promise<void> {
   if (snapshot.state === 'ended') markSessionEnded(target.id)
   // 关闭结束时仍无 Pane 才需要页面级反馈；有 Pane 时由其自身展示状态。
   if (!findRecord(target.id)) notice.value = closeResultNotice(snapshot)
-  paneChanged()
 }
 function registeredPanes(): PaneEntry[] {
   return records.value.flatMap((record) =>
@@ -316,6 +350,11 @@ watch([search, group], () => {
   clearTimeout(debounce)
   debounce = setTimeout(() => void load(), 180)
 })
+watch(view, (current) => {
+  if (current !== 'sessions' || !refreshPending) return
+  // SessionManager 挂载时的初始 GET 已完成必要刷新，这里只消费标记。
+  refreshPending = false
+})
 onMounted(load)
 onBeforeUnmount(() => {
   pageDisposed = true
@@ -436,6 +475,7 @@ async function signOut(): Promise<void> {
   if (signingOut.value) return
   signingOut.value = true
   logoutPending.value = true // 同步：Pane watcher 调用 stop()，候选接管同步失效
+  manager.value?.invalidate() // 同步撤销列表发布身份，早于 logout 请求
   operations.abort()
   query?.abort()
   clearTimeout(debounce)

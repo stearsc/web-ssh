@@ -9,6 +9,7 @@ import {
   h,
   nextTick,
   reactive,
+  ref,
 } from 'vue'
 import { ApiError } from '../src/api/client.ts'
 import { listSessions, sessionList } from '../src/api/sessions.ts'
@@ -143,6 +144,10 @@ const homeCode = ts
           setup(props, { emit, expose }) {
             const instance = getCurrentInstance()
             const refresh = () => { globalThis.__managerRefreshes++ }
+            const invalidate = () => {
+              globalThis.__managerInvalidates++
+              globalThis.__managerEvents?.push('invalidate')
+            }
             globalThis.__managerOpen = (item) => {
               const handler = instance?.vnode.props?.onOpen
               if (typeof handler === 'function') handler(item)
@@ -153,8 +158,12 @@ const homeCode = ts
               if (typeof handler === 'function') handler(item)
               else emit('close', item)
             }
-            expose({ refresh })
-            onMounted(() => { globalThis.__managerMounts++ })
+            expose({ refresh, invalidate })
+            onMounted(() => {
+              globalThis.__managerMounts++
+              // 真实组件挂载时会执行一次初始 GET。
+              globalThis.__managerInitialLoads++
+            })
             onBeforeUnmount(() => { globalThis.__managerUnmounts++ })
             return () => {
               globalThis.__managerEndedIds = props.endedIds ?? []
@@ -528,10 +537,12 @@ async function mountManager(t, options = {}) {
   })
   const opens = []
   const closes = []
+  const managerRef = ref(null)
   const Root = defineComponent({
     setup() {
       return () =>
         h(SessionManager, {
+          ref: managerRef,
           ...props,
           onOpen: (item) => opens.push(item),
           onClose: (item) => closes.push(item),
@@ -565,6 +576,15 @@ async function mountManager(t, options = {}) {
     requests,
     root,
     unmount,
+    invalidate() {
+      managerRef.value?.invalidate()
+    },
+    refresh() {
+      managerRef.value?.refresh()
+    },
+    setAuthToken(value) {
+      props.authToken = value
+    },
     setCanRefresh(value) {
       props.canRefresh = value
     },
@@ -755,7 +775,7 @@ test('S7-2 SessionManager：行级关闭 emit 完整 item，CONNECTING/CLOSING �
   assert.doesNotMatch(source, /window\.confirm|<Modal/)
 })
 
-test('S7-2 SessionManager：ended 行禁用关闭且不 emit，!canRefresh 全部禁用', async (t) => {
+test('S7-2/S7-3 SessionManager：ended 行禁用打开与关闭，!canRefresh 全部禁用', async (t) => {
   const h = await mountManager(t, { endedIds: [view('a').id] })
   await h.respond(0, success([view('a'), view('b')]))
   const closeButtons = () =>
@@ -771,9 +791,13 @@ test('S7-2 SessionManager：ended 行禁用关闭且不 emit，!canRefresh 全�
   assert.deepEqual(h.closes[0], view('b'))
   assert.equal(textContent(h.root).includes('确认关闭'), false)
 
-  // 打开行为不因关闭入口或 ended 判定而改变。
+  // ended tombstone 行不得重新打开，普通行行为不变。
+  assert.equal(openButtons()[0].props.disabled, true)
+  assert.equal(openButtons()[1].props.disabled, false)
   click(openButtons()[0])
-  assert.deepEqual(h.opens[0], view('a'))
+  assert.equal(h.opens.length, 0)
+  click(openButtons()[1])
+  assert.deepEqual(h.opens[0], view('b'))
 
   h.setCanRefresh(false)
   await flush()
@@ -815,6 +839,9 @@ async function mountHomePage(t, options = {}) {
   globalThis.__homePaneActive = null
   globalThis.__homePaneInstances = []
   globalThis.__managerRefreshes = 0
+  globalThis.__managerInvalidates = 0
+  globalThis.__managerInitialLoads = 0
+  globalThis.__managerEvents = []
   globalThis.__webSocketCreates = 0
   globalThis.__routerReplaces = []
   globalThis.__homePaneBehavior = options.paneBehavior ?? { auto: 'ready' }
@@ -863,8 +890,10 @@ async function mountHomePage(t, options = {}) {
         message: 'ok',
         data: options.session ?? view('a'),
       })
-    if (path === '/api/auth/logout' && record.method === 'POST')
+    if (path === '/api/auth/logout' && record.method === 'POST') {
+      globalThis.__managerEvents.push('logout')
       return Response.json({ code: 0, message: 'ok', data: {} })
+    }
     if (record.method === 'DELETE' && path.startsWith('/api/sessions/'))
       return Response.json({ code: 0, message: 'ok', data: {} })
     if (record.method === 'GET' && path.startsWith('/api/sessions/'))
@@ -900,6 +929,9 @@ async function mountHomePage(t, options = {}) {
     delete globalThis.__homePaneActive
     delete globalThis.__homePaneInstances
     delete globalThis.__managerRefreshes
+    delete globalThis.__managerInvalidates
+    delete globalThis.__managerInitialLoads
+    delete globalThis.__managerEvents
     delete globalThis.__webSocketCreates
     delete globalThis.__routerReplaces
     delete globalThis.__homePaneBehavior
@@ -1766,8 +1798,8 @@ test('S7-2/D1 HomePage：协调器 ended 后列表立即收到 endedIds，权威
   pane.closeHandle.markEnded()
   await flush()
   assert.deepEqual(globalThis.__managerEndedIds, [view('a').id])
-  // 不依赖列表刷新或重新进入页面。
-  assert.equal(globalThis.__managerRefreshes, refreshes)
+  // ended 状态变化按统一合并入口刷新一次，不依赖重新进入页面。
+  assert.equal(globalThis.__managerRefreshes, refreshes + 1)
 
   // 按钮禁用只是 UI 层；HomePage 入口校验仍然拒绝 ended 行。
   globalThis.__managerClose(view('a'))
@@ -1849,8 +1881,9 @@ test('S7-2/D1 Pane 关闭后迟到的 SESSION_NOT_FOUND 仍更新 ended 按钮',
 
   assert.equal(pane.closeHandle.snapshot().state, 'ended')
   assert.deepEqual(globalThis.__managerEndedIds, [view('a').id])
-  // 不依赖列表刷新即可更新按钮。
-  assert.equal(globalThis.__managerRefreshes, refreshes)
+  // ended 状态变化触发一次合并刷新，且刷新不会清除 tombstone。
+  assert.equal(globalThis.__managerRefreshes, refreshes + 1)
+  assert.deepEqual(globalThis.__managerEndedIds, [view('a').id])
   assert.equal(deleteRequests(h).length, 1)
 })
 
@@ -1923,4 +1956,302 @@ test('S7-2/D1 HomePage 销毁时注销全部 ended 订阅，销毁后不再更�
   b.closeHandle.markEnded()
   await flush()
   assert.deepEqual(globalThis.__managerEndedIds, endedBefore)
+})
+
+test('S7-3/A logoutPending 同步阻止新 GET，不依赖 props 更新', async (t) => {
+  const h = await mountManager(t)
+  await h.respond(0, success([view('a')]))
+  const before = h.requests.length
+  logoutPending.value = true
+  t.after(() => {
+    logoutPending.value = false
+  })
+
+  // 同步边界：不等待 nextTick，props.canRefresh 仍为 true。
+  h.refresh()
+  click(button(h.root, '刷新'))
+  assert.equal(h.requests.length, before)
+
+  // 身份缺失（props 已传播后）同样被拒绝。
+  logoutPending.value = false
+  h.setAuthToken(null)
+  await flush()
+  const afterIdentity = h.requests.length
+  h.refresh()
+  assert.equal(h.requests.length, afterIdentity)
+})
+
+test('S7-3/B invalidate 后旧请求不发布，旧 finally 不清新 loading', async (t) => {
+  const h = await mountManager(t)
+  await h.respond(0, success([view('a')]))
+
+  h.refresh()
+  assert.equal(h.requests.length, 2)
+  h.invalidate()
+  assert.equal(h.requests[1].options.signal.aborted, true)
+  h.refresh()
+  assert.equal(h.requests.length, 3)
+  await flush()
+  assert.match(textContent(h.root), /正在刷新/)
+
+  // 旧请求迟到：不能发布，也不能关闭新请求的 loading。
+  h.requests[1].resolve(success([view('b')]))
+  await flush()
+  assert.match(textContent(h.root), /session-a/)
+  assert.doesNotMatch(textContent(h.root), /session-b/)
+  assert.match(textContent(h.root), /正在刷新/)
+
+  await h.respond(2, success([view('c')]))
+  assert.match(textContent(h.root), /session-c/)
+})
+
+test('S7-3/B signOut 在 logout 请求前同步 invalidate', async (t) => {
+  const h = await mountHomePage(t)
+  click(button(h.root, '会话管理'))
+  await flush()
+
+  click(button(h.root, '退出登录'))
+  // signOut 同步段：invalidate 必须先于 logout 请求。
+  assert.deepEqual(globalThis.__managerEvents, ['invalidate', 'logout'])
+  await flush()
+  assert.deepEqual(h.routerReplaces, ['/login'])
+})
+
+test('S7-3/C paneChanged 在登出、身份失效与销毁后零刷新', async (t) => {
+  const h = await mountHomePage(t)
+  click(button(h.root, '会话管理'))
+  await flush()
+  globalThis.__managerOpen(view('a'))
+  await flush()
+  const pane = h.instances[0]
+  click(button(h.root, '会话管理'))
+  await flush()
+  const before = globalThis.__managerRefreshes
+
+  logoutPending.value = true
+  pane.emitChanged()
+  await flush()
+  assert.equal(globalThis.__managerRefreshes, before)
+  logoutPending.value = false
+
+  clearIdentity()
+  pane.emitChanged()
+  await flush()
+  assert.equal(globalThis.__managerRefreshes, before)
+
+  acceptIdentity({
+    expires_at: '2099-01-01T00:00:00Z',
+    client_settings: { max_cols: 80, max_rows: 24 },
+  })
+  await flush()
+  pane.emitChanged()
+  await flush()
+  assert.equal(globalThis.__managerRefreshes, before + 1)
+
+  h.unmount()
+  pane.emitChanged()
+  await flush()
+  assert.equal(globalThis.__managerRefreshes, before + 1)
+})
+
+test('S7-3/D 同批 changed 只刷新一次，下一批次允许新的刷新', async (t) => {
+  const h = await mountHomePage(t)
+  click(button(h.root, '会话管理'))
+  await flush()
+  globalThis.__managerOpen(view('a'))
+  await flush()
+  globalThis.__managerOpen(view('b'))
+  await flush()
+  const [a, b] = h.instances
+  click(button(h.root, '会话管理'))
+  await flush()
+  const before = globalThis.__managerRefreshes
+
+  a.emitChanged()
+  b.emitChanged()
+  await flush()
+  assert.equal(globalThis.__managerRefreshes, before + 1)
+
+  a.emitChanged()
+  await flush()
+  assert.equal(globalThis.__managerRefreshes, before + 2)
+})
+
+test('S7-3/E 微任务执行前的视图、登出或身份变化会阻止刷新', async (t) => {
+  for (const mode of ['view', 'logout', 'identity']) {
+    await t.test(mode, async (t) => {
+      const h = await mountHomePage(t)
+      click(button(h.root, '会话管理'))
+      await flush()
+      globalThis.__managerOpen(view('a'))
+      await flush()
+      const pane = h.instances[0]
+      click(button(h.root, '会话管理'))
+      await flush()
+      const before = globalThis.__managerRefreshes
+
+      pane.emitChanged() // 已排入 microtask
+      if (mode === 'view') click(button(h.root, '返回服务器'))
+      if (mode === 'logout') logoutPending.value = true
+      if (mode === 'identity') clearIdentity()
+      await flush()
+      assert.equal(globalThis.__managerRefreshes, before)
+    })
+  }
+})
+
+test('S7-3/F 隐藏期间的变更只标记，进入列表只执行一次初始加载', async (t) => {
+  const h = await mountHomePage(t)
+  click(button(h.root, '会话管理'))
+  await flush()
+  globalThis.__managerOpen(view('a'))
+  await flush()
+  const pane = h.instances[0]
+  const refreshes = globalThis.__managerRefreshes
+  const loads = globalThis.__managerInitialLoads
+
+  // 打开后已定位到终端视图，changed 与协调器状态变化都发生在列表隐藏期间。
+  pane.emitChanged()
+  pane.closeHandle.markEnded()
+  await flush()
+  assert.equal(globalThis.__managerRefreshes, refreshes)
+  assert.equal(globalThis.__managerInitialLoads, loads)
+
+  click(button(h.root, '会话管理'))
+  await flush()
+  assert.equal(globalThis.__managerInitialLoads, loads + 1)
+  assert.equal(globalThis.__managerRefreshes, refreshes)
+})
+
+test('S7-3/G changed 与协调器状态变化合并为一次刷新，idle 不刷新', async (t) => {
+  const h = await mountHomePage(t)
+  click(button(h.root, '会话管理'))
+  await flush()
+  globalThis.__managerOpen(view('a'))
+  await flush()
+  const pane = h.instances[0]
+  click(button(h.root, '会话管理'))
+  await flush()
+
+  // 订阅建立时的 idle 快照不触发刷新。
+  assert.equal(globalThis.__managerRefreshes, 0)
+  const before = globalThis.__managerRefreshes
+
+  pane.emitChanged()
+  pane.closeHandle.markEnded()
+  await flush()
+  assert.equal(globalThis.__managerRefreshes, before + 1)
+})
+
+test('S7-3/H 非 idle 打开只创建只读候选 Pane，不 prepare/凭证/WS/takeover', async (t) => {
+  for (const state of ['pending', 'requested', 'unknown']) {
+    await t.test(state, async (t) => {
+      const pendingDelete = deferred()
+      const h = await mountHomePage(t, {
+        fetch: (record) => {
+          if (record.method !== 'DELETE') return undefined
+          if (state === 'pending') return pendingDelete.promise
+          if (state === 'requested')
+            return Response.json({ code: 0, message: 'ok', data: {} })
+          return Response.json(
+            { code: 'SERVER_UNAVAILABLE', message: '网关错误', data: {} },
+            { status: 503 },
+          )
+        },
+      })
+      click(button(h.root, '会话管理'))
+      await flush()
+      globalThis.__managerClose(view('a'))
+      await flush()
+      click(button(h.root, '确认关闭'))
+      await flush()
+      assert.equal(deleteRequests(h).length, 1)
+
+      globalThis.__managerOpen(view('a'))
+      await flush()
+      assert.equal(h.instances.length, 1)
+      assert.equal(h.instances[0].startMode, 'candidate')
+      assert.equal(h.instances[0].closeHandle.snapshot().state, state)
+      assert.equal(
+        h.requests.filter((item) => item.method === 'POST').length,
+        0,
+      )
+      assert.equal(credentialOrTakeoverRequests(h).length, 0)
+      assert.equal(globalThis.__webSocketCreates, 0)
+
+      if (state === 'pending') {
+        pendingDelete.resolve(
+          Response.json({ code: 0, message: 'ok', data: {} }),
+        )
+        await flush()
+      }
+    })
+  }
+
+  await t.test('ended', async (t) => {
+    const h = await mountHomePage(t)
+    click(button(h.root, '会话管理'))
+    await flush()
+    globalThis.__managerOpen(view('a'))
+    await flush()
+    const pane = h.instances[0]
+    pane.closeHandle.markEnded()
+    pane.emitClosed()
+    await flush()
+    assert.equal(h.instances.length, 1)
+
+    globalThis.__managerOpen(view('a'))
+    await flush()
+    assert.equal(h.instances.length, 1)
+    assert.match(texts(h.root, 'notice').join(), /已结束或正在完成关闭/)
+    assert.equal(deleteRequests(h).length, 0)
+    assert.equal(credentialOrTakeoverRequests(h).length, 0)
+    assert.equal(globalThis.__webSocketCreates, 0)
+  })
+})
+
+test('S7-3/I ended tombstone 行禁用打开并提示，普通刷新不清除', async (t) => {
+  const h = await mountManager(t, { endedIds: [view('a').id] })
+  await h.respond(0, success([view('a'), view('b')]))
+  const rows = () =>
+    findAll(byType(h.root, 'tbody')[0], (el) => el.type === 'tr')
+  const openButtons = () =>
+    byType(h.root, 'button').filter((el) => textContent(el) === '打开')
+
+  assert.match(textContent(rows()[0]), /已结束（不可接管）/)
+  assert.doesNotMatch(textContent(rows()[1]), /已结束/)
+  assert.equal(openButtons()[0].props.disabled, true)
+  assert.equal(openButtons()[1].props.disabled, false)
+  click(openButtons()[0])
+  assert.equal(h.opens.length, 0)
+  click(openButtons()[1])
+  assert.deepEqual(h.opens[0], view('b'))
+
+  // 服务端刷新仍返回旧行，tombstone 不清除，也不会新建连接请求。
+  click(button(h.root, '刷新'))
+  await h.respond(1, success([view('a'), view('b')]))
+  assert.equal(openButtons()[0].props.disabled, true)
+  assert.match(textContent(rows()[0]), /已结束（不可接管）/)
+  assert.equal(
+    h.requests.every((item) => (item.options.method ?? 'GET') === 'GET'),
+    true,
+  )
+})
+
+test('S7-3/J idle 打开保持 S6 候选流程，确认前零凭证/WS', async (t) => {
+  const h = await mountHomePage(t)
+  click(button(h.root, '会话管理'))
+  await flush()
+  globalThis.__managerOpen(view('a'))
+  await flush()
+
+  assert.equal(h.instances.length, 1)
+  assert.equal(h.instances[0].startMode, 'candidate')
+  assert.equal(h.instances[0].closeHandle.snapshot().state, 'idle')
+  assert.equal(
+    h.requests.filter((item) => item.method === 'POST').length,
+    0,
+  )
+  assert.equal(credentialOrTakeoverRequests(h).length, 0)
+  assert.equal(globalThis.__webSocketCreates, 0)
 })
