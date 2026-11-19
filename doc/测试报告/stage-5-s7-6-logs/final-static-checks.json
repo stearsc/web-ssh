@@ -1,0 +1,42 @@
+{
+  "diffCheckExitCode": 0,
+  "newTextWhitespaceChecks": [
+    {
+      "file": "frontend/tests/browser/stage-5-s7-6.mjs",
+      "exitCode": 1,
+      "whitespaceErrorOutput": ""
+    },
+    {
+      "file": "doc/测试报告/stage-5-s7-6-report.md",
+      "exitCode": 1,
+      "whitespaceErrorOutput": ""
+    },
+    {
+      "file": "doc/测试报告/stage-5-s7-6-logs/verification-results.json",
+      "exitCode": 1,
+      "whitespaceErrorOutput": ""
+    },
+    {
+      "file": "doc/测试报告/stage-5-s7-6-logs/browser-results.json",
+      "exitCode": 1,
+      "whitespaceErrorOutput": ""
+    }
+  ],
+  "protectedPathsUnchanged": [
+    "frontend/src",
+    "backend",
+    "doc/stage-5-implementation-plan.md",
+    "doc/stage-5-s7-design-decision-proposal.md",
+    "doc/stage-5-s6-design-plan.md",
+    "frontend/package.json",
+    "frontend/package-lock.json"
+  ],
+  "removedTestLines": 0,
+  "head": "c4a577a323f691b5e6b126dd63a3d19278665861",
+  "sha256": {
+    "frontend/tests/session-close.test.mjs": "967f3a71a64c9234a86a4c79d768e3accca115ac59aaa1e6d463a00029271e97",
+    "frontend/tests/terminal-pane.test.mjs": "2fadafeb9bd7a8f7182743153963adbaf95ea5bb053cc838a043d20f0a08e3ec",
+    "frontend/tests/browser/stage-5-s7-6.mjs": "0b7109db84563a8c85b7a013b5bc591673de8ebbe312d3f178cb191cf51730d0",
+    "doc/测试报告/stage-5-s7-6-report.md": "37c297ef5ef90f93527dcdcbb3fff78303f5ceee965577f5fbe50a773a2c32cf"
+  }
+}

@@ -1,0 +1,635 @@
+{
+  "environment": "Real Chromium + Vite + actual Vue SFC/router/xterm/client/coordinator; fixture HTTP and WS, no real backend/SSH",
+  "results": [
+    {
+      "name": "S7-B01 real component row-close -> pending -> Pane reopen -> cancel -> proxy unknown -> detail -> ended",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/auth/me",
+          "body": null,
+          "index": 0
+        },
+        {
+          "method": "GET",
+          "path": "/api/servers",
+          "body": null,
+          "index": 1
+        },
+        {
+          "method": "GET",
+          "path": "/api/sessions",
+          "body": null,
+          "index": 2
+        },
+        {
+          "method": "DELETE",
+          "path": "/api/sessions/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "body": {},
+          "index": 3
+        },
+        {
+          "method": "GET",
+          "path": "/api/sessions",
+          "body": null,
+          "index": 4
+        },
+        {
+          "method": "DELETE",
+          "path": "/api/sessions/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "body": {},
+          "index": 5
+        },
+        {
+          "method": "GET",
+          "path": "/api/sessions/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "body": null,
+          "index": 6
+        },
+        {
+          "method": "GET",
+          "path": "/api/sessions/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "body": null,
+          "index": 7
+        },
+        {
+          "method": "GET",
+          "path": "/api/sessions",
+          "body": null,
+          "index": 8
+        }
+      ],
+      "final": {
+        "panes": [],
+        "ws": [],
+        "xterms": 0,
+        "path": "/"
+      },
+      "errors": [],
+      "warnings": [],
+      "resourceErrors": [
+        {
+          "text": "Failed to load resource: the server responded with a status of 400 (Bad Request)",
+          "url": "http://127.0.0.1:42345/api/sessions/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        {
+          "text": "Failed to load resource: the server responded with a status of 404 (Not Found)",
+          "url": "http://127.0.0.1:42345/api/sessions/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "name": "S7-B02 candidate belongs to Pane after leaving list; confirm once, close stops fixture WS; two Sessions isolated",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/auth/me",
+          "body": null,
+          "index": 0
+        },
+        {
+          "method": "GET",
+          "path": "/api/servers",
+          "body": null,
+          "index": 1
+        },
+        {
+          "method": "GET",
+          "path": "/api/sessions",
+          "body": null,
+          "index": 2
+        },
+        {
+          "method": "GET",
+          "path": "/api/sessions/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "body": null,
+          "index": 3
+        },
+        {
+          "method": "POST",
+          "path": "/api/sessions/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/takeover",
+          "body": {
+            "mode": "takeover",
+            "expected_generation": 5
+          },
+          "index": 4
+        },
+        {
+          "method": "GET",
+          "path": "/api/sessions",
+          "body": null,
+          "index": 5
+        },
+        {
+          "method": "GET",
+          "path": "/api/sessions/cccccccccccccccccccccccccccccccc",
+          "body": null,
+          "index": 6
+        },
+        {
+          "method": "GET",
+          "path": "/api/sessions",
+          "body": null,
+          "index": 7
+        },
+        {
+          "method": "DELETE",
+          "path": "/api/sessions/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "body": {},
+          "index": 8
+        },
+        {
+          "method": "GET",
+          "path": "/api/sessions",
+          "body": null,
+          "index": 9
+        },
+        {
+          "method": "DELETE",
+          "path": "/api/sessions/cccccccccccccccccccccccccccccccc",
+          "body": {},
+          "index": 10
+        }
+      ],
+      "final": {
+        "panes": [
+          {
+            "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "life": "ready",
+            "phase": "stopped",
+            "takeover": "idle",
+            "close": "requested",
+            "ended": false,
+            "active": false
+          },
+          {
+            "id": "cccccccccccccccccccccccccccccccc",
+            "life": "ready",
+            "phase": "idle",
+            "takeover": "idle",
+            "close": "requested",
+            "ended": false,
+            "active": true
+          }
+        ],
+        "ws": [
+          {
+            "url": "ws://127.0.0.1:42345/ws/sessions/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "closeCalls": 1,
+            "closed": 1,
+            "messages": [
+              "{\"type\":\"bind_success\",\"binding_generation\":6,\"replay_start_offset\":0,\"replay_end_offset\":0,\"current_cols\":80,\"current_rows\":24}"
+            ]
+          }
+        ],
+        "xterms": 2,
+        "path": "/"
+      },
+      "errors": [],
+      "warnings": [],
+      "resourceErrors": []
+    },
+    {
+      "name": "S7-B03 real router logout failure with pending DELETE, late AUTH_REQUIRED, retry success",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/auth/me",
+          "body": null,
+          "index": 0
+        },
+        {
+          "method": "GET",
+          "path": "/api/servers",
+          "body": null,
+          "index": 1
+        },
+        {
+          "method": "GET",
+          "path": "/api/sessions",
+          "body": null,
+          "index": 2
+        },
+        {
+          "method": "GET",
+          "path": "/api/sessions/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "body": null,
+          "index": 3
+        },
+        {
+          "method": "POST",
+          "path": "/api/sessions/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/takeover",
+          "body": {
+            "mode": "takeover",
+            "expected_generation": 5
+          },
+          "index": 4
+        },
+        {
+          "method": "GET",
+          "path": "/api/sessions",
+          "body": null,
+          "index": 5
+        },
+        {
+          "method": "DELETE",
+          "path": "/api/sessions/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "body": {},
+          "index": 6
+        },
+        {
+          "method": "GET",
+          "path": "/api/sessions",
+          "body": null,
+          "index": 7
+        },
+        {
+          "method": "POST",
+          "path": "/api/auth/logout",
+          "body": {},
+          "index": 8
+        },
+        {
+          "method": "POST",
+          "path": "/api/auth/logout",
+          "body": {},
+          "index": 9
+        },
+        {
+          "method": "GET",
+          "path": "/api/auth/me",
+          "body": null,
+          "index": 10
+        }
+      ],
+      "final": {
+        "panes": [],
+        "ws": [
+          {
+            "url": "ws://127.0.0.1:42345/ws/sessions/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "closeCalls": 1,
+            "closed": 1,
+            "messages": [
+              "{\"type\":\"bind_success\",\"binding_generation\":6,\"replay_start_offset\":0,\"replay_end_offset\":0,\"current_cols\":80,\"current_rows\":24}"
+            ]
+          }
+        ],
+        "xterms": 0,
+        "path": "/login"
+      },
+      "errors": [],
+      "warnings": [],
+      "resourceErrors": [
+        {
+          "text": "Failed to load resource: the server responded with a status of 500 (Internal Server Error)",
+          "url": "http://127.0.0.1:42345/api/auth/logout"
+        },
+        {
+          "text": "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+          "url": "http://127.0.0.1:42345/api/auth/me"
+        }
+      ]
+    },
+    {
+      "name": "S7-B04 rapid page reentry with idle+CLOSING / network error never confirms or prepares",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/auth/me",
+          "body": null,
+          "index": 0
+        },
+        {
+          "method": "GET",
+          "path": "/api/servers",
+          "body": null,
+          "index": 1
+        },
+        {
+          "method": "GET",
+          "path": "/api/sessions",
+          "body": null,
+          "index": 2
+        },
+        {
+          "method": "GET",
+          "path": "/api/auth/me",
+          "body": null,
+          "index": 3
+        },
+        {
+          "method": "GET",
+          "path": "/api/servers",
+          "body": null,
+          "index": 4
+        },
+        {
+          "method": "GET",
+          "path": "/api/sessions",
+          "body": null,
+          "index": 5
+        },
+        {
+          "method": "GET",
+          "path": "/api/sessions/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "body": null,
+          "index": 6
+        },
+        {
+          "method": "GET",
+          "path": "/api/auth/me",
+          "body": null,
+          "index": 7
+        },
+        {
+          "method": "GET",
+          "path": "/api/servers",
+          "body": null,
+          "index": 8
+        },
+        {
+          "method": "GET",
+          "path": "/api/sessions",
+          "body": null,
+          "index": 9
+        },
+        {
+          "method": "GET",
+          "path": "/api/sessions/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "body": null,
+          "index": 10
+        }
+      ],
+      "final": {
+        "panes": [
+          {
+            "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "life": "ready",
+            "phase": "idle",
+            "takeover": "idle",
+            "close": "idle",
+            "ended": false,
+            "active": true
+          }
+        ],
+        "ws": [],
+        "xterms": 1,
+        "path": "/"
+      },
+      "errors": [],
+      "warnings": [],
+      "resourceErrors": [
+        {
+          "text": "Failed to load resource: net::ERR_FAILED",
+          "url": "http://127.0.0.1:42345/api/sessions/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "name": "S7-B05 pending candidate detail survives list exit; whole page exit discards old query, new Pane separate",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/auth/me",
+          "body": null,
+          "index": 0
+        },
+        {
+          "method": "GET",
+          "path": "/api/servers",
+          "body": null,
+          "index": 1
+        },
+        {
+          "method": "GET",
+          "path": "/api/sessions",
+          "body": null,
+          "index": 2
+        },
+        {
+          "method": "GET",
+          "path": "/api/sessions/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "body": null,
+          "index": 3
+        },
+        {
+          "method": "GET",
+          "path": "/api/sessions",
+          "body": null,
+          "index": 4
+        },
+        {
+          "method": "GET",
+          "path": "/api/auth/me",
+          "body": null,
+          "index": 5
+        },
+        {
+          "method": "GET",
+          "path": "/api/servers",
+          "body": null,
+          "index": 6
+        },
+        {
+          "method": "GET",
+          "path": "/api/sessions",
+          "body": null,
+          "index": 7
+        },
+        {
+          "method": "GET",
+          "path": "/api/sessions/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "body": null,
+          "index": 8
+        },
+        {
+          "method": "GET",
+          "path": "/api/auth/me",
+          "body": null,
+          "index": 9
+        },
+        {
+          "method": "GET",
+          "path": "/api/servers",
+          "body": null,
+          "index": 10
+        },
+        {
+          "method": "GET",
+          "path": "/api/sessions",
+          "body": null,
+          "index": 11
+        },
+        {
+          "method": "GET",
+          "path": "/api/sessions/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "body": null,
+          "index": 12
+        }
+      ],
+      "final": {
+        "panes": [
+          {
+            "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "life": "ready",
+            "phase": "idle",
+            "takeover": "confirming",
+            "close": "idle",
+            "ended": false,
+            "active": true
+          }
+        ],
+        "ws": [],
+        "xterms": 1,
+        "path": "/"
+      },
+      "errors": [],
+      "warnings": [],
+      "resourceErrors": []
+    },
+    {
+      "name": "S7-B06 failed takeover retries attach with same generation; real xterm output/resize retained",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/auth/me",
+          "body": null,
+          "index": 0
+        },
+        {
+          "method": "GET",
+          "path": "/api/servers",
+          "body": null,
+          "index": 1
+        },
+        {
+          "method": "GET",
+          "path": "/api/sessions",
+          "body": null,
+          "index": 2
+        },
+        {
+          "method": "GET",
+          "path": "/api/sessions/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "body": null,
+          "index": 3
+        },
+        {
+          "method": "POST",
+          "path": "/api/sessions/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/takeover",
+          "body": {
+            "mode": "takeover",
+            "expected_generation": 5
+          },
+          "index": 4
+        },
+        {
+          "method": "POST",
+          "path": "/api/sessions/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/takeover",
+          "body": {
+            "mode": "attach",
+            "expected_generation": 5
+          },
+          "index": 5
+        }
+      ],
+      "final": {
+        "panes": [],
+        "ws": [
+          {
+            "url": "ws://127.0.0.1:42345/ws/sessions/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "closeCalls": 1,
+            "closed": 1,
+            "messages": [
+              "{\"type\":\"bind_success\",\"binding_generation\":6,\"replay_start_offset\":0,\"replay_end_offset\":0,\"current_cols\":80,\"current_rows\":24}"
+            ]
+          }
+        ],
+        "xterms": 0,
+        "path": "/"
+      },
+      "errors": [],
+      "warnings": [],
+      "resourceErrors": [
+        {
+          "text": "Failed to load resource: the server responded with a status of 409 (Conflict)",
+          "url": "http://127.0.0.1:42345/api/sessions/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/takeover"
+        }
+      ]
+    },
+    {
+      "name": "S7-B07 old DELETE across page reload cannot restore local intent or automatically takeover",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/auth/me",
+          "body": null,
+          "index": 0
+        },
+        {
+          "method": "GET",
+          "path": "/api/servers",
+          "body": null,
+          "index": 1
+        },
+        {
+          "method": "GET",
+          "path": "/api/sessions",
+          "body": null,
+          "index": 2
+        },
+        {
+          "method": "DELETE",
+          "path": "/api/sessions/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "body": {},
+          "index": 3
+        },
+        {
+          "method": "GET",
+          "path": "/api/auth/me",
+          "body": null,
+          "index": 4
+        },
+        {
+          "method": "GET",
+          "path": "/api/servers",
+          "body": null,
+          "index": 5
+        },
+        {
+          "method": "GET",
+          "path": "/api/sessions",
+          "body": null,
+          "index": 6
+        },
+        {
+          "method": "GET",
+          "path": "/api/sessions/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "body": null,
+          "index": 7
+        }
+      ],
+      "final": {
+        "panes": [
+          {
+            "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "life": "ready",
+            "phase": "idle",
+            "takeover": "idle",
+            "close": "idle",
+            "ended": false,
+            "active": true
+          }
+        ],
+        "ws": [],
+        "xterms": 1,
+        "path": "/"
+      },
+      "errors": [],
+      "warnings": [],
+      "resourceErrors": []
+    }
+  ],
+  "browser": "159.0.8154.6",
+  "node": "v24.21.0"
+}

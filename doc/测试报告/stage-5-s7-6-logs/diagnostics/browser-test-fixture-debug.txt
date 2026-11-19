@@ -1,0 +1,72 @@
+✔ S7-B01 real component row-close -> pending -> Pane reopen -> cancel -> proxy unknown -> detail -> ended (2447.172928ms)
+✖ S7-B02 candidate belongs to Pane after leaving list; confirm once, close stops native WS; two Sessions isolated (10347.537854ms)
+✖ S7-B03 real router logout failure with pending DELETE, late AUTH_REQUIRED, retry success (10766.651114ms)
+✖ S7-B04 rapid page reentry with idle+CLOSING / network error never confirms or prepares (10731.682479ms)
+✔ S7-B05 pending candidate detail survives list exit; whole page exit discards old query, new Pane separate (925.133251ms)
+ℹ tests 5
+ℹ suites 0
+ℹ pass 2
+ℹ fail 3
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 35725.438629
+
+✖ failing tests:
+
+test at tests/browser/stage-5-s7-6.mjs:144:1
+✖ S7-B02 candidate belongs to Pane after leaving list; confirm once, close stops native WS; two Sessions isolated (10347.537854ms)
+  locator.click: Timeout 10000ms exceeded.
+  Call log:
+  [2m  - waiting for getByRole('button', { name: '会话管理', exact: true })[22m
+  [2m    - locator resolved to <button> 会话管理 </button>[22m
+  [2m  - attempting click action[22m
+  [2m    2 × waiting for element to be visible, enabled and stable[22m
+  [2m      - element is visible, enabled and stable[22m
+  [2m      - scrolling into view if needed[22m
+  [2m      - done scrolling[22m
+  [2m      - <dialog open="" data-v-b338a657="" aria-labelledby="modal-title">…</dialog> from <main class="main">…</main> subtree intercepts pointer events[22m
+  [2m    - retrying click action[22m
+  [2m    - waiting 20ms[22m
+  [2m    2 × waiting for element to be visible, enabled and stable[22m
+  [2m      - element is visible, enabled and stable[22m
+  [2m      - scrolling into view if needed[22m
+  [2m      - done scrolling[22m
+  [2m      - <dialog open="" data-v-b338a657="" aria-labelledby="modal-title">…</dialog> from <main class="main">…</main> subtree intercepts pointer events[22m
+  [2m    - retrying click action[22m
+  [2m      - waiting 100ms[22m
+  [2m    19 × waiting for element to be visible, enabled and stable[22m
+  [2m       - element is visible, enabled and stable[22m
+  [2m       - scrolling into view if needed[22m
+  [2m       - done scrolling[22m
+  [2m       - <dialog open="" data-v-b338a657="" aria-labelledby="modal-title">…</dialog> from <main class="main">…</main> subtree intercepts pointer events[22m
+  [2m     - retrying click action[22m
+  [2m       - waiting 500ms[22m
+  
+      at Object.manager (/home/x/workspaces/web-ssh/frontend/tests/browser/stage-5-s7-6.mjs:85:83)
+      at TestContext.<anonymous> (/home/x/workspaces/web-ssh/frontend/tests/browser/stage-5-s7-6.mjs:150:11) {
+    name: 'TimeoutError',
+    log: [ "  - waiting for getByRole('button', { name: '会话管理', exact: true })", '    - locator resolved to <button> 会话管理 </button>', '  - attempting click action', '    2 × waiting for element to be visible, enabled and stable', '      - element is visible, enabled and stable', '      - scrolling into view if needed', '      - done scrolling', '      - <dialog open="" data-v-b338a657="" aria-labelledby="modal-title">…</dialog> from <main class="main">…</main> subtree intercepts pointer events', '    - retrying click action', '    - waiting 20ms', '    2 × waiting for element to be visible, enabled and stable', '      - element is visible, enabled and stable', '      - scrolling into view if needed', '      - done scrolling', '      - <dialog open="" data-v-b338a657="" aria-labelledby="modal-title">…</dialog> from <main class="main">…</main> subtree intercepts pointer events', '    - retrying click action', '      - waiting 100ms', '    19 × waiting for element to be visible, enabled and stable', '       - element is visible, enabled and stable', '       - scrolling into view if needed', '       - done scrolling', '       - <dialog open="" data-v-b338a657="" aria-labelledby="modal-title">…</dialog> from <main class="main">…</main> subtree intercepts pointer events', '     - retrying click action', '       - waiting 500ms' ]
+  }
+
+test at tests/browser/stage-5-s7-6.mjs:174:1
+✖ S7-B03 real router logout failure with pending DELETE, late AUTH_REQUIRED, retry success (10766.651114ms)
+  page.waitForURL: Timeout 10000ms exceeded.
+  =========================== logs ===========================
+  waiting for navigation to "**/login" until "load"
+  ============================================================
+      at TestContext.<anonymous> (/home/x/workspaces/web-ssh/frontend/tests/browser/stage-5-s7-6.mjs:194:16) {
+    name: 'TimeoutError',
+    log: []
+  }
+
+test at tests/browser/stage-5-s7-6.mjs:203:1
+✖ S7-B04 rapid page reentry with idle+CLOSING / network error never confirms or prepares (10731.682479ms)
+  locator.waitFor: Timeout 10000ms exceeded.
+  Call log:
+  [2m  - waiting for getByText('无法连接服务，请稍后重试') to be visible[22m
+  
+      at TestContext.<anonymous> (/home/x/workspaces/web-ssh/frontend/tests/browser/stage-5-s7-6.mjs:209:94) {
+    name: 'TimeoutError',
+    log: [ "  - waiting for getByText('无法连接服务，请稍后重试') to be visible" ]
+  }

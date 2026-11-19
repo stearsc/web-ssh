@@ -17,6 +17,8 @@ import {
 } from '../src/stores/auth.ts'
 import { CloseCoordinator } from '../src/session/close.ts'
 import { TerminalClient } from '../src/terminal/client.ts'
+import { SessionRecovery } from '../src/terminal/recovery.ts'
+import { SessionTakeover } from '../src/terminal/takeover.ts'
 
 // 挂载实际 SFC 和 TerminalClient，仅替换浏览器与 xterm 外部接口。
 const sourceURL = new URL(
@@ -1941,4 +1943,166 @@ test('S7-5 recovery retry_wait 时卸载：不自动恢复', async (t) => {
   assert.equal(h.sockets.length, 1)
   assert.equal(takeoverPosts(h).length, 0)
   assert.equal(h.closeHandle.snapshot().state, 'idle')
+})
+
+
+test('S7-6/C15 stop、重复 close 与卸载共享清理，旧 socket/write 回调不复活', async (t) => {
+  const h = await mountPane(t, { Terminal: HeldWriteTerminal })
+  const socket = h.sockets[0]
+  bind(socket, 1)
+  socket.onmessage({ data: Uint8Array.of(65).buffer })
+  await flush()
+  const terminal = h.terminalInstances[0]
+  assert.equal(typeof terminal.pendingWrite, 'function')
+  const old = { message: socket.onmessage, close: socket.onclose, open: socket.onopen }
+  const closed = t.mock.method(socket, 'close')
+  const stopping = h.pane.stop()
+  const closing = h.pane.close()
+  assert.equal(h.pane.close(), closing)
+  const events = { ...h.events }
+  const requests = h.requests.length
+  h.unmount()
+  terminal.releaseWrite()
+  await Promise.all([stopping, closing])
+  old.open()
+  old.close({ code: 1006 })
+  old.message({ data: JSON.stringify({ type: 'closed', message: 'late closed' }) })
+  await flush()
+  assert.equal(closed.mock.callCount(), 1)
+  assert.equal(terminal.disposed, 1)
+  assert.ok(terminal.subscriptions.every(s => s.disposed === 1))
+  assert.ok(h.observers.every(o => o.disconnected >= 1))
+  assert.equal(h.requests.length, requests)
+  assert.equal(h.sockets.length, 1)
+  assert.equal(h.events.changed, events.changed)
+  // Vue suppresses events after unmount; resource cleanup still completes once.
+  assert.equal(h.events.closed, 0)
+  assert.equal(h.closeHandle.snapshot().state, 'idle')
+  assert.equal(h.requests.filter(r => r.method === 'DELETE').length, 0)
+})
+
+test('S7-6/C06 DELETE 完成与 Pane close 同步交错，不向已退订 Pane 发布', async (t) => {
+  for (const outcome of ['accepted', 'lost']) {
+    await t.test(outcome, async (t) => {
+      const pending = deferredValue()
+      const h = await mountPane(t, { fetch: r => r.method === 'DELETE' ? pending.promise : undefined })
+      bind(h.sockets[0], 1)
+      click(button(h.root, '关闭 SSH 会话'))
+      await flush()
+      click(button(h.root, '确认关闭'))
+      assert.equal(h.closeHandle.snapshot().state, 'pending')
+      const signal = h.requests.find(r => r.method === 'DELETE').signal
+      const closing = h.pane.close()
+      const changed = h.events.changed
+      if (outcome === 'accepted') pending.resolve(Response.json({ code: 0, message: 'ok', data: {} }))
+      else pending.reject(new TypeError('lost response'))
+      await closing
+      await flush()
+      assert.equal(signal.aborted, false)
+      assert.equal(h.closeHandle.snapshot().state, outcome === 'accepted' ? 'requested' : 'unknown')
+      assert.equal(h.events.changed, changed)
+      assert.equal(h.events.closed, 1)
+      assert.equal(h.requests.filter(r => r.method === 'DELETE').length, 1)
+      assert.equal(h.sockets.length, 1)
+      assert.equal(h.terminalInstances[0].disposed, 1)
+    })
+  }
+})
+
+
+test('S7-6/C29 idle 候选详情准入：有效状态需确认，NOT_FOUND/非法详情拒绝且零凭证', async (t) => {
+  for (const status of ['CONNECTED', 'DISCONNECTED', 'NOT_FOUND', 'INVALID']) {
+    await t.test(status, async (t) => {
+      const h = await mountPane(t, {
+        startMode: 'candidate',
+        fetch: r => {
+          if (r.method !== 'GET') return undefined
+          if (status === 'NOT_FOUND')
+            return Response.json({ code: 'SESSION_NOT_FOUND', message: '不存在', data: {} }, { status: 404 })
+          if (status === 'INVALID')
+            return Response.json({ code: 0, message: 'ok', data: { status: 'SURPRISE' } })
+          return Response.json({ code: 0, message: 'ok', data: detail({
+            status,
+            disconnected_at: status === 'DISCONNECTED' ? session.created_at : null,
+            offline_expires_at: status === 'DISCONNECTED' ? '2099-01-01T00:00:00Z' : null,
+            remaining_seconds: status === 'DISCONNECTED' ? 300 : null,
+          }) })
+        },
+      })
+      assert.equal(h.events.ready.length, 1)
+      assert.equal(h.requests.length, 1)
+      assert.equal(h.requests[0].method, 'GET')
+      assert.equal(h.sockets.length, 0)
+      assert.equal(takeoverPosts(h).length, 0)
+      const confirm = button(h.root, '确认接管')
+      if (['CONNECTED', 'DISCONNECTED'].includes(status)) {
+        assert.ok(confirm)
+        assert.equal(confirm.props.disabled, false)
+      } else assert.equal(confirm, undefined)
+      assert.equal(h.closeHandle.snapshot().state, status === 'NOT_FOUND' ? 'ended' : 'idle')
+      assert.doesNotMatch(textContent(h.root), /资源已回收完成/)
+    })
+  }
+})
+
+
+test('S7-6/C23 takeover、recovery、client 同步失效全部先于 DELETE', async (t) => {
+  const order = []
+  for (const [prototype, method, label] of [
+    [SessionTakeover.prototype, 'invalidate', 'takeover.invalidate'],
+    [SessionRecovery.prototype, 'stop', 'recovery.stop'],
+    [TerminalClient.prototype, 'stop', 'client.stop'],
+  ]) {
+    const original = prototype[method]
+    t.mock.method(prototype, method, function (...args) {
+      order.push(label)
+      return original.apply(this, args)
+    })
+  }
+  const h = await mountPane(t, { fetch: r => {
+    if (r.method === 'DELETE') order.push('DELETE')
+  } })
+  bind(h.sockets[0], 1)
+  click(button(h.root, '关闭 SSH 会话'))
+  await flush()
+  order.length = 0
+  click(button(h.root, '确认关闭'))
+  assert.deepEqual(order, ['takeover.invalidate', 'recovery.stop', 'client.stop', 'DELETE'])
+  assert.equal(h.closeHandle.snapshot().state, 'pending')
+  await flush()
+  assert.equal(h.closeHandle.snapshot().state, 'requested')
+})
+
+test('S7-6/C26 真实旧 Pane closed 后才能注册新 Pane，旧注销不移除新 stop', async (t) => {
+  const coordinator = new CloseCoordinator()
+  const unregisters = [], stopCalls = []
+  const original = coordinator.registerLocalStop
+  t.mock.method(coordinator, 'registerLocalStop', function (id, stop) {
+    const index = stopCalls.push(0) - 1
+    const unregister = original.call(this, id, () => {
+      stopCalls[index]++
+      return stop()
+    })
+    unregisters.push(unregister)
+    return unregister
+  })
+  const a = await mountPane(t, { closeCoordinator: coordinator, startMode: 'candidate' })
+  assert.equal(a.events.closed, 0)
+  await a.pane.close()
+  assert.equal(a.events.closed, 1)
+  assert.equal(a.terminalInstances[0].disposed, 1)
+  a.unmount()
+  const b = await mountPane(t, { closeCoordinator: coordinator, startMode: 'candidate' })
+  assert.equal(b.events.ready.length, 1)
+  assert.equal(unregisters.length, 2)
+  unregisters[0]() // 重复旧注销仍必须为空操作，不得清掉 B 的新注册。
+  await b.closeHandle.requestClose()
+  await flush()
+  assert.deepEqual(stopCalls, [0, 1])
+  assert.equal(b.requests.filter(r => r.method === 'DELETE').length, 1)
+  assert.equal(b.sockets.length, 0)
+  assert.equal(b.closeHandle.snapshot().state, 'requested')
+  // Two mounts nest browser-global mocks; finish B before A restores its globals.
+  await b.pane.close()
+  b.unmount()
 })

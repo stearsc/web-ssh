@@ -400,6 +400,15 @@ test('S7-C26 旧注销不影响新注册；S7-C27 重复注销与 dispose 后注
   })
   unregisterAfterDispose()
   assert.equal(disposedCalls, 0)
+  let disposedPublications = 0
+  const unsubscribeAfterDispose = handle.subscribe(() => disposedPublications++)
+  await handle.requestClose()
+  await handle.retryClose()
+  await handle.refreshClose()
+  unsubscribeAfterDispose()
+  assert.equal(disposedCalls, 0)
+  assert.equal(disposedPublications, 0)
+  assert.equal(handle.snapshot().disposed, true)
 })
 
 test('S7-C28 ended 只由服务端证据产生：DELETE 200 不置 ended', async (t) => {
@@ -569,4 +578,74 @@ test('通用 request 保持 response.ok 语义：其他 2xx 仍按原行为成�
     Response.json({ code: 0, message: 'ok', data: { value: 1 } }, { status: 201 }),
   )
   assert.deepEqual(await request('/api/anything', 'POST', {}), { value: 1 })
+})
+
+
+test('S7-6/C29 requested 与 unknown 的 CONNECTING、非法详情和网络失败保留关闭意图', async (t) => {
+  for (const initial of ['requested', 'unknown']) {
+    for (const result of ['CONNECTING', 'invalid', 'network']) {
+      await t.test(`${initial} + ${result}`, async (t) => {
+        const coordinator = new CloseCoordinator()
+        t.after(() => coordinator.dispose())
+        const handle = coordinator.handle(ID)
+        const requests = []
+        installFetch(t, async (path, init) => {
+          requests.push({ path, method: init.method, body: init.body })
+          if (init.method === 'DELETE') {
+            if (initial === 'unknown') throw new TypeError('response lost')
+            return envelope(0)
+          }
+          if (result === 'network') throw new TypeError('detail unavailable')
+          if (result === 'invalid') return envelope(0, 'ok', { status: 'SURPRISE' })
+          return detail('CONNECTING')
+        })
+        await handle.requestClose()
+        await handle.refreshClose()
+        assert.equal(handle.snapshot().state, initial)
+        assert.equal(handle.snapshot().serverStatus, result === 'CONNECTING' ? 'CONNECTING' : null)
+        assert.deepEqual(requests.map(r => [r.method, r.path]), [
+          ['DELETE', `/api/sessions/${ID}`], ['GET', `/api/sessions/${ID}`],
+        ])
+        assert.equal(requests[0].body, '{}')
+        assert.notEqual(handle.snapshot().state, 'idle')
+        assert.notEqual(handle.snapshot().state, 'failed')
+      })
+    }
+  }
+})
+
+test('S7-6/C07/C18/C22 ended 抢占在途重试，旧 DELETE 和详情均零迟到发布', async (t) => {
+  const coordinator = new CloseCoordinator()
+  t.after(() => coordinator.dispose())
+  const handle = coordinator.handle(ID)
+  const query = deferred(), retry = deferred()
+  const requests = []
+  installFetch(t, async (path, init) => {
+    requests.push({ path, ...init })
+    if (init.method === 'GET') return query.promise
+    return requests.length === 1 ? envelope(0) : retry.promise
+  })
+  const published = []
+  handle.subscribe(snapshot => published.push(snapshot))
+  await handle.requestClose()
+  const refreshing = handle.refreshClose()
+  const retrying = handle.retryClose()
+  assert.equal(requests[1].signal.aborted, true)
+  assert.equal(handle.snapshot().state, 'pending')
+  handle.markEnded()
+  handle.markEnded()
+  const ended = handle.snapshot(), publications = published.length
+  assert.equal(requests[2].signal.aborted, true)
+  query.reject(new TypeError('late query rejection'))
+  retry.resolve(envelope(0))
+  await Promise.all([refreshing, retrying])
+  await flush()
+  assert.deepEqual(handle.snapshot(), ended)
+  assert.equal(published.length, publications)
+  assert.equal(published.filter(s => s.state === 'ended').length, 1)
+  assert.deepEqual(requests.map(r => r.method), ['DELETE', 'GET', 'DELETE'])
+  await handle.requestClose()
+  await handle.retryClose()
+  await handle.refreshClose()
+  assert.equal(requests.length, 3)
 })

@@ -1,0 +1,41 @@
+[
+  {
+    "command": "node -v",
+    "directory": "/home/x/workspaces/web-ssh/frontend",
+    "exitCode": 0,
+    "log": "node-version.log"
+  },
+  {
+    "command": "npm test",
+    "directory": "/home/x/workspaces/web-ssh/frontend",
+    "exitCode": 0,
+    "log": "npm-test.log"
+  },
+  {
+    "command": "npm run typecheck",
+    "directory": "/home/x/workspaces/web-ssh/frontend",
+    "exitCode": 0,
+    "log": "typecheck.log"
+  },
+  {
+    "command": "npm run build",
+    "directory": "/home/x/workspaces/web-ssh/frontend",
+    "exitCode": 0,
+    "log": "build.log"
+  },
+  {
+    "command": "git diff --check",
+    "directory": "/home/x/workspaces/web-ssh",
+    "exitCode": 0,
+    "log": "diff-check.log"
+  },
+  {
+    "command": "node --test tests/browser/stage-5-s7-6.mjs",
+    "directory": "/home/x/workspaces/web-ssh/frontend",
+    "exitCode": 0,
+    "log": "browser-test.log",
+    "tests": 7,
+    "passed": 7,
+    "failed": 0
+  }
+]
