@@ -1,12 +1,12 @@
-# Web SSH 第五阶段 S7 设计裁决准备与任务计划草案（第三轮定点修订）
+# Web SSH 第五阶段 S7 设计裁决与实施计划（S7-0 冻结版）
 
-> 状态：提案稿。本文中的推荐方案、状态机、任务拆分和验收标准均 **待用户裁决，不得视为已冻结设计**。
+> 状态：S7-0 冻结稿。D1、D1-A～D1-E、D2-1、D2-2、D3-1、D4-1、D5-1、D5-2 已由用户明确接受；本文作为后续 S7-1 实施与审查的冻结依据。S7-1 尚未获得编码授权。
 >
-> 本轮是第三轮定点修订：在保留第二轮「HomePage 持有 CloseCoordinator、Pane 只负责关闭 UI」整体架构的前提下，修复关闭状态查询、Session 结束判定、页面刷新后的候选 Pane 规则、关闭与 takeover/recovery 的同步互斥、DELETE 错误分类，并整理裁决问题。没有修改任何生产代码、测试、配置或既有冻结文档，没有开始 S7 编码。
+> 本轮执行 S7-0：只修订 S7 设计提案与实施计划，把已接受裁决、阶段边界和验收条件写入正式文档；没有修改任何生产代码、测试、配置或 S6 冻结文档，没有开始 S7-1 编码。
 
 ## 0. 本轮范围与修订摘要
 
-### 0.1 第二轮遗留的问题
+### 0.1 第二轮遗留的问题（历史，已解决）
 
 1. **BLOCKER：`refreshClose()` 可能错误解除 unknown/requested/failed。** 第二轮只规定了 CLOSING 保持、SESSION_NOT_FOUND 转 ended、网络错误保持，没有规定详情返回 CONNECTED/DISCONNECTED 时的行为。若据此回到 idle，就会重新放开 takeover/recovery，破坏「关闭意图优先」。
 2. **BLOCKER：`ended` 判定过宽。** 第二轮把「连接任务以 `closed` 停止」与「服务端 SESSION_NOT_FOUND」并列为 ended 依据，容易把本地 Pane 关闭、WebSocket 断开、本地 stop 误当成远端 Session 结束，从而提前释放 Session ID 预占。
@@ -16,26 +16,28 @@
 6. **MAJOR：S7-1/S7-2 边界需要再确认。** 总体拆分合理，但必须写明 S7-1 是完整强耦合单元，S7-2 只加入口。
 7. **MINOR：裁决问题过于零散。** 第二轮的 D1-1 至 D1-8 本质是一组所有权决策，应合并为一个整体决策。
 
-### 0.2 本轮修订结论（待用户裁决）
+### 0.2 本轮修订结论（S7-0 已接受）
 
 - 关闭状态拆成两个维度：**本地关闭意图**（协调器状态）与**服务端详情状态**（GET 结果）。详情 GET 永远不能把非 idle 的关闭意图改回 idle。
-- `ended` 只接受两类服务端权威证据：详情 `SESSION_NOT_FOUND`，或服务端 WebSocket `closed` 控制消息。本地关闭标签、本地 client 关闭、WebSocket 断开、连接任务停止、DELETE 200 都不算。
+- `ended` 只接受两类服务端权威证据：详情 `SESSION_NOT_FOUND`，或服务端 WebSocket `closed` 控制消息；其含义是「远端已不可接管」，不宣称服务端资源已经回收完成。本地关闭标签、本地 client 关闭、WebSocket 断开、连接任务停止、DELETE 200 都不算。
 - 页面刷新后按 S6 方案 B 创建候选 Pane；详情查询失败时保留候选 Pane 并显示错误，不显示接管确认、不申请凭证、不创建 WebSocket。
 - 关闭确认采用「同步准入 → 同步本地 stop → 异步 DELETE」的顺序；协调器只提供关闭准入，不复制 takeover/recovery 状态机。
 - DELETE 结果按后端真实执行顺序分类：只有能证明「请求在 `Sessions.Close` 之前被拒绝」的错误才进入 `failed`，其余一律 `unknown`。
 - 新增 `queryEpoch` 隔离详情 GET 与 DELETE/重试的并发；不使用 `updatedAt` 做请求身份判断。
 - 第 18 节的 D1 合并为一个整体决策，D2 行级关闭入口保持独立。
 
+上述结论已在 S7-0 全部接受；正式裁决记录见 §20。
+
 ### 0.3 本轮允许与禁止
 
-- 允许：读取当前提案、冻结文档和代码；分析替代方案；只修改 `doc/stage-5-s7-design-decision-proposal.md`；执行文档 diff 与一致性检查。
-- 禁止且未执行：修改生产代码、测试、其他文档、S5/S6/第四阶段冻结契约、API、配置、依赖或后端；`git add`、commit、push、merge、rebase、reset、clean；切换分支；部署；连接真实 SSH 或生产环境；开始 S7-0 之后的编码；进入 S8。
+- 允许：读取 S7 提案、实施计划、冻结文档和代码；修改 `doc/stage-5-s7-design-decision-proposal.md` 与 `doc/stage-5-implementation-plan.md`；执行文档 diff 与一致性检查。
+- 禁止且未执行：修改生产代码、测试、S6 冻结文档、S5/第四阶段冻结契约、API、配置、依赖或后端；`git add`、commit、push、merge、rebase、reset、clean；切换分支；部署；连接真实 SSH 或生产环境；开始 S7-1 编码；进入 S8。
 
-### 0.4 第四轮定点修订（本轮）
+### 0.4 第四轮定点修订（历史）
 
-本轮只处理五类问题，不改变第二轮/第三轮的所有权架构，也不整体重写文档：
+该轮只处理五类问题，不改变第二轮/第三轮的所有权架构，也不整体重写文档：
 
-| 问题 | 本轮结论 |
+| 问题 | 该轮结论 |
 |---|---|
 | `closed` 能否作为 `ended` 证据 | 可以保留，但依据必须写成「Session 已进入不可逆 CLOSING」，不是「Binding 结束」；补充完整证据链、限制与反例 |
 | localStop 同步保证 | 明确同步失效必须发生在返回 Promise 之前；核实当前 `Pane.stop()` 已满足；补充 throw/reject、注册 token 与注销边界 |
@@ -43,23 +45,50 @@
 | §18 裁决层次 | 拆为 D1（整体架构）与 D1-A～D1-E（独立技术规则），消除「接受 D1 即接受全部细节」的歧义 |
 | 接口注释与术语 | 补充 `getCloseState` 四态、注册/注销身份隔离、状态发布规则与术语统一 |
 
+### 0.5 第五轮定点修订（历史）
+
+该轮只处理三个问题，结论如下：
+
+| 问题 | 该轮结论 |
+|---|---|
+| `closed` 的语义边界 | 服务端 `closed` 控制消息证明 Session 已进入不可逆关闭流程、已不可重新接管；**不证明服务端资源已经回收完成**。`CLOSING`、`CLOSED`、`SESSION_NOT_FOUND`、`closed` 四者必须分别表述 |
+| Pane 注册生命周期与 last-wins | 当前 S6 架构保证同一 Session 在记录释放前不会创建第二个 Pane；新 Pane 注册前旧 Pane 已完成 `close()` 并进入 `closed`。因此可保留方案 A（last-wins），但 token 只负责注销身份隔离，旧 Pane 的停止由 Pane 生命周期和关闭准入保证 |
+| signOut 的 Pane 句柄所有权 | HomePage 的 `records[].handle` 是独立的 Pane handle 集合，不依赖协调器。signOut 同步 `manager.invalidate()` 后，从该集合调用 `stop()`；已有 Client 时取得 watcher 已创建的共享 stop Promise，建立 barrier，再 `coordinator.dispose()`，然后立即 logout；stop/close 不读取已清空的 `localStop` 注册表 |
+
+### 0.6 第六轮定点修订（历史）
+
+该轮只澄清两个表达问题：
+
+- `logoutPending=true` 触发 Pane 的同步 watcher 调用 `Pane.stop()`；HomePage 随后在同一同步调用栈内调用同一 Pane handle 的 `stop()`。已有 Client 时，第二次调用取得 watcher 已创建或复用的共享 `TerminalClient.stopping` Promise，形成 stop barrier；两次调用不是两次独立的 stop 清理，第二次调用会重复同步失效动作，但不创建第二个 drain。
+- 若 Pane 没有 Client（例如初始化失败或尚未创建 Client），`Pane.stop()` 返回已 resolve 的 Promise；此时没有可共享的 drain，也不存在需要停止的资源。
+- signOut 的完整同步步骤明确包含 `manager.invalidate()`，且在调用 `logout()` 之前完成，用于同步撤销列表发布身份并阻止登出期间继续产生列表 GET。
+
+### 0.7 S7-0 裁决落地（本轮）
+
+- D1、D1-A～D1-E、D2-1、D2-2、D3-1、D4-1、D5-1、D5-2 全部登记为已接受，正式记录见 §20。
+- S7-1～S7-6 的阶段目标、允许/禁止文件、依赖、关键约束、测试、验收和停止边界已冻结。
+- S7-0 已完成；S7-1 尚未获得编码授权，后续任何代码实施必须由用户单独授权。
+
 ## 1. 审查依据与当前基线
 
-### 1.1 Git 基线（本轮开始时实测）
+### 1.1 Git 基线与本轮状态（实测）
 
 | 项目 | 实际值 |
 |---|---|
 | 分支 | `S6` |
-| HEAD | `eb9407d2802532f543a18627f060f7ff53d12d36` |
-| HEAD 提交说明 | `eb9407d S7`（用户提交，含第二轮提案与本轮开始前的 `luan-qi-ba-zao.txt`） |
+| HEAD | `3454fb453fb51839ae67ba94b7cba7e90a27f528` |
+| HEAD 提交说明 | `3454fb4 S7`（第四轮提案修订，用户已提交；第五轮、第六轮修改未提交） |
 | 暂存区 | 空 |
-| 工作区 | 干净 |
+| 工作区 | S7-0 开始前仅有 `doc/stage-5-s7-design-decision-proposal.md` 的第六轮未暂存修改；实施计划未修改 |
 | 未跟踪文件 | 无 |
-| `git diff --check` | 退出码 0 |
+| 目标文件本轮开始前修改 | 有；保留第六轮修改，并在其基础上执行 S7-0 冻结修订 |
+| `git diff --check` | S7-0 修改后复核为退出码 0 |
 
 最近提交：
 
 ```text
+3454fb4 S7
+026fe7e S7
 eb9407d S7
 4ebe668 S6-C2
 9ba0ba5 S6-C1
@@ -67,15 +96,15 @@ eb9407d S7
 
 保护说明：
 
-- 第二轮结束时提案处于 `AM`（暂存首轮、工作区第二轮）；用户已自行提交为 `eb9407d`。本轮从干净工作区开始，不假设旧状态仍然有效。
-- `luan-qi-ba-zao.txt` 已随该提交入库；本轮不修改、不格式化、不还原。
+- 第三轮、第四轮提案修订已分别由用户提交为 `026fe7e`、`3454fb4`；第五轮、第六轮修改尚未提交，本轮保留该工作区状态并在其上执行 S7-0。
+- `luan-qi-ba-zao.txt` 已随 `eb9407d` 入库；本轮不修改、不格式化、不还原。
 - 本轮只在工作区修改提案文件，不执行 `git add`，不触碰暂存区。
 
 ### 1.2 实际阅读的文档
 
 | 文档 | 阅读范围 |
 |---|---|
-| `doc/stage-5-implementation-plan.md` | §6.1–§6.3 列表刷新与请求所有权；§10 并发场景表；§11.1–§11.3 所有权、五类场景、同目标关闭与新动作；§12.1–§12.5 关闭、登出、页面退出与迟到响应；§13 第四阶段兼容性；§15 S7 行；§16 文件职责；§17.4 F10–F13、B01–B05；§20 验收门槛；§21.2、§21.5 已确认裁决 |
+| `doc/stage-5-implementation-plan.md` | §6.1–§6.3 列表刷新与请求所有权；§10 并发场景表；§11.1–§11.3 所有权、五类场景、同目标关闭与新动作；§12.1–§12.5 关闭、登出、页面退出与迟到响应；§13 第四阶段兼容性；§15 S7 行；§16 文件职责；§17.4 F10–F13、B01–B05；§20 验收门槛；§21.2、§21.5 已确认裁决；§21.6 S7-0 冻结计划 |
 | `doc/stage-5-s6-design-plan.md` | §4 职责与资源所有权；§5 Pane 状态机；§6.5 signOut 最小适配；§10.1–§10.3 互斥与 takeover 状态机；§12 close/dispose；§13 R32、R33 等竞态；§14 UI；§15 文件范围；§18 验收；§19 U1–U9 与残留风险 |
 | `doc/stage-5-s6-design-review-report.md` | §2 当前代码真实状态；§3 旧文档差异；§4–§6 采用设计、替换项与反向一致性；§7 用户裁决；MAJOR-3 signOut 失败语义 |
 | `doc/web-ssh-design-development-plan.md` | §6.1–§6.5 Session 产品行为；§9 会话管理界面状态表；§10.4 终端工作区；§11.4 Session API 与 DELETE；§11.7 关闭原因 |
@@ -124,29 +153,36 @@ eb9407d S7
 - `frontend/tests/stage-5-c2.test.mjs`
 - `frontend/tests/client.test.mjs`（只读核对既有 S5 契约）
 
-### 1.4 后端 DELETE、详情与 closed 协议事实（本轮新增）
+### 1.4 后端 DELETE、详情与 closed 协议事实（第四轮新增，第五轮修订）
 
 | 事实 | 代码位置 | 结论 |
 |---|---|---|
 | DELETE 处理器只做 decode、`Sessions.Close`、返回 200 | `backend/internal/httpapi/sessions.go:64-71` | 处理器内没有业务失败分支；`Close` 没有返回值可被检查 |
 | `Manager.Close` 对不存在或已关闭的 Session 静默返回 | `backend/internal/session/session.go:251-256` | DELETE 200 只代表「请求已被处理」，不代表关闭完成，也不代表该 ID 曾经存在 |
 | `Manager.Get` 在 Session 不存在或状态 `CLOSED` 时返回 `SESSION_NOT_FOUND` | `session.go:186-212` | 详情 404 是「该 ID 当前没有可用 Session」的权威结果 |
-| `reap` 先关闭终端、等待任务，再置 `CLOSED`，最后从 Map 删除 | `session.go:386-425` | `SESSION_NOT_FOUND` 出现在回收完成或从未存在之后 |
+| `closeLocked` 先把状态置为 `CLOSING`，再启动 `reap` | `session.go:362-384` | `CLOSING` 从赋值起即不可逆；`canBind` 只接受 CONNECTED/DISCONNECTED，因此不可 attach/takeover |
+| `reap` 先关闭终端、等待任务、结束旧 Binding，再置 `CLOSED` | `session.go:386-409` | `CLOSED` 是 Session 状态终态，但 `reap` 之后还有 metadata、buffer、lease 和 Map 删除 |
+| `reap` 在置 `CLOSED` 后继续等待 metadata、清空 buffer、释放 lease、从 Map 删除 | `session.go:410-425` | `SESSION_NOT_FOUND` 可在状态 `CLOSED` 后立即出现，早于完整资源回收结束；它只证明当前没有可用 Session |
 | `closeLocked` 幂等：CLOSING/CLOSED 直接返回 | `session.go:361-365` | 重试 DELETE 幂等，不会产生第二次关闭 |
-| 服务端 `closed` 控制消息只在 Binding 以 `closed:` 结束时发出 | `backend/internal/websocket/connection.go:583-600` | 它是服务端主动发出的事件，与本地 socket 关闭不同 |
+| `closed:` 原因只在 `reap` 中通过 `old.end("closed:" + s.reason)` 设置 | `session.go:403-405` | 此时终端已关闭、`s.wg.Wait()` 与 `WaitTransport()` 已完成；但 `reap` 尚未完成全部资源回收 |
+| 服务端 `closed` 控制消息只在 Binding 以 `closed:` 结束时发出 | `backend/internal/websocket/connection.go:583-600` | 它是服务端主动发出的事件，与本地 socket 关闭不同；发送由 `writer()` 异步完成，可能晚于状态 `CLOSED` 或 Map 删除 |
 | 前端把该消息映射为任务结果 `closed` | `frontend/src/terminal/client.ts:540-556` | S5 已区分来源；S7 必须保留，不得用本地 stop 合成 `closed` |
 | `request()` 对非 JSON 响应直接抛错 | `frontend/src/api/management.ts:60-88` | 网关 HTML、代理错误无法被识别为后端业务错误，只能归 unknown |
 | DELETE 前置拒绝点：Origin、readiness、认证、id 格式、decode | `management.go:250-266`、`management.go:267-282`、`request.go:17-56` | 这些错误发生在 `Sessions.Close` 之前，可证明「本次请求未被接受」 |
 
-### 1.5 三轮修订记录
+### 1.5 修订记录
 
 | 轮次 | 解决的问题 |
 |---|---|
 | 第一轮 | 关闭、登出、列表失效的总体方案 |
 | 第二轮 | 关闭任务从 Pane 上移到 HomePage 的 `CloseCoordinator`；Pane 与无 Pane 共用状态机；`session/close.ts` 成为 S7-1 正式文件 |
-| 第三轮（本轮） | 详情 GET 不解除关闭意图；`ended` 只认服务端权威证据；刷新后按 S6 方案 B 保留候选 Pane；同步互斥顺序；DELETE 真实分类；S7-1/S7-2 边界；裁决合并 |
+| 第三轮 | 详情 GET 不解除关闭意图；`ended` 只认服务端权威证据；刷新后按 S6 方案 B 保留候选 Pane；同步互斥顺序；DELETE 真实分类；S7-1/S7-2 边界；裁决合并 |
+| 第四轮 | `closed` 证据链；localStop 同步契约；刷新后旧 DELETE 竞态；裁决分层；接口术语 |
+| 第五轮 | `closed` 只证明不可接管、不证明回收完成；Pane 单实例生命周期与 last-wins 前提；signOut 的独立 Pane handle 所有权与 stop barrier 顺序 |
+| 第六轮 | 明确 `Pane.stop()` 的共享 Promise 语义；在 signOut 完整时序中补齐 `manager.invalidate()` |
+| S7-0（2026-11-19，本轮） | 接受 D1、D1-A～D1-E、D2-1、D2-2、D3-1、D4-1、D5-1、D5-2；冻结 S7-1～S7-6 阶段边界、测试与验收；S7-1 尚未授权 |
 
-### 1.6 `closed` 控制消息证据核查（第四轮）
+### 1.6 `closed` 控制消息证据核查（第四轮核查，第五轮修订）
 
 核查范围：`Connection.finish` 的全部调用点、`closed` 消息的全部构造点、`Session.reap` 调用链、Session 状态赋值与绑定准入。
 
@@ -156,24 +192,26 @@ eb9407d S7
 | `closed` 消息构造点 | 仅 1 处：`finish()` 中 `reason` 以 `closed:` 开头 | `connection.go:583-600` |
 | `closed:` 原因的唯一来源 | `Session.reap` 中的 `old.end("closed:" + s.reason)` | `backend/internal/session/session.go:403-405` |
 | 其他 `Binding.end` 原因 | `taken_over`、`AUTH_REQUIRED`，分别产生 `taken_over`/`error` 消息 | `session/binding.go:51`、`binding.go:245`、`session.go:323` |
-| 发出 `closed` 时的 Session 状态 | `CLOSING`：`closeLocked` 已置，`CLOSED` 尚未写入 | `session.go:361-384`、`session.go:403-409` |
+| `closed:` 原因设置时的 Session 状态 | `CLOSING`：`closeLocked` 已置，`reap` 尚未写入 `CLOSED` | `session.go:362-384`、`session.go:403-409` |
+| 消息发送时的 Session 状态 | **不保证仍是 CLOSING**：`reap` 在 `old.end` 后立即写入 `CLOSED`，`writer()` 随后异步发送；消息也可能在 Map 删除后到达 | `session.go:403-409`、`session.go:410-425`、`connection.go:449-453` |
 | CLOSING 是否可逆 | 否：`canBind` 只接受 CONNECTED/DISCONNECTED；`closeLocked` 对 CLOSING/CLOSED 直接返回；唯一后继是 CLOSED | `binding.go:96-116`、`session.go:361-365`、`session.go:407` |
 | 状态写入与准入是否同一临界区 | 是：`Attach` 持 `s.mu` 从 `canBind` 一直到 `status = "CONNECTED"` | `binding.go:141-208` |
+| `closed` 发出前的本地资源状态 | SSH 终端已 `Close()`、`s.wg.Wait()` 已完成、`WaitTransport()` 已等待；但 metadata、buffer、lease 与 Map 删除尚未完成 | `session.go:386-405`、`session.go:410-425` |
 | 后端测试 | `close` 场景断言 `closed` + 1000 + 状态 CLOSED；`revoke` 场景断言 `error` + 1008 + DISCONNECTED | `websocket/takeover_test.go:552-566`、`:744` |
 
-结论：`closed` 不是「当前 Binding 结束」的同义词。它只在 Session 生命周期所有者执行 `Close → closeLocked → reap` 后发出；此时 SSH 终端已关闭、任务已排空、状态为不可逆的 CLOSING。它可以保留为 `ended` 证据，但依据必须写成「CLOSING 不可逆」，而不是「消息本身证明 CLOSED」。
+结论：`closed` 不是「当前 Binding 结束」的同义词，也不是「服务端资源回收完成」的同义词。它只在 `Close → closeLocked → reap` 路径中产生；原因设置时 Session 已处于不可逆 `CLOSING`，SSH 终端已关闭、任务已排空，因此可以保留为 `ended` 证据。但 `closed` 消息的发送是异步的，发送时 Session 可能已 `CLOSED` 甚至已从 Map 删除；它证明的是「已不可重新接管」，不是「资源已经全部回收」。
 
 ## 2. S7 的冻结范围与 S6 基线
 
 ### 2.1 冻结任务来源
 
-实施计划 §15 的 S7 行是唯一权威任务定义：
+实施计划 §15 的 S7 行与 §21.6 的冻结计划是权威任务定义：
 
 | 项目 | 冻结内容 |
 |---|---|
 | 依赖 | S6 |
-| 修改文件 | `frontend/src/pages/HomePage.vue`、`components/session/SessionManager.vue`、`components/terminal/TerminalPane.vue`、`session/list.ts`、`terminal/takeover.ts`、`api/sessions.ts` 及对应前端测试；必要时扩展 `frontend/tests/auth.test.mjs`；无必需新增生产文件 |
-| 实现职责 | 同目标关闭与接管互斥、DELETE 可取消等待、隐藏列表/关闭 Pane 区分（方案 B：隐藏或卸载列表不取消已归 Pane 的候选动作）、`logoutPending` 同步封闭新任务、列表失效刷新；复用 auth/router，不改认证协议 |
+| 修改文件 | S7-1 新增 `frontend/src/session/close.ts`；修改 `frontend/src/pages/HomePage.vue`、`components/session/SessionManager.vue`、`components/terminal/TerminalPane.vue`、`session/list.ts`、`terminal/takeover.ts`、`api/sessions.ts` 及对应前端测试；必要时扩展 `frontend/tests/auth.test.mjs`；不修改 `auth.ts`/`router` |
+| 实现职责 | 同目标关闭与接管互斥、DELETE 可取消等待、隐藏列表/关闭 Pane 区分（方案 B：隐藏或卸载列表不取消已归 Pane 的候选动作）、`logoutPending` 同步封闭新任务、列表失效刷新；复用既有认证协议，不修改 auth/router |
 | 测试 | F10–F13、B01–B05；DELETE/登出成功与失败/不确定、任务转移、浏览器关闭与迟到响应；只关闭列表不误删 SSH，退出后不联网 |
 | 回滚 | 撤销本步退出/关闭/反馈增量；在功能恢复完整前保持新增入口禁用，不回退第四阶段既有 `logoutPending`/stop 语义；前序受依赖部分不单独发布 |
 
@@ -221,10 +259,10 @@ S7 不得：
 | changed 刷新 | `HomePage.vue:109-112` 每次 changed 直接 `manager.refresh()` | S7-3 增加守卫与同批合并 |
 | 登出顺序 | `HomePage.vue:353-389` 与 S6 §6.5 一致 | S7-4 增加协调器 dispose 与异常防护 |
 | 登出时的 stop/close 失败 | `rejectedSessions` 分别统计并写日志，跳转后写 `authNotice` | 保留；补同步 throw 防护 |
-| 同步抛错防护 | `entries.map((entry) => entry.handle.stop())` 在 `try` 之前求值 | S7-4 包装为 Promise |
+| 同步抛错防护 | `entries.map((entry) => entry.handle.stop())` 在 `try` 之前求值 | S7-4 同步 `try/catch` 包装 |
 | 页面卸载后的迟到回调 | 列表有 sequence/dispose；Pane 有 `life`/taskId 守卫；DELETE 没有 abort/epoch | S7-1 由协调器 epoch 隔离；S7-5 补卸载测试 |
 
-### 2.4 本轮目标所有权模型（待用户裁决）
+### 2.4 冻结所有权模型（S7-0 已接受）
 
 ```text
 HomePage（页面生命周期）
@@ -268,19 +306,21 @@ HomePage（页面生命周期）
 - 只有 HomePage 卸载/登出调用 `dispose()` 才 abort 全部本地等待；abort 不等于服务端撤销。
 - 关闭状态与 takeover/recovery 状态分离：协调器只提供「是否允许接管」的只读判断，不复制 takeover 状态机。
 
-## 3. 问题清单与严重程度（第三轮修订）
+## 3. 问题清单与严重程度（第五轮修订）
 
-| 编号 | 级别 | 问题 | 文档 | 代码/现状 | 是否需用户裁决 |
+以下严重度与问题清单保留历史审查记录；所有“是（Dn）”项均已在 S7-0 接受，正式裁决见 §20。当前没有未裁决的 BLOCKER 或 MAJOR。
+
+| 编号 | 级别 | 问题 | 文档 | 代码/现状 | 历史裁决指向 |
 |---|---|---|---|---|---|
 | S7-B1 | BLOCKER | Pane 销毁后，DELETE 的 unknown/closeRequested 随组件消失；重新打开同一 Session 可能绕过关闭意图 | 实施计划 §11.3、§12.2；第四阶段 §17；F10 | `TerminalPane.vue:366-390`、`201-227` | 是（并入 D1） |
-| S7-B2 | BLOCKER | Pane 内状态机与无 Pane 路径缺少统一所有权；`session/close.ts` 被列为 S7-2 可选，可能形成两套实现 | 实施计划 §15 S7 行；核心设计 §9 | `SessionManager.vue:281-288`；`HomePage.vue:78-94` | 是（并入 D1） |
+| S7-B2 | BLOCKER | Pane 内状态机与无 Pane 路径缺少统一所有权；`session/close.ts` 被列为 S7-2 可选，可能形成两套实现 | 实施计划 §15 S7 行、§21.6；核心设计 §9 | `SessionManager.vue:281-288`；`HomePage.vue:78-94` | 是（并入 D1） |
 | S7-B3 | BLOCKER | `refreshClose()` 未定义详情返回 CONNECTED/DISCONNECTED 的处理，可能把 requested/unknown/failed 解除为 idle | 核心设计 §11.4；第四阶段 §17 | `session/close.ts`（待新增） | 是（D1-A） |
 | S7-B4 | BLOCKER | `ended` 判定过宽，可能把本地关闭/WS 断开/连接任务停止当成远端 Session 结束，提前释放预占 | 第四阶段 §17；S6 §12.2 | `TerminalPane.vue:174-180`；`takeover.ts:128-130` | 是（D1-B） |
-| S7-M1 | MAJOR | `logoutPending` 在 200 时复位，是否需要保持到本地 close 完成存在语义歧义 | 第四阶段 §13.2；S6 §6.5 | `auth.ts:39-51`；`HomePage.vue:353-389` | 是（D3） |
+| S7-M1 | MAJOR | `logoutPending` 在 200 时复位，是否需要保持到本地 close 完成存在语义歧义 | 第四阶段 §13.2；S6 §6.5 | `auth.ts:39-51`；`HomePage.vue:353-389` | 是（D3-1） |
 | S7-M2 | MAJOR | `signOut` 未同步 `invalidate` 列表；`paneChanged` 无登出守卫；`isAllowed` 在同步边界内读取旧 prop | 实施计划 §6.1、§12.2；D1=A | `HomePage.vue:109-112`、`353-389`；`SessionManager.vue:41-45`、`108-113` | 否（实施待办） |
 | S7-M3 | MAJOR | 同一同步批次多个 `changed` 未合并为一次 GET | 实施计划 §6.1 D1=A | `HomePage.vue:109-112` | 否（实施待办） |
 | S7-M4 | MAJOR | `handle.stop()`/`handle.close()` 同步抛错会逃出 `signOut` 的 `try` | S6 §6.5；R32/R33 | `HomePage.vue:361-363`、`375-381` | 否（健壮性修复） |
-| S7-M5 | MAJOR | 关闭协调器与登出的任务失效策略未定义时，可能在 logout 期间继续发起 GET/DELETE | 第四阶段 §13.1；实施计划 §12.2 | 本轮新增设计 | 是（D3 确认） |
+| S7-M5 | MAJOR | 关闭协调器与登出的任务失效策略未定义时，可能在 logout 期间继续发起 GET/DELETE | 第四阶段 §13.1；实施计划 §12.2 | 本轮新增设计 | 是（D3-1） |
 | S7-M6 | MAJOR | 刷新后「详情 GET 失败就不生成候选」与 S6 方案 B 冲突 | S6 §10.1、§10.2 | `HomePage.vue:78-94`；`TerminalPane.vue:490-500` | 是（D1） |
 | S7-M7 | MAJOR | 关闭与 takeover/recovery 的同步互斥顺序未定义，仅写 `closeState === 'idle'` | S6 §10.1；实施计划 §11.3 | `TerminalPane.vue:196-199`、`366-390`；`takeover.ts:164-186` | 是（D1-C） |
 | S7-M8 | MAJOR | DELETE 错误分类缺少后端执行顺序依据，4xx/5xx 不能直接推断服务端未执行 | 核心设计 §11.4；架构 §4.3 | `sessions.go:64-71`；`session.go:251-256`；`management.ts:60-88` | 是（D1-D） |
@@ -332,7 +372,7 @@ HomePage（页面生命周期）
 
 不推荐把关闭任务继续放在 Pane 内，也不推荐「Pane 关闭时把任务移交给 HomePage」的转移模型：转移需要额外的所有权交接、并发窗口和迟到回调隔离，复杂度高于直接由 HomePage 持有。
 
-### 4.3 每个 Session 的关闭状态机（本地意图，待用户裁决）
+### 4.3 每个 Session 的关闭状态机（本地意图，已冻结）
 
 状态由协调器按 Session ID 维护；`closeRequested` 不再由 Pane 独立维护，而是 `state !== 'idle'` 的派生值。
 
@@ -343,7 +383,7 @@ HomePage（页面生命周期）
 | `requested` | 服务端已接受幂等关闭（200），物理回收未完成 | `pending` 收到 200；或详情 CLOSING 由 unknown/failed 升格 | 刷新状态、幂等重试、关闭标签 | 详情 CLOSING → 保持；SESSION_NOT_FOUND → `ended` |
 | `unknown` | 请求已发出但结果无法确认 | `pending` 被 abort、网络错误、响应丢失、无法解析、不可证明的错误 | 刷新状态、幂等重试、关闭标签 | 重试 → `pending`；详情 CLOSING → `requested`；SESSION_NOT_FOUND → `ended` |
 | `failed` | 明确证明本次请求未被服务端接受 | `pending` 收到前置拒绝（见 §8.2） | 刷新状态、幂等重试、关闭标签 | 重试 → `pending`；详情 CLOSING → `requested`；SESSION_NOT_FOUND → `ended` |
-| `ended` | 服务端权威确认 Session 不存在 | 详情 SESSION_NOT_FOUND，或服务端 `closed` 控制消息 | 关闭本地标签 | 页面卸载时随协调器释放 |
+| `ended` | 服务端权威确认远端 Session 已不可接管；可能仍在完成资源回收 | 详情 SESSION_NOT_FOUND（强证据），或服务端 `closed` 控制消息（关闭不可逆证据） | 关闭本地标签 | 页面卸载时随协调器释放 |
 
 状态转换要点：
 
@@ -384,31 +424,48 @@ HomePage（页面生命周期）
 
 ### 4.5 `ended` 的权威判定
 
-`ended` 表示「服务端确认该 Session 已不存在或已不可恢复」，会移除页面内的本地记录并阻止再次打开。只接受以下两类证据，且两者的依据强度不同。
+`ended` 表示「服务端权威确认远端 Session 已不可接管，关闭流程不可逆或当前没有可用 Session」，会移除页面内的本地记录并阻止再次打开。它**不表示**服务端资源已经全部回收完成。只接受以下两类证据，且两者的依据强度不同。
+
+#### 4.5.1 `CLOSING`、`CLOSED`、`SESSION_NOT_FOUND` 与 `closed` 的边界
+
+| 概念 | 代码事实 | 能证明 | 不能证明 |
+|---|---|---|---|
+| `CLOSING` | `closeLocked` 先把 `status` 置为 `CLOSING`，再启动 `reap`（`backend/internal/session/session.go:362-384`）；`canBind` 只接受 CONNECTED/DISCONNECTED（`backend/internal/session/binding.go:96-116`）；`closeLocked` 对 CLOSING/CLOSED 幂等返回（`backend/internal/session/session.go:361-365`） | Session 已进入不可逆关闭流程，不能再 attach/takeover | 资源已回收；状态已到 `CLOSED` |
+| `CLOSED` | `reap` 在终端关闭、`s.wg.Wait()`、`old.end` 之后写入 `CLOSED`（`backend/internal/session/session.go:403-409`）；`Manager.Find/Get` 对 `CLOSED` 返回 `SESSION_NOT_FOUND`（`backend/internal/session/session.go:186-212`） | Session 状态已进入终态，详情接口不再返回可用 Session | metadata 等待、buffer 清空、lease 释放、Map 删除已完成（这些在 `backend/internal/session/session.go:410-425`） |
+| `SESSION_NOT_FOUND` | ID 不在 Map，或 `status == CLOSED`（`backend/internal/session/session.go:186-212`） | 该 ID 当前没有可用 Session；不可再 attach/takeover | 资源已全部回收；该 Session 曾经存在；关闭原因 |
+| 服务端 `closed` 控制消息 | `closed:` 原因只在 `reap` 中由 `old.end` 设置（`backend/internal/session/session.go:403-405`）；`finish` 构造 `closed` 消息（`backend/internal/websocket/connection.go:583-600`）；`writer()` 异步发送（`backend/internal/websocket/connection.go:449-453`） | 服务端已执行 `closeLocked → reap`，旧 Binding 已结束，Session 已不可重新接管 | 消息发送时仍是 `CLOSING`；`CLOSED` 已写入；Map 已删除；服务端资源已回收完成 |
+
+UI 与日志术语边界：
+
+- 收到 `closed` 可以提示「远端会话已结束或正在完成关闭」「会话已不可接管」「关闭流程不可逆」。
+- 不得仅凭 `closed` 显示「服务端资源已回收完毕」「Session 已完全清理」「已释放全部资源」。
+- `closed`、`CLOSING`、`CLOSED`、`SESSION_NOT_FOUND` 不得互相替代；前两者是前端可观察事件/状态，`CLOSED` 是服务端内部状态，`SESSION_NOT_FOUND` 是详情接口结果。
+- 未能证明：`closed` 消息到达时 Session 仍为 `CLOSING`、`CLOSED` 尚未写入、Map 尚未删除，或 metadata/buffer/lease 已回收；这些都不能由 `closed` 单独推出。
 
 **证据 A：详情 GET 返回 `SESSION_NOT_FOUND`（强证据）。**
 
-- 后端 `Manager.Get` 先 `Find`：ID 不在 Map，或状态为 `CLOSED`，都返回 `SESSION_NOT_FOUND`（`session.go:186-212`）。
-- `reap` 在关闭终端、等待任务、置 `CLOSED` 之后，才从 Map 删除（`session.go:386-425`）。
+- 后端 `Manager.Get` 先 `Find`：ID 不在 Map，或状态为 `CLOSED`，都返回 `SESSION_NOT_FOUND`（`backend/internal/session/session.go:186-212`）。
+- `reap` 在关闭终端、等待任务、设置 `closed:` 原因后置 `CLOSED`（`backend/internal/session/session.go:386-409`）；置 `CLOSED` 后还会继续等待 metadata、清空 buffer、释放 lease、从 Map 删除（`backend/internal/session/session.go:410-425`）。
+- 因此 `SESSION_NOT_FOUND` 可能在完整资源回收结束前出现；它证明「当前没有可用 Session」，不证明「服务端资源已回收完成」。
 - Session ID 为随机 32 位十六进制且不复用（核心设计 §11.4），因此该结果表示「该 ID 当前没有可用 Session」。
 
 **证据 B：服务端 `closed` 控制消息（充分，但依据必须限定）。**
 
 不能仅凭「收到 closed 消息」推断，必须按以下链路证明：
 
-1. `closed` 只在 `Connection.finish` 中构造，条件是 `reason` 以 `closed:` 开头（`connection.go:583-600`）。
-2. `finish` 只有一个调用点：`writer()` 观察到 `c.reason != ""`（`connection.go:449-453`）。
-3. `closed:` 原因只有一个来源：`Session.reap` 的 `old.end("closed:" + s.reason)`（`session.go:403-405`）。
-4. `reap` 只由 `closeLocked` 启动（`session.go:384`）；`closeLocked` 先把状态置为 `CLOSING`（`session.go:366`）。
-5. 发出 `closed` 时状态仍是 `CLOSING`，但 CLOSING 不可逆：
-   - `canBind` 只接受 CONNECTED/DISCONNECTED，CLOSING/CLOSED 返回 `SESSION_NOT_READY`（`binding.go:96-116`）；
-   - `Attach` 持 `s.mu` 从 `canBind` 一直到 `status = "CONNECTED"`，与 `closeLocked` 互斥（`binding.go:141-208`）；
-   - `closeLocked` 对 CLOSING/CLOSED 直接返回（`session.go:361-365`）；
-   - 唯一后继是 `reap` 写入 `CLOSED`（`session.go:407`）。
-6. 发出 `closed` 前，SSH 终端已 `Close()`、`s.wg.Wait()` 已完成（`session.go:386-405`），不存在「Binding 结束但 Session 仍可接管」的分支。
+1. `closed` 只在 `Connection.finish` 中构造，条件是 `reason` 以 `closed:` 开头（`backend/internal/websocket/connection.go:583-600`）。
+2. `finish` 只有一个调用点：`writer()` 观察到 `c.reason != ""`（`backend/internal/websocket/connection.go:449-453`）。
+3. `closed:` 原因只有一个来源：`Session.reap` 的 `old.end("closed:" + s.reason)`（`backend/internal/session/session.go:403-405`）。
+4. `reap` 只由 `closeLocked` 启动（`backend/internal/session/session.go:384`）；`closeLocked` 先把状态置为 `CLOSING`（`backend/internal/session/session.go:366`）。
+5. `closed:` 原因设置时状态仍是 `CLOSING`，且 CLOSING 不可逆：
+   - `canBind` 只接受 CONNECTED/DISCONNECTED，CLOSING/CLOSED 返回 `SESSION_NOT_READY`（`backend/internal/session/binding.go:96-116`）；
+   - `Attach` 持 `s.mu` 从 `canBind` 一直到 `status = "CONNECTED"`，与 `closeLocked` 互斥（`backend/internal/session/binding.go:141-208`）；
+   - `closeLocked` 对 CLOSING/CLOSED 直接返回（`backend/internal/session/session.go:361-365`）；
+   - 唯一后继是 `reap` 写入 `CLOSED`（`backend/internal/session/session.go:407`）。
+6. `old.end` 之前，SSH 终端已 `Close()`、`s.wg.Wait()` 已完成、`WaitTransport()` 已等待（`backend/internal/session/session.go:386-405`）；随后 `reap` 写入 `CLOSED` 并继续回收 metadata/buffer/lease。`writer()` 发送消息是异步的，消息到达时 Session 可能已 `CLOSED` 或已从 Map 删除；但不存在「Binding 结束但 Session 仍可接管」的分支。
 7. 后端测试验证两类原因不会混淆：`close` 场景为 `closed` + 1000 + 状态 CLOSED；`revoke` 场景为 `error` + 1008 + 状态 DISCONNECTED（`takeover_test.go:552-566`）。
 
-因此，`closed` 可以作为 `ended` 证据，但表述必须是「服务端已进入不可逆 CLOSING，该 Session 不可能再被接管」，而不是「Binding 结束」或「消息本身证明 CLOSED」。
+因此，`closed` 可以作为 `ended` 证据，但表述必须是「服务端已进入不可逆关闭流程，该 Session 不可能再被接管」，而不是「Binding 结束」「消息本身证明 CLOSED」或「服务端资源已回收完成」。
 
 **明确不能单独作为 `ended` 依据：**
 
@@ -430,7 +487,7 @@ HomePage（页面生命周期）
 
 **与 Session ID 预占的关系：**
 
-- 只有 `ended` 才允许 HomePage 移除记录并释放前端预占；后端租约由服务端 `reap` 释放，前端不能代替。
+- 只有 `ended` 才允许 HomePage 移除记录并释放前端预占；前端只释放自己的预占，不声称服务端租约已经释放；后端租约由服务端 `reap` 释放，前端不能代替。
 - 本地 Pane 关闭只移除本地记录（用户主动关标签），不发送 `closed`、不释放远端 Session。
 - 清理失败（`dispose_failed`）不 emit `closed`、不释放预占（U1 保持不变）。
 
@@ -444,11 +501,11 @@ HomePage（页面生命周期）
 | 场景 | 必须行为 |
 |---|---|
 | 关闭 Pane 标签 | Pane `close()` 只退订协调器、注销本地 stop、释放 xterm/client；**不 abort** 协调器任务，不清除 pending/unknown；DELETE 继续由协调器等待 |
-| Pane 被重新创建 | HomePage 创建 Pane 前读取 `coordinator.getCloseState(sessionId)`；非 idle 时新 Pane 不自动 `takeover.prepare()`，只展示关闭状态/重试；takeover 和手动恢复保持禁用 |
+| Pane 被重新创建 | HomePage 创建 Pane 前读取 `coordinator.getCloseState(sessionId)`；Pane 挂载时先注册 localStop，再同步读取一次非 idle 状态，非 idle 时不自动 `takeover.prepare()`，只展示关闭状态/重试；takeover 和手动恢复保持禁用 |
 | SessionManager 卸载 | 只 dispose 列表控制器；协调器归 HomePage，不受影响；已发出的 DELETE 继续 |
 | HomePage 页面卸载 | `coordinator.dispose()`：abort 所有 DELETE 与详情查询、标记 disposed、清空订阅；迟到响应被 epoch/disposed 丢弃；不声称撤销服务端关闭 |
 | 页面重新进入（刷新/新标签） | 本地关闭状态不存在；按 S6 方案 B 创建候选 Pane，由 Pane 详情 GET 确认服务端状态（见 §5.5）；不得凭「本地无记录」自动接管 |
-| 用户登出 | `signOut` 同步设置 `logoutPending` 后立即 `coordinator.dispose()`；协调器不再发起新的 GET/DELETE/WS；随后按 S6 §6.5 stop/logout/close |
+| 用户登出 | `signOut` 同步设置 `logoutPending`；同步 `manager.invalidate()`；随后从 HomePage 独立的 `records[].handle` 调用 `stop()`；已有 Client 时取得 watcher 已创建的共享 `client.stopping`，建立 stop barrier；再同步 `coordinator.dispose()`；随后按 S6 §6.5 立即 logout，与 stop drain 并行；成功后 close 并跳转，失败停留。`dispose()` 不清空 Pane handle 集合，也不影响已发起的 stop |
 | DELETE 返回 200 | 只标记 `requested`；不 emit `closed`，不释放 Session ID 预占，不显示「已完全关闭」 |
 | DELETE 网络错误/abort | 进入 `unknown`；保留关闭意图；不自动回 idle |
 | DELETE 可证明的前置拒绝 | 进入 `failed`；保留关闭意图；只允许重试/刷新 |
@@ -563,7 +620,7 @@ t8  新 Binding 被关闭（服务端以 closed:user_closed 结束），新页�
 | recovery attach | pending → `recovery.stop()` → DELETE | 停止在途 attach；结果被 sequence 丢弃 | S6-T38 |
 | 同 Session 同时关闭/接管/恢复 | 关闭意图先建立（同步），其他两个模块的 admission 立即为假 | 至多一个 DELETE、至多一个 takeover 尝试 | S7-C08、C09 |
 | stop 同步抛错 | pending → 捕获异常并记 `localStopFailed` → DELETE | 关闭意图仍成立；提示「本地终端未确认停止」 | S7-C20 |
-| HomePage 正在 signOut | `logoutPending=true` → `coordinator.dispose()` → 各 Pane stop | 协调器拒绝新请求；不再有 GET/DELETE/WS | S7-C14、C21 |
+| HomePage 正在 signOut | `logoutPending=true` → `manager.invalidate()` → 从 `records` 调用 `stop()`；已有 Client 时取得共享 stop Promise → `coordinator.dispose()` | watcher 与 HomePage 共用同一个 `client.stopping`；协调器拒绝新请求；不再有 GET/DELETE/WS | S7-C14、C21 |
 
 #### 4.8.4 准入判定的单一来源
 
@@ -593,15 +650,15 @@ t8  新 Binding 被关闭（服务端以 closed:user_closed 结束），新页�
 
 无 Pane 注册时（行级关闭、候选 Pane 尚未挂载）：协调器只建立 `pending`，没有本地 stop 可调用；这不会削弱关闭准入，因为 `pending` 已经阻止新 Pane 自动 prepare。
 
-### 4.9 备选方案比较
+### 4.9 备选方案比较（历史，A 已接受）
 
-| 方案 | 内容 | 优点 | 缺点 | 是否推荐 |
+| 方案 | 内容 | 优点 | 缺点 | S7-0 结论 |
 |---|---|---|---|---|
-| A（推荐） | HomePage 持有 `CloseCoordinator`，按 Session ID 管理 | 单一所有者；Pane 销毁不丢状态；Pane/无 Pane 共用；页面卸载边界清晰 | 新增一个前端模块；HomePage 需要注入句柄 | 是 |
-| B | Pane 持有任务，关闭时把任务移交给 HomePage | 不新增页面级所有者 | 交接窗口复杂；迟到回调/epoch 需要跨组件；容易出现双所有者 | 否 |
-| C | 模块级单例 Map（全局关闭任务） | 跨 Pane 简单 | 等价于全局 Store；跨 HomePage/登录周期泄漏；测试隔离差 | 否 |
-| D | localStorage/IndexedDB 持久化 unknown | 刷新后仍能阻止接管 | 新增持久化、清理、跨标签同步和隐私边界；当前授权不允许 | 否（备选） |
-| E | 后端新增「关闭意图」记录/接口 | 跨设备/刷新权威 | 修改 API/数据库/后端；超出 S7 授权 | 否（备选） |
+| A（已接受） | HomePage 持有 `CloseCoordinator`，按 Session ID 管理 | 单一所有者；Pane 销毁不丢状态；Pane/无 Pane 共用；页面卸载边界清晰 | 新增一个前端模块；HomePage 需要注入句柄 | 已接受 |
+| B | Pane 持有任务，关闭时把任务移交给 HomePage | 不新增页面级所有者 | 交接窗口复杂；迟到回调/epoch 需要跨组件；容易出现双所有者 | 不采用 |
+| C | 模块级单例 Map（全局关闭任务） | 跨 Pane 简单 | 等价于全局 Store；跨 HomePage/登录周期泄漏；测试隔离差 | 不采用 |
+| D | localStorage/IndexedDB 持久化 unknown | 刷新后仍能阻止接管 | 新增持久化、清理、跨标签同步和隐私边界；当前授权不允许 | 不采用 |
+| E | 后端新增「关闭意图」记录/接口 | 跨设备/刷新权威 | 修改 API/数据库/后端；超出 S7 授权 | 不采用 |
 
 ### 4.10 对现有模块的影响
 
@@ -616,16 +673,18 @@ t8  新 Binding 被关闭（服务端以 closed:user_closed 结束），新页�
 | `client.ts`/`output.ts`/`recovery.ts` | 不修改 |
 | `auth.ts`/`router` | 默认不修改 |
 
-### 4.11 需要用户确认的具体事项
+### 4.11 已确认事项（S7-0）
 
-1. 是否同意由 HomePage 持有按 Session ID 管理的 `CloseCoordinator`。
-2. 是否同意 Pane 只负责关闭 UI，不拥有跨 Pane 生命周期的 DELETE 任务。
-3. 是否同意详情 GET 永远不把 `requested/unknown/failed` 解除为 `idle`（§4.4 表）。
-4. 是否同意 `ended` 只接受详情 `SESSION_NOT_FOUND` 与服务端 `closed` 控制消息（§4.5）。
-5. 是否同意页面刷新后按 S6 方案 B 创建候选 Pane，并接受「详情查询无法证明旧 DELETE 已失效」的能力边界。
-6. 是否同意关闭确认的同步顺序（§4.8.1）。
-7. 是否同意 DELETE 按 §8.2 的真实后端依据分类。
-8. 原有裁决是否保留：本地 abort 只停止等待、不新增本地超时、`failed` 保留关闭意图、DELETE 200 不等于 CLOSED。
+以下事项已全部接受：
+
+1. 由 HomePage 持有按 Session ID 管理的 `CloseCoordinator`。
+2. Pane 只负责关闭 UI，不拥有跨 Pane 生命周期的 DELETE 任务。
+3. 详情 GET 永远不把 `requested/unknown/failed` 解除为 `idle`（§4.4 表）。
+4. `ended` 只接受详情 `SESSION_NOT_FOUND` 与服务端 `closed` 控制消息（§4.5）。
+5. 页面刷新后按 S6 方案 B 创建候选 Pane，并接受「详情查询无法证明旧 DELETE 已失效」的能力边界。
+6. 关闭确认采用 §4.8.1 的同步顺序。
+7. DELETE 按 §8.2 的真实后端依据分类。
+8. 本地 abort 只停止等待、不新增本地超时、`failed` 保留关闭意图、DELETE 200 不等于 CLOSED。
 
 ## 5. D2：Pane 与无 Pane 的统一关闭状态机
 
@@ -640,7 +699,7 @@ t8  新 Binding 被关闭（服务端以 closed:user_closed 结束），新页�
 
 第二轮把关闭任务上移为页面级唯一所有者；本轮进一步把「详情查询」纳入同一协调器，并定义查询与重试的并发隔离。
 
-### 5.2 推荐架构（待用户裁决）
+### 5.2 冻结架构（S7-0 已接受）
 
 ```text
 HomePage
@@ -774,15 +833,48 @@ export interface CloseHandle {
 
 #### 5.3.2 `registerLocalStop` 的身份与生命周期
 
+**结论：保留方案 A（last-wins），但前提是 S6 的单 Pane 生命周期不变量成立。** token 只解决「旧注销误删新注册」，不承担旧 Pane 停止职责；last-wins 的安全性来自 Pane 生命周期与关闭准入，不来自 token。
+
+**生命周期证据（代码事实）：**
+
+1. HomePage 用 `findRecord` 按 Session ID 去重，`reserveRecord` 在同步块中预占记录（`frontend/src/pages/HomePage.vue:57-77`）。
+2. 记录只在 `paneClosed` 收到 Pane 的 `closed` 事件后移除（`frontend/src/pages/HomePage.vue:101-108`）。
+3. Pane `close()` 先同步把 `life` 置为 `disposing`、执行 `takeover.invalidate()` 与 `recovery.invalidate()`，只有 `client.dispose()` resolve 后才置 `life='closed'` 并 emit `closed`（`frontend/src/components/terminal/TerminalPane.vue:201-226`）。
+4. 因此同一 Session 的新记录只可能在旧 Pane 完成 `close()` 并 emit `closed` 后创建；新 Pane 注册时，旧 Pane 已不在活动状态。
+5. 视图切换使用 `v-show`，不会卸载 Pane；`SessionManager` 的 `v-if` 与 Pane 生命周期无关（`frontend/src/pages/HomePage.vue:497-510`）。不存在「切换视图导致旧 Pane 与新 Pane 并存」的路径。
+
+**同步失效证据（代码事实）：**
+
+- `Pane.stop()` 在返回 Promise 前完成 `takeover.invalidate()`，并调用 `recovery.stop()`（`frontend/src/components/terminal/TerminalPane.vue:196-199`）。
+- `takeover.invalidate()` 同步递增 sequence、abort 查询、清空候选、phase 回 `idle`（`frontend/src/terminal/takeover.ts:59-65`）。
+- `recovery.stop()` 同步 `invalidate()`，再调用 `client.stop()`（`frontend/src/terminal/recovery.ts:120-123`）；`client.stop()` 同步设置 `task.stopped=true`、abort、取消 delay、`finish()`（`frontend/src/terminal/client.ts:750-768`）。
+- 但 `Pane.stop()` **不会**把 `life` 永久置为非 ready；它只使当前动作失效。旧 Pane 若仍挂载且协调器为 `idle`，理论上可以再次发起 `prepare()`。因此不能把 last-wins 的安全性表述为「stop() 永久禁止旧 Pane」。
+- 实际安全条件是：旧 Pane 被新 Pane 替换前已经 `closed`；旧 Pane 仍挂载时，`requestClose` 已同步建立 `pending`，其 takeover/recovery 准入读取非 idle 后为假。两者共同保证旧 Pane 不会在新注册之后恢复准入。
+- 未能证明：`Pane.stop()` 的同步部分本身能永久阻止旧 Pane 重新 `prepare()`；该保证来自 Pane 生命周期与关闭准入，不是 stop 的单独效果。
+
+**注册语义：**
+
 - **身份：** 每次注册生成一个内部 token；注销函数只在 token 仍匹配当前注册时生效。
-- **唯一性：** S6 的 HomePage 每个 Session 至多一个 Pane（`findRecord` 保证），因此同一 Session 只保留最后一次有效注册；新注册显式替换旧注册，旧注销函数变成空操作。
+- **唯一性：** 同一 Session 只保留最后一次有效注册；新注册显式替换旧注册，旧注销函数变成空操作。
 - **重复注册：** 新 token 覆盖旧 token；不产生第二个有效回调，也不重复触发状态变化。
-- **重复注销：** 幂等；token 不匹配时直接返回，不删除当前注册。
 - **旧注销迟到：** Pane A 注销时 Pane B 已注册 → token 不匹配 → 不移除 B 的注册。
-- **注册与 requestClose 并发：** 二者都在同一个同步执行块中完成；先注册则本次 requestClose 会调用该 stop，先 requestClose 则本次没有 stop 可调用，但 `pending` 已建立，新 Pane 挂载时读取非 idle，不会 prepare。
-- **dispose 后注册：** 返回空操作注销函数，不保存回调，不发布状态。
-- **dispose 后注销：** 空操作，不发布状态。
+- **挂载顺序：** 新 Pane 必须先注册 localStop，再同步读取关闭状态；只有 `idle` 才允许自动 `takeover.prepare()`。
 - **不引入全局注册中心：** 注册表就是 `CloseTask` 内的一个字段。
+- **未来前提变化：** 如果后续设计允许同一 Session 同时存在两个活动 Pane，方案 A 立即失效，必须重新裁决方案 B（拒绝重复注册）或方案 C（全部 stop）。
+
+**必须定义的边界：**
+
+| 场景 | 行为 |
+|---|---|
+| 同一 Session 重复注册 | 新 token 替换旧 token；只保留一个有效 callback；不重复发布状态 |
+| 旧 token 注销 | token 不匹配时直接返回；不删除当前注册 |
+| 重复注销 | 幂等；不发布状态 |
+| `requestClose` 与 Pane 销毁并发 | 二者在同一个 JS 事件循环中串行；先销毁则注销后无 localStop，但 `pending` 已阻止新 Pane 自动 prepare；先 requestClose 则调用 localStop，随后 close 再失效一次 |
+| `requestClose` 与新 Pane 注册并发 | 先注册则 requestClose 调用新 Pane 的 stop；先 requestClose 则 pending 已建立，新 Pane 注册后必须读取非 idle 并跳过自动 prepare，本次没有已启动任务需要 stop |
+| Coordinator dispose 后注册 | 返回空操作注销函数，不保存 callback，不发布状态 |
+| 注册回调同步 throw | `registerLocalStop` 本身只保存 callback，不调用；`requestClose` 调用时捕获，记 `localStopFailed=true`，继续 DELETE |
+| stop Promise reject | 记录失败并展示「本地终端未确认停止」；不把 reject 解释为远端已关闭；状态仍由 DELETE 结果决定 |
+| 无 Pane 时的关闭路径 | `pending` 建立后直接 DELETE；没有 localStop；新 Pane 读取非 idle，不自动 prepare |
 
 #### 5.3.3 状态发布规则
 
@@ -813,9 +905,10 @@ export interface CloseHandle {
 | DELETE | 请求服务端关闭 Session 的 HTTP 操作 | 关闭本地终端 |
 | `requested` | 服务端已接受关闭请求（HTTP 200） | `CLOSED`、Session 已回收 |
 | `unknown` | 无法确认 DELETE 是否被服务端接受 | 关闭已撤销、可以重新接管 |
-| `ended` | 存在权威证据证明远端 Session 已不存在或不可恢复 | 本地标签已关闭、WebSocket 已断开 |
-| 服务端 `CLOSED` | `Session.status` 的终态，出现在 `reap` 末尾 | HTTP 200 |
-| `SESSION_NOT_FOUND` | 详情接口表示该 ID 当前没有可用 Session | 权限错误、网络错误 |
+| `ended` | 存在权威证据证明远端 Session 已不可接管；可能仍在完成资源回收 | 本地标签已关闭、WebSocket 已断开、服务端资源已回收完成 |
+| 服务端 `closed` 控制消息 | `reap` 中 `old.end("closed:...")` 触发、由 `writer()` 异步发送的事件 | 服务端资源已回收完成、消息发送时一定仍是 `CLOSING` |
+| 服务端 `CLOSED` | `Session.status` 的终态；`reap` 在结束旧 Binding 后写入，早于 metadata/buffer/lease/Map 清理完成 | HTTP 200、资源已回收完成 |
+| `SESSION_NOT_FOUND` | 详情接口表示该 ID 当前没有可用 Session | 权限错误、网络错误、资源已回收完成 |
 
 ### 5.4 `refreshClose` 与 `retryClose` 的并发规则
 
@@ -865,7 +958,7 @@ export interface CloseHandle {
 | `requested` | 同上；展示「已请求关闭，正在回收」；允许刷新/重试 |
 | `unknown` | 同上；展示「关闭结果未知」；允许刷新/重试；禁止 takeover/手动恢复 |
 | `failed` | 同上；展示「关闭请求失败」；允许重试；禁止 takeover/手动恢复 |
-| `ended` | 不创建 Pane；提示「Session 已结束」；列表中旧行不会再次打开 |
+| `ended` | 不创建 Pane；提示「Session 已结束或正在完成关闭（远端已不可接管）」；列表中旧行不会再次打开 |
 
 列表状态与协调器状态的关系：
 
@@ -899,36 +992,38 @@ export interface CloseHandle {
 - 工具栏「关闭 SSH 会话」按钮：`life === 'ready' && closeState === 'idle' && !ended && !logoutPending` 时可打开确认框；`pending/requested/unknown/failed` 时按钮仍可见但改为「查看关闭状态/重试」或禁用，具体文案由 UI 设计确定。
 - 确认框：确认后调用 `closeHandle.requestClose()`；错误显示在确认框内。
 - pending 时显示「取消等待」（调用 `cancelWaiting()`）；requested/unknown/failed 时显示「重试关闭」（`retryClose()`）和「刷新状态」（`refreshClose()`）。
-- 状态文案：`pending`「正在请求关闭」、`requested`「已请求关闭，正在回收」、`unknown`「关闭结果未知」、`failed`「关闭请求失败」、`ended`「会话已结束」。
+- 状态文案：`pending`「正在请求关闭」、`requested`「已请求关闭，正在回收」、`unknown`「关闭结果未知」、`failed`「关闭请求失败」、`ended`「会话已结束或正在完成关闭（远端已不可接管）」。
 - 服务端状态与本地状态分开展示：例如「关闭结果未知 · 服务端显示已连接」；不得用服务端 CONNECTED 覆盖本地 unknown。
 - `close()`（关闭标签）只退订、注销本地 stop 并释放 xterm/client；不调用 `cancelWaiting`，不 abort 协调器任务。
 - Pane 的 takeover/recovery 准入读取 `closeHandle.snapshot().state === 'idle'`；不得复制一份本地 `closeRequested`。
 - 详情查询失败时，候选 Pane 保留并显示错误；不得因为查询失败而销毁 Pane 或自动进入其他流程。
 - 已销毁 Pane 的迟到 `subscribe` 回调不更新 UI；订阅在 `onBeforeUnmount` 中解除。
 - **localStop 失败必须独立提示：** 同步 throw 或 Promise reject 时显示「已请求关闭，但本地终端未确认停止」；不得显示「已完全关闭」，也不得因此恢复接管准入。
-- **服务端 `closed` 消息只影响关闭状态与 ended 判定，不直接关闭本地终端：** 本地终端仍由 Pane 自己的生命周期处理。
+- **服务端 `closed` 消息只影响关闭状态与 ended 判定，不直接关闭本地终端：** 本地终端仍由 Pane 自己的生命周期处理；提示只能写「会话已结束/正在完成关闭/已不可接管」，不能写「服务端资源已回收完成」。
 
-### 5.7 备选方案
+### 5.7 备选方案（历史，A 已接受）
 
 | 方案 | 内容 | 优点 | 缺点 | 结论 |
 |---|---|---|---|---|
-| A（推荐） | HomePage 协调器 + Pane 只读句柄 | 单一所有权；Pane 销毁不丢状态；两路径共用 | 新增 `session/close.ts`；HomePage 注入句柄 | 推荐 |
-| B | Pane 持有 + 关闭时移交 HomePage | 不改 HomePage 所有权 | 交接窗口复杂；双所有者风险 | 不推荐 |
-| C | SessionManager 持有无 Pane 关闭任务 | 列表入口直接 | 与「SessionManager 只 emit」冲突；Pane 与列表两套 | 不推荐 |
-| D | 模块级单例 | 跨 Pane 简单 | 全局状态、跨页面/登录泄漏、测试隔离差 | 不推荐 |
-| E | localStorage/后端持久化 unknown | 刷新后仍阻止接管 | 新增存储/API/数据库；超出授权 | 备选，需单独授权 |
+| A（已接受） | HomePage 协调器 + Pane 只读句柄 | 单一所有权；Pane 销毁不丢状态；两路径共用 | 新增 `session/close.ts`；HomePage 注入句柄 | 已接受 |
+| B | Pane 持有 + 关闭时移交 HomePage | 不改 HomePage 所有权 | 交接窗口复杂；双所有者风险 | 不采用 |
+| C | SessionManager 持有无 Pane 关闭任务 | 列表入口直接 | 与「SessionManager 只 emit」冲突；Pane 与列表两套 | 不采用 |
+| D | 模块级单例 | 跨 Pane 简单 | 全局状态、跨页面/登录泄漏、测试隔离差 | 不采用 |
+| E | localStorage/后端持久化 unknown | 刷新后仍阻止接管 | 新增存储/API/数据库；超出授权 | 不采用 |
 
-### 5.8 需要用户确认的具体事项
+### 5.8 已确认事项（S7-0）
 
-1. 是否采用方案 A（HomePage 协调器 + Pane 只读句柄 + 本地 stop 注册）。
-2. 是否授权 `frontend/src/session/close.ts` 作为 S7-1 正式文件。
-3. 是否确认 Pane 与无 Pane 共用同一状态机。
-4. 是否确认 Pane 销毁只退订、不 abort、不清状态。
-5. 是否确认「非 idle 时创建 Pane 但不自动 prepare」的交互；或选择「不创建 Pane，HomePage 直接提示」。
-6. 是否确认 unknown 期间只允许查询、幂等重试和关闭本地标签。
-7. 是否确认 `ended` tombstone 保留到页面 dispose。
-8. 是否接受页面刷新后不保留本地 unknown、依赖服务端详情确认。
-9. 是否确认 §5.4 的查询/重试并发规则与 `queryEpoch` 方案。
+以下事项已全部接受：
+
+1. 采用方案 A（HomePage 协调器 + Pane 只读句柄 + 本地 stop 注册）。
+2. 授权 `frontend/src/session/close.ts` 作为 S7-1 正式文件。
+3. Pane 与无 Pane 共用同一状态机。
+4. Pane 销毁只退订、不 abort、不清状态。
+5. 非 idle 时创建只读 Pane，但不自动 prepare；Pane 不申请凭证、不创建 WebSocket、不执行 takeover。
+6. unknown 期间只允许查询、幂等重试和关闭本地标签。
+7. `ended` tombstone 保留到页面 dispose。
+8. 页面刷新后不保留本地 unknown，依赖服务端详情确认。
+9. 采用 §5.4 的查询/重试并发规则与 `queryEpoch` 方案。
 
 ## 6. D3：logoutPending 与关闭协调器的生命周期
 
@@ -953,7 +1048,7 @@ S6 §6.5 冻结顺序：
 
 `auth.ts:39-51`：HTTP 200 时立即 `clearIdentity()` 并 `logoutPending=false`；HomePage 随后才 close Pane 并跳转。
 
-### 6.3 推荐方案 A（待用户裁决）
+### 6.3 方案 A（S7-0 已接受）
 
 保持 `auth.ts` 不变，明确三个闸门：
 
@@ -961,28 +1056,90 @@ S6 §6.5 冻结顺序：
 - `signingOut`：HomePage 本地清理闸门；从点击到 close/跳转完成期间为真。
 - `identity === null`：logout 成功后的硬闸门；`Pane.live()` 和列表 `canRefresh` 都依赖它。
 
-协调器的登出规则：
+#### 6.3.1 实际 Pane handle 所有权（代码事实）
 
-1. `signOut()` 在同步设置 `logoutPending=true` 后，立即调用 `coordinator.dispose()`；协调器标记 disposed、abort 所有 DELETE 与详情查询、清空订阅，之后拒绝任何新的 `requestClose/retryClose/refreshClose`。
-2. `dispose()` 只停止本地等待，不发送新请求，不声称服务端撤销；已在服务端的 DELETE 仍可能继续执行。
-3. 协调器 dispose 后，Pane 的关闭 UI 不再更新；Pane 随后由 `stop()`/`close()` 处理，属于登出流程，不是关闭任务继续。
-4. 登出期间不得产生新的列表 GET、详情 GET、DELETE、WebSocket 或 takeover：`logoutPending` + `identity=null` + `manager.invalidate()` + `coordinator.dispose()` + Pane `live()` 共同保证。
-5. logout 失败时页面停留，协调器已 dispose，关闭任务不能继续；这是「退出未完成」的明确代价。Pane 已 stop，用户可重试 logout；关闭任务不再自动恢复。
-6. logout 成功时按 S6 §6.5 close Pane 并跳转；协调器随页面卸载释放。
-7. `ended` tombstone 在 dispose 时一并释放；登出后不再需要阻止旧行打开。
+| 对象 | 实际所有权/职责 | 证据 |
+|---|---|---|
+| HomePage `records[].handle` | 保存每个已 ready/failed Pane 的 `stop()`/`close()` 句柄；`registeredPanes()` 从 `records` 生成快照 | `frontend/src/pages/HomePage.vue:37-46`、`95-119` |
+| `records` 预占 | 从打开到 Pane `closed` 前一直保留；`paneClosed` 只在收到 `closed` 后移除 | `frontend/src/pages/HomePage.vue:57-108` |
+| Pane `handle` | `stop()` 失效当前 takeover/recovery 并调用 `client.stop()`；已有 Client 时返回其共享 `stopping` Promise；`close()` 释放本地资源并最终 emit `closed` | `frontend/src/components/terminal/TerminalPane.vue:196-228` |
+| `CloseCoordinator`（待新增） | 只拥有 `CloseTask`、DELETE/query controller、epoch/queryEpoch、订阅和 `localStop` 注册 | 本文 §5.3.4；当前代码中尚不存在 |
+| `coordinator.dispose()` | 清空协调器自身的任务、查询、订阅与 `localStop` 注册；不拥有、不清空 `records[].handle` | 本文 §5.3.4；`frontend/src/pages/HomePage.vue` 的 `records` 独立存在 |
 
-### 6.4 备选方案 B：`logoutPending` 保持到 close 完成
+因此：
+
+- signOut 的 Pane `stop()`/`close()` 必须从 `registeredPanes()` 的快照取得，不能从协调器的 `localStop` 注册表取得。
+- `coordinator.dispose()` 之后，协调器的 `localStop` 注册表为空，但 `entries` 中的 Pane handle 仍然有效；这是两个独立的所有权域。
+- 为消除顺序歧义，仍规定先建立 stop barrier、再 `dispose()`；不采用「先 dispose、再指望从协调器取句柄」的顺序。
+- 该顺序不需要修改 S6 §6.5：S6 只要求 stop 在 logout 前发起、close 在 logout 成功且 stop 屏障完成后执行；`dispose()` 是 S7 增量，不改变 stop 与 logout 的并行关系。
+- 未能证明：`coordinator.dispose()` 之后仍能从协调器取得 Pane handle；因此文档不采用该顺序，也不把 `localStop` 注册表当作 signOut 的句柄来源。
+
+#### 6.3.2 signOut 完整时序（与 S6 §6.5 一致）
+
+```text
+用户点击「退出登录」
+  1. 同步：signingOut=true；logoutPending=true
+     - Pane 的 flush:'sync' watcher 在赋值过程中调用 stop()
+     - 若 Pane 已有 Client，这次调用创建或复用 TerminalClient.stopping（共享 drain Promise）
+  2. 同步：operations.abort()；query.abort()；clearTimeout(debounce)；probe=null
+  3. 同步：manager.invalidate()；同步撤销列表发布身份并 abort 列表请求
+  4. 同步：entries = registeredPanes() 快照（来自 records，不来自 coordinator）
+  5. 同步：对 entries 逐个调用 handle.stop()，捕获同步 throw，取得共享 stop Promise
+     - stopBarrier = Promise.allSettled(entries.map(startStop))
+     - startStop 必须在当前同步调用栈内调用 handle.stop()；不得用 Promise.resolve().then 延迟调用
+     - 已有 Client 时，handle.stop() 再次进入 client.stop() 并返回同一个 client.stopping
+     - 第二次调用只重复同步失效动作，不创建第二个 drain Promise
+     - 若该 Pane 没有 Client，handle.stop() 返回已 resolve 的 Promise，不涉及资源清理
+  6. 同步：coordinator.dispose()
+     - abort 协调器的 DELETE/详情查询；标记 disposed；清空订阅与 localStop 注册
+     - 不等待 stopBarrier；不影响 entries 中的 Pane handle
+  7. 立即：logout()，与 stopBarrier 并行
+  8. 等待 stopBarrier；按 Session ID 收集 stop 失败
+  9. logout 失败：停留本页，不 close、不跳转；提示「退出未完成，请重试」+ stop 失败数
+     - 协调器已 dispose，关闭任务不继续；Pane 已 stop，用户可重试 logout
+ 10. logout 成功：stopBarrier 已完成；对 entries 调用 close() 并收集 close 失败
+     - close 失败不阻止跳转
+ 11. router.replace('/login')；跳转后写 authNotice 清理反馈
+ 12. finally：signingOut=false
+```
+
+顺序约束：
+
+- 第 1 步的 watcher 与第 5 步的 handle.stop() 是同一个 Pane.stop() 的两次调用，不是两次独立的 stop 清理；两者共享 `TerminalClient.stopping`。
+- 第 5 步的 `startStop` 必须同步调用 `handle.stop()`；若用 `Promise.resolve().then()` 延迟调用，可能错过第一次 stop 尚未清空 `this.stopping` 的同步窗口，从而不再共享同一个 drain Promise。
+- 第 3 步必须在 logout 之前完成：`manager.invalidate()` 同步撤销列表发布身份，防止登出期间继续产生列表 GET。
+- 第 5 步必须先于第 6 步：stop barrier 必须在 `coordinator.dispose()` 清空 `localStop` 注册之前建立。
+- 第 6 步必须先于第 7 步：协调器 dispose 后不得再发起新的关闭/查询请求。
+- 第 7 步不等待第 5 步完成：logout 与本地 stop drain 并行，保持 S6 §6.5 冻结语义。
+- 第 10 步只能在 logout 成功且 stop barrier 完成后执行；logout 失败不得 close。
+- stop/close 只使用第 4 步的 `entries` 快照；不读取协调器注册表，不因 `dispose()` 而丢失句柄。
+- 登出期间不得产生新的列表 GET、详情 GET、DELETE、WebSocket 或 takeover：`logoutPending` + `identity=null` + `manager.invalidate()` + `coordinator.dispose()` + Pane `live()` 共同保证。
+- logout 成功时按 S6 §6.5 close Pane 并跳转；协调器随页面卸载释放。
+- `ended` tombstone 在 dispose 时一并释放；登出后不再需要阻止旧行打开。
+
+代码证据：
+
+- `Pane.stop()` 调用 `recovery.value?.stop() ?? client?.stop()`（`frontend/src/components/terminal/TerminalPane.vue:196-199`）。
+- `Pane.stop()` 本身不缓存 Promise；每次调用都会重新进入 `recovery.stop()` 或 `client.stop()`。共享 drain 只由 `TerminalClient.stop()` 的 `this.stopping` 提供。
+- `SessionRecovery.stop()` 调用 `client.stop()`（`frontend/src/terminal/recovery.ts:120-123`）。
+- `TerminalClient.stop()` 在首次调用时创建并保存 `this.stopping`；后续调用在同步失效动作后直接 `return this.stopping`（`frontend/src/terminal/client.ts:750-768`）。
+- watcher 调用与 HomePage 的 handle.stop() 之间没有 await，第一次 stop 的 `finally` 尚未执行，`this.stopping` 仍保存着同一个 Promise；因此第二次调用返回的是同一个共享 drain Promise，不会新建第二个清理任务。
+- 证据边界：上述共享关系只适用于已有 Client 的 Pane。若 Pane 没有 Client，`Pane.stop()` 返回 `Promise.resolve()`，没有共享 drain，也不涉及资源清理。
+
+### 6.4 备选方案 B：`logoutPending` 保持到 close 完成（历史，不采用）
 
 - 需要修改 `auth.ts`，把「HTTP 登出完成」和「本地清理完成」分开。
 - 风险：`acceptIdentity()` 在 `logoutPending` 为真时直接返回，登录页可能无法登录；路由守卫会持续把 `/login` 重定向；需要同时修改 auth/router。
-- 结论：不推荐；如用户坚持，需要单独授权修改 `auth.ts`、`router/index.ts` 和 `auth.test.mjs`。
+- 结论：S7-0 已接受 A 方案；本方案不采用，不修改 `auth.ts`/`router`。
 
-### 6.5 需要用户确认的具体事项
+### 6.5 已确认事项（S7-0）
 
-1. 是否确认推荐方案 A（`auth.ts` 不改，`logoutPending` 不覆盖本地 close）。
-2. 是否确认 `signOut` 同步 `coordinator.dispose()`，登出期间不再有新的关闭/查询请求。
-3. logout 成功后 close 失败是否仍然跳转（推荐：是，U9 已裁决）。
-4. logout 失败时是否保持「页面停留、Pane 已停止、可重试」，并接受协调器已 dispose、关闭任务不继续。
+以下事项已全部接受：
+
+1. 采用方案 A：`auth.ts` 不改，`logoutPending` 不覆盖本地 close。
+2. `signOut` 同步 `manager.invalidate()` 后，从 `records[].handle` 调用 `stop()`；已有 Client 时取得共享 stop Promise，再 `coordinator.dispose()`；登出期间不再有新的关闭/查询请求。
+3. logout 成功后 close 失败仍然跳转（U9）。
+4. logout 失败时保持「页面停留、Pane 已停止、可重试」，并接受协调器已 dispose、关闭任务不继续。
 
 ## 7. D4：列表同步失效、打开前检查与 changed 刷新合并
 
@@ -1002,9 +1159,9 @@ S6 §6.5 冻结顺序：
 5. 打开 Session 时没有检查协调器的非 idle 关闭状态；仅依赖列表快照可能让新 Pane 进入 takeover。
 6. `ended` 后列表可能仍返回旧行；没有 tombstone 过滤规则。
 
-### 7.3 推荐方案 A（待用户裁决）
+### 7.3 方案 A（S7-0 已接受）
 
-1. `signOut()` 在设置 `logoutPending=true` 后、第一个 await 前，同步调用 `manager.value?.invalidate()` 和 `coordinator.dispose()`；`manager` 的类型扩展为 `{ refresh(): void; invalidate(): void }`。
+1. `signOut()` 在设置 `logoutPending=true` 后、第一个 await 前，同步调用 `manager.value?.invalidate()`；随后按 §6.3.2 从 `records[].handle` 调用 `stop()`；已有 Client 时取得 watcher 已创建的共享 `client.stopping`，建立 stop barrier，再 `coordinator.dispose()`。`manager` 的类型扩展为 `{ refresh(): void; invalidate(): void }`。
 2. `paneChanged()` 增加守卫：
 
    ```ts
@@ -1020,18 +1177,20 @@ S6 §6.5 冻结顺序：
 7. `ended` tombstone 参与列表渲染：同一 Session ID 的行禁用「打开」并提示已结束；列表刷新返回旧行不能覆盖 tombstone。
 8. `controller.invalidate()` 与 `dispose()` 的现有实现保留；旧请求的 `finally` 继续由 sequence 保护。
 
-### 7.4 备选方案 B：只依赖 `manager.invalidate()`，不改 `isAllowed`
+### 7.4 备选方案 B：只依赖 `manager.invalidate()`，不改 `isAllowed`（历史，不采用）
 
 - 优点：改动更小。
-- 缺点：`invalidate()` 只取消当前请求并递增 sequence；如果 `paneChanged` 在 `invalidate()` 之后、props 更新之前调用 `refresh()`，`isAllowed()` 仍可能返回旧的真值并发起新 GET。因此不推荐单独使用。
+- 缺点：`invalidate()` 只取消当前请求并递增 sequence；如果 `paneChanged` 在 `invalidate()` 之后、props 更新之前调用 `refresh()`，`isAllowed()` 仍可能返回旧的真值并发起新 GET。S7-0 已接受 A 方案，本方案不采用。
 
-### 7.5 需要用户确认的具体事项
+### 7.5 已确认事项（S7-0）
 
-1. 是否接受在 `SessionManager` 内直接读取 `logoutPending`（而不是新增 prop 或事件）。
-2. 是否接受 `queueMicrotask` 合并（不新增定时器）。
-3. 是否确认列表只作为快照，打开前必须检查协调器状态，接管前必须详情 GET。
-4. 隐藏列表时是否只标记待刷新、下次进入再 GET（现有行为，推荐保持）。
-5. 是否确认 `ended` tombstone 在列表中的过滤/禁用规则。
+以下事项已全部接受：
+
+1. 在 `SessionManager` 内直接读取 `logoutPending`，不新增 prop 或事件。
+2. 使用 `queueMicrotask` 合并，不新增定时器。
+3. 列表只作为快照，打开前必须检查协调器状态，接管前必须详情 GET。
+4. 隐藏列表时只标记待刷新，下次进入再 GET。
+5. `ended` tombstone 在列表中的过滤/禁用规则。
 
 ## 8. D5：DELETE 错误分类、ended 判定与反馈
 
@@ -1108,7 +1267,19 @@ DELETE `/api/sessions/{id}` 的处理链：
 ### 8.7 stop/close 同步抛错
 
 - 现状：`entries.map((entry) => entry.handle.stop())` 在 `try` 之外求值；同步抛错会跳过 `logout()`，`signingOut` 永久为真。
-- 推荐：把每个调用包装为 `Promise.resolve().then(() => entry.handle.stop())`，或用 `try/catch` 收集同步错误；`close()` 同理。保证 `allSettled` 始终拿到 Promise。
+- 推荐：用同步 `try/catch` 包装每个调用，调用本身仍在当前同步调用栈内执行；同步异常转成 rejected Promise，交给 `allSettled` 收集：
+
+  ```ts
+  function startStop(entry: PaneEntry): Promise<void> {
+    try {
+      return entry.handle.stop()
+    } catch (error) {
+      return Promise.reject(error)
+    }
+  }
+  ```
+
+- 不使用 `Promise.resolve().then(() => entry.handle.stop())` 启动 stop：它会把调用推迟到微任务，第一次 stop 的 `this.stopping` 可能已结算并清空，HomePage 便无法取得 watcher 创建的同一个共享 Promise。`close()` 可沿用同一同步 `try/catch` 包装；它不依赖共享 drain。
 
 ### 8.8 浏览器关闭
 
@@ -1127,9 +1298,9 @@ DELETE `/api/sessions/{id}` 的处理链：
 - 现状：`router/index.ts:29-38` 在 `/me` 网络错误时也 `clearIdentity()`，并显示「无法验证登录状态」。
 - 结论：S6 已裁决不修改；S7 不扩大范围。作为独立风险保留。
 
-## 9. 14 项竞争场景逐项分析（第三轮修订）
+## 9. 14 项竞争场景逐项分析（第五轮修订，第六轮校正）
 
-以下每项均按「冻结预期 / 当前实现 / 修订后目标行为 / 测试 / 结论」核对。结论中的「通过」仅指当前代码与冻结设计一致；「需裁决」表示设计或所有权未明确；「阻塞」表示不解决不能安全开始 S7。
+以下每项均按「冻结预期 / 当前实现 / 修订后目标行为 / 测试 / 结论」核对。结论中的「通过」仅指当前代码与冻结设计一致；历史结论中的「需裁决」表示当时设计或所有权未明确，S7-0 后均已转为已接受或已明确的实施要求；「阻塞」表示不解决不能安全开始 S7。
 
 ### 场景 1：点击关闭 SSH 后立即再次点击接管
 
@@ -1149,11 +1320,11 @@ DELETE `/api/sessions/{id}` 的处理链：
 
 ### 场景 3：DELETE 请求已发出，用户取消等待
 
-- 冻结预期：实施计划 §15 S7 行要求「DELETE 可取消等待」，但没有定义取消的含义、状态和提示。
+- 冻结预期：实施计划 §15 S7 行与 §21.6 要求「DELETE 可取消等待」，但没有定义取消的含义、状态和提示。
 - 当前实现：没有取消按钮；`closeSession` 不接受 `AbortSignal`；请求只能等待网络结束。
 - 修订后目标：`cancelWaiting(sessionId)` 由协调器 abort DELETE 本地等待，状态 `pending → unknown`；不发送新请求；Pane 显示「已停止等待，关闭结果未知」；takeover/recovery 保持禁用。
 - 测试：新增「pending 取消等待」用例（S7-C02）；断言 DELETE 次数仍为 1、状态 unknown、接管禁用。
-- 结论：需用户确认取消语义；确认后由 S7-1 实现，不再是设计阻塞。
+- 结论：D1-E 已接受「本地 abort 只停止等待、不新增本地超时」；由 S7-1 实现，不再是设计阻塞。
 
 ### 场景 4：DELETE 已在服务端成功，但浏览器未收到响应
 
@@ -1161,7 +1332,7 @@ DELETE `/api/sessions/{id}` 的处理链：
 - 当前实现：网络错误进入 catch，Pane 内 `closeRequested=false`，显示通用错误；接管准入重新开放。
 - 修订后目标：协调器进入 `unknown`，保持非 idle；Pane 销毁不丢状态；新 Pane 打开时读取 unknown，不自动 prepare；详情返回 CONNECTED/DISCONNECTED 也保持 unknown；只能刷新/重试/关闭标签。
 - 测试：新增「响应丢失 + Pane 销毁 + 重开」用例（S7-C02、C03、C04）；断言零 takeover POST/WS。
-- 结论：需用户确认 unknown 的准入；确认后不阻塞。
+- 结论：D1-A/D1-B 已接受 unknown 保持与 ended 证据规则；由 S7-1 实现，不阻塞。
 
 ### 场景 5：DELETE 失败或网络超时，服务端实际结果不确定
 
@@ -1169,7 +1340,7 @@ DELETE `/api/sessions/{id}` 的处理链：
 - 当前实现：没有本地超时；网络错误与 HTTP 业务错误都走同一 catch；Pane 内 `closeRequested=false`。
 - 修订后目标：协调器按 §8.2 分类：可证明的前置拒绝 → `failed`，其余 → `unknown`；两者都保持非 idle，允许幂等重试/刷新；不把 4xx/5xx 直接当 failed。
 - 测试：新增网络错误、`AUTH_REQUIRED`、`INVALID_REQUEST`、5xx、非 JSON 响应分类用例（S7-C05、C18）。
-- 结论：需用户确认分类表；不新增本地超时。
+- 结论：D1-D 已接受错误分类表，D1-E 不新增本地超时；由 S7-1 实现。
 
 ### 场景 6：关闭 Session 时，原 Pane 正处于 recovery、retry_wait、takeover、confirming 或 connecting
 
@@ -1198,8 +1369,8 @@ DELETE `/api/sessions/{id}` 的处理链：
 ### 场景 9：用户退出登录时，多个 Pane 分别处于正常连接、恢复中、接管中、初始化失败或清理失败
 
 - 冻结预期：S6 §6.5：同步 `logoutPending` → 同步 stop 全部 → 立即 logout → 等 stop → 成功后 close 全部 → 跳转；stop/close 失败分别统计。U9：登出成功优先。
-- 当前实现：`signOut()` 按此顺序；`registeredPanes()` 包含 ready/init_failed 的句柄；dispose_failed 的 `close()` 返回同一失败；`allSettled` 收集。
-- 修订后目标：在 `logoutPending` 后同步 `coordinator.dispose()`；协调器不再发新请求；stop/close 顺序不变。
+- 当前实现：`signOut()` 的 stop/logout/close 顺序与冻结预期一致；尚未调用 `manager.invalidate()`，也没有协调器 dispose；`registeredPanes()` 包含 ready/init_failed 的句柄；dispose_failed 的 `close()` 返回同一失败；`allSettled` 收集。
+- 修订后目标：在 `logoutPending` 后同步 `manager.invalidate()`；随后从 `records[].handle` 调用 `stop()`；已有 Client 时取得 watcher 已创建的共享 `client.stopping`，建立 stop barrier；再同步 `coordinator.dispose()`；协调器不再发新请求；stop/close 顺序不变。
 - 测试：S6-T35/T50/T39；新增 init_failed/dispose_failed 参与 signOut 的用例（S7-C21）。
 - 结论：通过（需补协调器 dispose 与测试）。
 
@@ -1223,7 +1394,7 @@ DELETE `/api/sessions/{id}` 的处理链：
 
 - 冻结预期：logout 与 stop 并行；close 只在 logout 成功且 stop 屏障完成后；logout 失败不 close；任一步骤失败不阻止后续合法步骤（登出成功优先）。
 - 当前实现：顺序一致；`stopTask` 在 logout 之前启动；`await stopTask` 在 logout 成功/失败分支中都会执行；close 在 stop 之后。
-- 修订后目标：`coordinator.dispose()` 在 stop 之前同步执行；stop/close 的同步 throw 包装为 Promise；`router.replace` reject 被捕获。
+- 修订后目标：stop barrier 在 `coordinator.dispose()` 之前建立；`dispose()` 在 logout 之前同步执行；stop/close 的同步 throw 由同步 `try/catch` 转为 rejected Promise；`router.replace` reject 被捕获。
 - 测试：S6-T50；新增同步 throw、router reject、dispose 幂等用例（S7-C20、C22）。
 - 结论：顺序通过；同步 throw 是 MAJOR 实施缺陷（S7-M4）。
 
@@ -1335,19 +1506,25 @@ pending 时 refresh
 用户点击「退出登录」
   -> 同步：signingOut=true；logoutPending=true
   -> 同步：operations.abort()；query.abort()；clearTimeout(debounce)；probe=null
-  -> 同步：manager.invalidate()；coordinator.dispose()
-  -> 同步：对已登记 Pane 发起 stop()（takeover.invalidate + recovery/client stop）
+  -> 同步：manager.invalidate()
+  -> 同步：entries = registeredPanes()（来自 records，不来自 coordinator）
+  -> 同步：对 entries 逐个调用 handle.stop()，捕获同步 throw；已有 Client 时取得 watcher 已创建的共享 client.stopping
+       （第二次调用只重复 takeover.invalidate + recovery/client stop 的同步部分，不新建 drain）
+  -> 同步：coordinator.dispose()（清空协调器任务/查询/订阅/localStop 注册）
   -> 立即：logout()（auth.ts 设置 logoutPending=true，identityEpoch++，单请求）
-  -> logout 失败：await stop；写「退出未完成，请重试」 + stop 失败数；return
-  -> logout 成功：await stop；对全部句柄 close()；收集 stop/close 失败
+  -> logout 失败：await stopBarrier；写「退出未完成，请重试」 + stop 失败数；return
+  -> logout 成功：await stopBarrier；对 entries 的句柄 close()；收集 stop/close 失败
   -> router.replace('/login')；跳转后写 authNotice 清理反馈
   -> finally：signingOut=false
 ```
 
 顺序约束：
 
-- `coordinator.dispose()` 必须在任何新的关闭/查询请求之前；它不等待服务端。
-- stop 在 logout 之前发起，但不必在 logout 之前完成。
+- `manager.invalidate()` 必须在 logout 之前完成；它同步撤销列表发布身份，防止登出期间产生新的列表 GET。
+- watcher 的 `stop()` 与 HomePage 的 `handle.stop()` 共用同一个 `TerminalClient.stopping`；后者只取得该 Promise，不新建第二个 drain。
+- stopBarrier 必须在 `coordinator.dispose()` 之前建立；stop/close 只使用 `entries` 快照，不读取协调器注册表。
+- `coordinator.dispose()` 必须在任何新的关闭/查询请求之前，且不等待服务端；它不清空 Pane handle 集合。
+- stop 在 logout 之前发起，但不必在 logout 之前完成；logout 与 stop drain 并行。
 - close 必须在 logout 成功且 stop 屏障完成后开始。
 - logout 失败不得 close、不得跳转；协调器已 dispose，关闭任务不继续。
 - 登出期间不得发送 Session DELETE；已在途的 DELETE 只被本地 abort 等待，服务端可能继续。
@@ -1419,7 +1596,7 @@ pending 时 refresh
 | ended 只认服务端证据 | 无来源断言 | S7-1 |
 | 行级关闭入口与意图路由 | 无入口 | S7-2 |
 | CONNECTING/CLOSING 行级关闭 | 无入口 | S7-2 |
-| signOut 同步 invalidate + dispose | 无 fetch 计数断言 | S7-3/S7-4 |
+| signOut 同步 invalidate + stop barrier + dispose | 无 fetch 计数断言 | S7-3/S7-4 |
 | 登出期间 paneChanged 零 GET | 无用例 | S7-3 |
 | 同批 changed 只发一次 GET | 无用例 | S7-3 |
 | stop/close 同步 throw | 无用例 | S7-4 |
@@ -1429,7 +1606,7 @@ pending 时 refresh
 | 页面刷新后详情确认 | 无用例 | S7-5/S7-6 |
 | 真实浏览器行级关闭/失败/登出 | 无 S7 脚本 | S7-6 |
 
-### 11.3 新增生命周期与所有权测试场景（第三轮扩充，第四轮增补）
+### 11.3 新增生命周期与所有权测试场景（第三轮扩充，第四轮、第五轮、第六轮增补）
 
 层级说明：U=协调器单元；P=Pane 组件；H=HomePage/SessionManager；B=浏览器/真实组件。网络请求数量指该场景中新增的 fetch/WS 次数，不含场景开始前已完成的列表查询。
 
@@ -1448,19 +1625,19 @@ pending 时 refresh
 | S7-C11 | H | HomePage 卸载时仍有在途 DELETE | dispose abort 本地等待；disposed 后无新请求；迟到响应丢弃 | DELETE 1；卸载后新增 0 | HomePage 唯一 dispose |
 | S7-C12 | B/H | 页面重新进入，服务端详情返回 CLOSING | 候选 Pane 不进入确认；禁止 takeover | 详情 GET 1；POST 0；WS 0 | 服务端权威 |
 | S7-C13 | B/H | 页面重新进入，详情 GET 网络错误 | 候选 Pane 保留；显示错误；不自动恢复；不显示确认 | 详情 GET 1；POST 0；WS 0 | 不凭本地无记录恢复 |
-| S7-C14 | H | 登出与 DELETE pending 并发 | 协调器 dispose；无新列表 GET/详情 GET/DELETE/WS；stop/logout/close 顺序正确 | 新增 0（除 logout 本身） | logoutPending + dispose |
+| S7-C14 | H | 登出与 DELETE pending 并发 | 同步 `manager.invalidate()`；从 `records` 调用 `stop()`；已有 Client 时取得共享 stop Promise，建立 barrier；再 dispose；无新列表 GET/详情 GET/DELETE/WS；stop/logout/close 顺序正确 | 新增 0（除 logout 本身） | logoutPending + 独立 Pane handle + dispose |
 | S7-C15 | H/P | dispose、signOut、Pane close 交错 | 只 abort 一次；只 dispose 一次；无迟到 UI；无重复释放 | 0 新请求 | 幂等 dispose/退订 |
 | S7-C16 | U/P | requested 下详情返回 CONNECTED/DISCONNECTED | 保持 requested；不回 idle；takeover 继续禁用 | 详情 GET 1；POST 0；WS 0 | 本地意图优先 |
 | S7-C17 | U | unknown 下详情返回 CLOSING | 升格为 requested；允许重试；仍禁用 takeover | 详情 GET 1；DELETE 0 | 服务端 CLOSING 证据 |
 | S7-C18 | U | 详情 GET 在途时 retryClose | GET 被 abort/丢弃；只发一次 DELETE；状态由 DELETE 决定 | 详情 GET 1；DELETE 1 | queryEpoch + epoch |
 | S7-C19 | P | recovery retry_wait 时确认关闭 | 停止重试；不自动 attach；takeover/recovery 禁用 | WS 0（关闭后）；DELETE 1 | 协调器准入 + Pane.stop |
 | S7-C20 | U/H | Pane 本地 stop 同步抛错 | 仍发送 DELETE；`localStopFailed=true`；提示本地未停止 | DELETE 1 | 协调器捕获本地异常 |
-| S7-C21 | U/P | 本地 close / WS 1006 / client.dispose 后，再收到服务端 closed 或详情 NOT_FOUND | 前三种不产生 ended；后两种产生 ended | 按场景 0 或 1 次 GET | ended 只认服务端证据 |
+| S7-C21 | U/P | 本地 close / WS 1006 / client.dispose 后，再收到服务端 closed 或详情 NOT_FOUND | 前三种不产生 ended；后两种产生 ended；closed 晚于 CLOSED/Map 删除到达也只提示不可接管 | 按场景 0 或 1 次 GET | ended 只认服务端证据 |
 | S7-C22 | U/H | 多个 refresh 并发；ended 后列表返回旧行 | 只有最后一次 refresh 可发布；旧行被 tombstone 过滤，不能重开 | 详情 GET ≥1；POST 0；WS 0 | queryEpoch + tombstone |
 | S7-C23 | P | Pane 确认关闭，检查 localStop 同步部分 | takeover/recovery 已失效；DELETE 在同步部分完成后发出 | DELETE 1 | localStop 同步契约 |
 | S7-C24 | U | localStop 同步 throw | 仍发 DELETE；`localStopFailed=true`；状态非 idle；不恢复准入 | DELETE 1 | 协调器捕获本地异常 |
 | S7-C25 | U | localStop Promise reject | 同 C24；提示本地未停止 | DELETE 1 | 异步失败不改关闭状态 |
-| S7-C26 | U | Pane A 注销时 Pane B 已注册 | B 的注册保留；A 的注销为空操作 | 0 | 注册 token 隔离 |
+| S7-C26 | U | Pane A 注销时 Pane B 已注册；新 Pane 注册前旧 Pane 已 closed | B 的注册保留；A 的注销为空操作；last-wins 只在旧 Pane closed 后发生 | 0 | 注册 token + 单 Pane 生命周期 |
 | S7-C27 | U | 重复注销、dispose 后注册 | 幂等；不保存回调；不发布状态 | 0 | dispose 边界 |
 | S7-C28 | U/B | `taken_over` / `AUTH_REQUIRED` / WS 1006 / 本地 stop | 均不产生 ended；仅服务端 `closed` 或 `NOT_FOUND` 产生 ended | 按场景 | ended 证据 |
 
@@ -1469,45 +1646,47 @@ pending 时 refresh
 - S7-C01/C02/C11 必须检查 `closed` 事件次数为 0（Pane 关闭标签不是 Session closed）。
 - S7-C03/C04/C12/C13/C16 必须检查零 `POST /takeover`、零 WebSocket。
 - S7-C05/C08/C09/C10/C18 必须检查 DELETE 请求体/路径按 Session ID 隔离，且没有第二个 controller。
-- S7-C14 必须检查 `manager.refresh()` 次数为 0、`closeSession` 次数不增加、WebSocket 构造次数为 0。
+- S7-C14 必须检查 `manager.refresh()` 次数为 0、`closeSession` 次数不增加、WebSocket 构造次数为 0；并断言 `manager.invalidate()` 在 logout 之前、stop 调用发生在 `dispose()` 之前、`handle.stop()` 由 `startStop` 同步调用、watcher 与 handle.stop() 返回同一个 `client.stopping`、`dispose()` 不清空 `records`。
 - S7-C15 必须检查协调器 `dispose()` 幂等、Pane `close()` 不 abort。
 - S7-C16/C17 必须检查状态不会回到 `idle`。
-- S7-C21 必须分别断言「本地关闭/WS 断开不置 ended」与「服务端 closed 消息/详情 NOT_FOUND 置 ended」。
+- S7-C21 必须分别断言「本地关闭/WS 断开不置 ended」与「服务端 closed 消息/详情 NOT_FOUND 置 ended」；并断言 UI 不出现「资源已回收完成」。
 - S7-C22 必须断言旧 refresh 的响应不写 `message`、不更新 `updatedAt`、不通知订阅者。
 - S7-C23 必须用调用顺序断言 `takeover.invalidate()`、`recovery.stop()` 同步部分、`client.stop()` 同步部分都先于 DELETE。
 - S7-C24/C25 必须断言 `state !== 'idle'`、`localStopFailed === true`、takeover/recovery 准入仍为假。
-- S7-C26/C27 必须断言旧注销不移除新注册、dispose 后注册不触发回调、不发布状态。
+- S7-C26/C27 必须断言旧注销不移除新注册、dispose 后注册不触发回调、不发布状态；新注册发生时旧 Pane 已 `closed`。
 - S7-C28 必须断言 `taken_over`、`AUTH_REQUIRED`、WS 1006、本地 stop 都不产生 ended tombstone。
 
-## 12. S7 任务计划草案（第三轮修订）
+## 12. S7 冻结实施计划（S7-0）
 
-编号仅用于本提案，不代表已冻结的实施顺序；任务依赖以本节表格为准。
+本节是 S7-0 冻结后的正式阶段计划；后续编码必须按阶段边界和用户授权执行。
 
 ### S7-0：设计裁决与计划冻结
 
 | 项目 | 内容 |
 |---|---|
 | 任务目标 | 把 D1–D5 的用户裁决写入计划，消除「待裁决」项；不写代码 |
-| 前置依赖 | 用户回答第 18 节问题 |
-| 修改文件 | 仅文档（修改 `doc/stage-5-implementation-plan.md` 或新增 S7 子计划，需单独授权） |
+| 前置依赖 | 本次 S7-0 授权已获得 |
+| 修改文件 | `doc/stage-5-s7-design-decision-proposal.md`、`doc/stage-5-implementation-plan.md` |
 | 不修改范围 | 所有生产代码、测试、配置、依赖、既有冻结文档（除非用户明确授权修订） |
 | 核心实现 | 记录协调器所有权、状态机、生命周期、D2 行级关闭、D3 登出、D4 列表、D5 反馈与 DELETE 分类 |
 | 测试要求 | 无 |
-| 验收标准 | 裁决条目逐项有明确结论；任务边界、文件范围、验收条件可执行 |
+| 验收标准 | 12 项裁决逐项登记；阶段边界、文件范围、测试与验收条件可执行；无未裁决 BLOCKER/MAJOR |
 | 回滚边界 | 只撤销本次文档增量；不影响代码 |
+| 完成后停止 | 停止并等待用户审查 S7-0 文档，再决定是否授权 S7-1 |
 
 ### S7-1：统一关闭协调器、DELETE 状态机与详情查询（完整强耦合单元）
 
 | 项目 | 内容 |
 |---|---|
 | 任务目标 | 实现 HomePage 持有的 `CloseCoordinator`：按 Session ID 管理 pending/requested/unknown/failed/ended、DELETE controller、query controller、epoch/queryEpoch、重试、去重、订阅、dispose、本地 stop 注册；Pane 只保留关闭 UI；Pane 销毁不丢状态；详情查询不解除关闭意图；ended 只认服务端证据 |
-| 前置依赖 | S7-0 的 D1 裁决 |
+| 前置依赖 | S7-0 完成；S7-1 须用户单独授权 |
 | 修改文件 | 新增 `frontend/src/session/close.ts`；修改 `frontend/src/api/sessions.ts`、`frontend/src/components/terminal/TerminalPane.vue`、`frontend/src/pages/HomePage.vue`、`frontend/tests/terminal-pane.test.mjs`、`frontend/tests/session-list.test.mjs`（HomePage 部分）；必要时新增 `frontend/tests/session-close.test.mjs` |
 | 不修改范围 | `client.ts`、`output.ts`、`recovery.ts`、`terminal/takeover.ts`（除非仅做准入读取适配）、`auth.ts`、`router`、后端、`Modal.vue` |
 | 核心实现 | `CloseCoordinator`/`CloseTask`/`CloseSnapshot`/`CloseHandle`；`closeSession(id, signal?)`；§4.3 状态机；§4.4 详情判定；§4.5 ended 权威；§5.4 并发规则；Pane 通过句柄请求/重试/取消/刷新；HomePage 创建/dispose/路由；非 idle 时禁止 takeover/手动恢复；Pane `close()` 只退订；新 Pane 识别遗留状态；单 Session 单 DELETE；epoch/queryEpoch/dispose 迟到隔离；`ended` tombstone |
 | 测试要求 | S7-C01–C07、C10、C15–C28；DELETE pending/200/可证明拒绝/网络错误/abort；unknown 禁止 takeover；重试幂等；旧 Pane/旧响应；关闭标签零 DELETE；关闭成功不 emit closed/不释放预占；关闭确认框错误可见；详情 GET 不解除关闭意图；ended 只认服务端证据 |
 | 验收标准 | 协调器是唯一 DELETE 所有者；Pane 销毁后状态仍在；新 Pane 非 idle 时零 takeover POST/WS；同一 Session 至多一个有效 DELETE；详情查询不把非 idle 改回 idle；ended 只由服务端证据产生；dispose 幂等；`npm test` 相关文件通过 |
 | 回滚边界 | 撤销 `session/close.ts`、`closeSession` 可选参数、Pane/HomePage 接线增量；恢复 S6 Pane 内 `closeRemote`；不影响候选/takeover |
+| 完成后停止 | 停止并等待用户验收 S7-1；不得自动进入 S7-2～S7-5 |
 
 说明：S7-1 通过协调器单元测试即可验证无 Pane 路径（直接调用 `requestClose/refreshClose`），不要求提前完成 SessionManager 行级 UI。S7-1 不得留下「Pane 仍拥有 DELETE、S7-2 再迁移」的中间架构。
 
@@ -1516,52 +1695,56 @@ pending 时 refresh
 | 项目 | 内容 |
 |---|---|
 | 任务目标 | 为列表每行提供「关闭」入口，满足核心设计 §9 的 CONNECTING/CLOSING 操作；只 emit 意图，复用 S7-1 协调器 |
-| 前置依赖 | S7-0 的 D2 裁决；S7-1 完成 |
+| 前置依赖 | D2-1、D2-2 已接受；S7-1 完成 |
 | 修改文件 | `frontend/src/components/session/SessionManager.vue`、`frontend/src/pages/HomePage.vue`、`frontend/tests/session-list.test.mjs` |
 | 不修改范围 | `TerminalPane.vue` 的候选/takeover 逻辑、`session/close.ts` 的状态机、`client.ts`、`recovery.ts`、auth/router、后端 |
 | 核心实现 | SessionManager 只 `emit('close', item)`；HomePage 有记录 → `coordinator.requestClose(id)`（有 ready Pane 时协调器调用其本地 stop）；无记录 → 页面级确认 + `coordinator.requestClose(id)`；CONNECTING/CLOSING 允许；结果刷新列表 |
 | 测试要求 | 行按钮 emit 当前 item；有 Pane 时零 HomePage DELETE；无 Pane 时恰好一次 DELETE；确认取消零 DELETE；重复点击幂等；CONNECTING/CLOSING；多 Session 不串扰；S7-C08/C09 |
 | 验收标准 | SessionManager 不直接 DELETE；同一 Session 任意时刻只有一个 DELETE 所有者；关闭列表不误删 SSH；关闭 Pane 不发 DELETE；S7-2 不新增第二套状态机 |
 | 回滚边界 | 移除操作列「关闭」按钮与 HomePage 路由增量；保留 S7-1 协调器；不改变「打开」行为 |
+| 完成后停止 | 停止并等待用户验收 S7-2 |
 
 ### S7-3：列表同步失效与 changed 刷新合并
 
 | 项目 | 内容 |
 |---|---|
 | 任务目标 | 登出/身份失效/卸载时同步撤销列表发布身份；同一同步批次多个 changed 合并为一次 GET；打开前检查协调器状态；ended tombstone 过滤 |
-| 前置依赖 | S7-0 的 D4 裁决；S7-1（读取协调器状态） |
+| 前置依赖 | D4-1 已接受；S7-1（读取协调器状态） |
 | 修改文件 | `frontend/src/pages/HomePage.vue`、`frontend/src/components/session/SessionManager.vue`、`frontend/tests/session-list.test.mjs`；`session/list.ts` 仅在发现真实缺陷时修改 |
 | 不修改范围 | `SessionListController` 的既有 sequence/Abort 语义、auth/router、Pane 生命周期 |
 | 核心实现 | `signOut()` 同步 `manager.invalidate()`；`paneChanged()` 守卫 + `queueMicrotask` 合并；`isAllowed` 增加 `!logoutPending` 同步检查；`openSession` 检查 `getCloseState`；HomePage 订阅协调器状态变化并合并刷新；ended tombstone 过滤 |
 | 测试要求 | logoutPending 设置后同步零新 GET；paneChanged 在登出中零 GET；同批多 changed 一次 GET；旧 finally 不清新 loading；隐藏列表只标记待刷新；非 idle 打开不 prepare；ended 旧行不能重开 |
 | 验收标准 | fetch 计数符合 D1=A；无定时器/轮询；无旧响应覆盖新快照；登出后零列表请求 |
 | 回滚边界 | 撤销守卫与合并；恢复 `paneChanged` 直接 refresh；不影响列表组件本身 |
+| 完成后停止 | 停止并等待用户验收 S7-3 |
 
 ### S7-4：完整登出语义
 
 | 项目 | 内容 |
 |---|---|
 | 任务目标 | 完成 D3/D5：stop/logout/close/跳转的失败与异常处理；同步抛错防护；`router.replace` reject 处理；协调器 dispose；反馈分离 |
-| 前置依赖 | S7-1（协调器）、S7-3（同步失效）、S7-0 的 D3 裁决 |
-| 修改文件 | `frontend/src/pages/HomePage.vue`、`frontend/tests/session-list.test.mjs`、`frontend/tests/auth.test.mjs`（仅扩展测试）；`auth.ts`/`router` 仅在 D3 方案 B 且获授权时修改 |
+| 前置依赖 | S7-1（协调器）、S7-3（同步失效）、D3-1 已接受 |
+| 修改文件 | `frontend/src/pages/HomePage.vue`、`frontend/tests/session-list.test.mjs`、`frontend/tests/auth.test.mjs`（仅扩展测试）；D3-1 已接受 A 方案，`auth.ts`/`router` 不修改 |
 | 不修改范围 | 认证协议、后端、S5 连接契约、Pane 候选/takeover 状态机、`session/close.ts` 的状态机 |
-| 核心实现 | 安全包装 stop/close 调用；`try/catch` 处理 `router.replace`；stop/close 失败分别反馈；logout 失败保持重试；close 失败仍跳转；同步 `coordinator.dispose()`；不发送 Session DELETE |
+| 核心实现 | 同步 `manager.invalidate()`；从 `records[].handle` 同步调用 `stop()`；已有 Client 时取得 watcher 已创建的共享 stop Promise，并用同步 `try/catch` 转成 rejected Promise 后形成 stop barrier；再同步 `coordinator.dispose()`；`try/catch` 处理 `router.replace`；stop/close 失败分别反馈；logout 失败保持重试；close 失败仍跳转；不发送 Session DELETE |
 | 测试要求 | logout 成功/失败/不确定；stop/close reject 与同步 throw；router.replace reject；迟到 AUTH_REQUIRED；init_failed/dispose_failed 参与；多 Pane 混合状态；S7-C14 |
 | 验收标准 | 顺序符合 §6.5；logout 成功必跳转；logout 失败不 close 不跳转；`signingOut` 必定复位；登出期间零新 GET/DELETE/WS |
 | 回滚边界 | 撤销 signOut 增量；恢复 S6 现有正常路径；不回退第四阶段 logoutPending/stop 语义 |
+| 完成后停止 | 停止并等待用户验收 S7-4 |
 
 ### S7-5：页面退出与迟到回调隔离
 
 | 项目 | 内容 |
 |---|---|
 | 任务目标 | 页面卸载、关闭标签、登出、迟到 GET/DELETE/WS 回调不修改已失效 Pane，不启动新任务；不重复 abort/释放；刷新后按 S6 候选 Pane 流程确认 |
-| 前置依赖 | S7-1、S7-4 |
+| 前置依赖 | S7-1 完成 |
 | 修改文件 | `frontend/src/components/terminal/TerminalPane.vue`、`frontend/src/pages/HomePage.vue`、对应测试 |
 | 不修改范围 | `client.ts`/`output.ts`/`recovery.ts` 的 S5 语义；auth/router；`session/close.ts` 的状态机 |
 | 核心实现 | Pane 订阅解除与本地 stop 注销；协调器 dispose/epoch/queryEpoch；HomePage `pageDisposed` 守卫；列表 dispose 保持；页面重进后的详情确认（不自动恢复） |
 | 测试要求 | DELETE 在途时关闭标签/卸载；迟到 200/错误；takeover loading 时卸载；recovery retry_wait 时卸载；S7-C11/C12/C13/C15/C21；零新 fetch/WS |
 | 验收标准 | 卸载后零新请求；不因迟到回调 emit closed/changed；远端 Session 只由服务端回收；本地记录只在 Pane closed 或 ended 时按规则移除；刷新后不凭本地无记录恢复 |
 | 回滚边界 | 撤销订阅/epoch/卸载守卫；保留 S7-1 协调器 |
+| 完成后停止 | 停止并等待用户验收 S7-5 |
 
 ### S7-6：自动化测试、浏览器验收与报告
 
@@ -1575,13 +1758,14 @@ pending 时 refresh
 | 测试要求 | `npm test`、`npm run typecheck`、`npm run build`、`git diff --check`；浏览器至少覆盖行级关闭、DELETE 失败/取消、详情刷新、登出失败/成功、列表退出、Pane 销毁后重开 |
 | 验收标准 | 测试数量与结果可复现；截图对应场景；未验证项明确；无伪造真实环境结论 |
 | 回滚边界 | 仅撤销测试/报告增量；不影响生产代码 |
+| 完成后停止 | 停止并等待用户验收 S7-6 与 S7 全阶段；不得自行进入 S8 或部署 |
 
 ## 13. 文件修改范围汇总
 
 | 文件 | S7 允许用途 | 明确不修改 |
 |---|---|---|
 | `frontend/src/session/close.ts` | **S7-1 新增**：`CloseCoordinator`/`CloseTask`/`CloseSnapshot`/`CloseHandle`；按 Session ID 管理状态、DELETE/query controller、epoch/queryEpoch、订阅、dispose、本地 stop 注册 | 不建全局 Store/事件总线/定时轮询；不管理 takeover/recovery；不渲染 UI |
-| `frontend/src/pages/HomePage.vue` | 创建/持有/dispose 协调器；按 Session ID 路由；打开前检查状态；订阅状态变化刷新列表；同步 invalidate；signOut 异常处理；ended tombstone 过滤 | 不在已有 Pane 时另行 DELETE；不复制状态机；不参与 takeover 流程 |
+| `frontend/src/pages/HomePage.vue` | 创建/持有/dispose 协调器；按 Session ID 路由；打开前检查状态；订阅状态变化刷新列表；同步 `manager.invalidate()`；signOut 从 `records[].handle` 调用 `stop()`；已有 Client 时取得共享 stop Promise 后建立 barrier，再 dispose；异常处理；ended tombstone 过滤 | 不在已有 Pane 时另行 DELETE；不复制状态机；不参与 takeover 流程 |
 | `frontend/src/components/session/SessionManager.vue` | 操作列「关闭」、`close` 事件、`isAllowed` 同步检查、ended 行禁用 | 不直接 DELETE；不持有关闭状态；不按状态隐藏「打开」 |
 | `frontend/src/components/terminal/TerminalPane.vue` | 关闭确认框、取消等待/重试/刷新按钮、状态文案、错误展示；通过 `CloseHandle` 调用协调器；注册/注销本地 stop；`close()` 只退订；详情查询失败保留候选 Pane | 不直接 `closeSession`；不持有 DELETE Promise/controller；不跨 Pane 保留状态；不改候选/takeover 三检查点；不改 `connectTakeover` 调用 |
 | `frontend/src/api/sessions.ts` | `closeSession(id, signal?)` | 不改 List/详情 DTO 校验；不改错误码 |
@@ -1590,19 +1774,19 @@ pending 时 refresh
 | `frontend/tests/terminal-pane.test.mjs` | Pane 关闭 UI、退订、本地 stop 注册、迟到响应、关闭标签零 DELETE、详情失败保留候选 | 不删除/弱化 S6 用例 |
 | `frontend/tests/session-list.test.mjs` | HomePage 协调器接线、行级关闭、signOut、列表失效、changed 合并、tombstone | 不删除/弱化 S6 用例 |
 | `frontend/tests/session-close.test.mjs` | 新增协调器单元测试（若采用独立文件） | 不测试真实网络；用受控 fetch/Abort |
-| `frontend/tests/auth.test.mjs` | 仅在 D3 需要时扩展 logout 生命周期用例 | 不改认证协议 |
+| `frontend/tests/auth.test.mjs` | S7-4 仅扩展 logout 生命周期用例 | 不改认证协议 |
 | `frontend/src/styles/base.css` | 仅当行级关闭按钮或关闭状态区需要最小样式时 | 不做无关视觉重构 |
-| `frontend/src/stores/auth.ts`、`router/index.ts` | 仅 D3 方案 B 且单独授权时 | 默认不改 |
+| `frontend/src/stores/auth.ts`、`router/index.ts` | 不修改（D3-1 已接受 A 方案） | 不改认证协议与登出成功边界 |
 | 后端、`client.ts`、`output.ts`、`recovery.ts`、`Modal.vue`、冻结文档 | 不允许修改 | — |
 
 ## 14. 任务依赖关系
 
 ```text
-S7-0（裁决）
+S7-0（已冻结）
   ├─> S7-1（统一协调器 + DELETE/详情状态机 + Pane/HomePage 接线）
   │     ├─> S7-2（行级关闭入口）
   │     ├─> S7-3（列表失效/合并/打开前检查）
-  │     ├─> S7-4（完整登出）
+  │     │     └─> S7-4（完整登出）
   │     └─> S7-5（页面退出/迟到回调/刷新后确认）
   └─> S7-2/S7-3/S7-4/S7-5 ──> S7-6（测试/浏览器/报告）
 ```
@@ -1619,11 +1803,15 @@ S7-0（裁决）
 
 ### 15.1 功能验收
 
+- [ ] S7-0 的 12 项裁决均有正式记录；本文与实施计划不存在未裁决 BLOCKER/MAJOR。
+- [ ] S7-1 未获授权前，不产生任何生产代码或测试代码改动。
 - [ ] 关闭 SSH 的确认框、pending、requested、unknown、failed、重试、取消等待、刷新状态均有明确 UI 和状态。
 - [ ] DELETE 200 不显示「已关闭」，不 emit `closed`，不释放 Session ID 预占。
 - [ ] 详情 GET 返回 CONNECTED/DISCONNECTED 时，requested/unknown/failed 均不回到 idle。
 - [ ] 详情 GET 返回 CLOSING 时，unknown/failed 升格为 requested；不得恢复接管。
 - [ ] `ended` 只由详情 SESSION_NOT_FOUND 或服务端 `closed` 控制消息产生；本地关闭/WS 断开/连接任务停止不产生 ended。
+- [ ] `closed` 只提示「会话已结束/正在完成关闭」或「已不可接管」，不得提示「服务端资源已回收完成」。
+- [ ] `CLOSING`、`CLOSED`、`SESSION_NOT_FOUND`、`closed` 在 UI、日志和状态机中不混用；`SESSION_NOT_FOUND` 不宣称完整回收。
 - [ ] Pane 销毁后，协调器仍保留 pending/unknown；重新打开同一 Session 不进入 takeover/手动恢复。
 - [ ] 新 Pane 在非 idle 状态下不自动 prepare、不显示接管确认框、零 Prepare/WS。
 - [ ] 页面刷新后按 S6 方案 B 创建候选 Pane；详情失败保留候选并显示错误，不显示确认。
@@ -1637,6 +1825,8 @@ S7-0（裁决）
 
 - [ ] localStop 的同步部分（takeover/recovery 失效、client stop 启动）在 DELETE 之前完成；throw/reject 不恢复准入。
 - [ ] 旧注销函数不影响新注册；dispose 后注册不执行、不发布状态。
+- [ ] 同一 Session 的新 Pane 注册前旧 Pane 已 `closed`；last-wins 仅依赖该单 Pane 生命周期不变量，不把 token 当作旧 Pane 停止保证。
+- [ ] signOut 同步 `manager.invalidate()` 后，从 `records[].handle` 调用 `stop()`；已有 Client 时取得 watcher 已创建的共享 stop Promise，建立 barrier，再 `coordinator.dispose()`；stop/close 不读取协调器注册表。
 - [ ] `closed` 证据符合 §4.5 链路；`taken_over`/`AUTH_REQUIRED`/WS 断开不产生 ended。
 - [ ] 刷新后旧 DELETE 与新 takeover 的竞态已作为 D1 接受条件记录。
 
@@ -1669,7 +1859,9 @@ S7-0（裁决）
 - 若无法安全分离，保留并报告，不强行回滚。
 - 回滚本文档时只撤销工作区增量，不修改暂存区与已提交内容。
 
-## 17. 尚未解决的风险与非目标
+## 17. 已接受残余风险与非目标
+
+S7-0 后没有未裁决的 BLOCKER 或 MAJOR；以下为已接受的能力边界、残余风险和非目标。
 
 ### 17.1 风险
 
@@ -1679,16 +1871,20 @@ S7-0（裁决）
 | 详情无法证明旧 DELETE 失效 | 详情只反映查询瞬间；旧页面 DELETE 可能尚未生效 | 明确列为能力边界；不声称刷新后绝对安全；必要时由用户裁决是否引入持久化 |
 | DELETE 结果未知 | 前端无法证明服务端是否已关闭 | unknown 禁止 takeover；只允许刷新/重试/关闭标签 |
 | ended 误判 | 把本地关闭/WS 断开当成远端结束会提前释放预占 | 只接受 §4.5 两类服务端证据；测试覆盖 C21 |
-| 请求悬挂 | DELETE/logout 无本地超时 | 方案 A 由用户取消；或 D1 方案 B 增加 UI 期限 |
+| `closed` 被误读为回收完成 | `closed` 消息可能晚于 `CLOSED` 或 Map 删除到达，且 `reap` 仍在清理 metadata/buffer/lease | UI 只提示不可接管/正在完成关闭；不显示「资源已回收」 |
+| `SESSION_NOT_FOUND` 早于完整回收 | `Get` 在状态 `CLOSED` 时即返回 404，而 `reap` 后续仍会清 buffer、释放 lease、删除 Map | 只把 404 当作「当前无可用 Session」，不宣称回收完成 |
+| last-wins 依赖单 Pane 不变量 | 若未来允许同一 Session 两个活动 Pane，最后注册会覆盖旧 stop | 保持 S6 单 Pane 记录生命周期；前提变化时重新裁决方案 B/C |
+| signOut 句柄所有权混淆 | 若先 `dispose()` 再从协调器取句柄，`localStop` 注册已清空 | stop barrier 必须先由 `records[].handle` 快照建立，再 dispose |
+| 请求悬挂 | DELETE/logout 无本地超时 | 已接受 D1-E：由用户取消等待；不新增本地超时 |
 | 协调器内存 | 每个 Session 一个任务；ended tombstone 保留到页面 dispose | 数量受页面内 Session 数限制；dispose 统一释放；不引入全局 Map |
 | 非 idle 创建 Pane | Pane 只读展示关闭状态，仍需确保不自动 prepare | Pane 挂载时读取 `CloseHandle`；HomePage 不调用 prepare；测试覆盖零 POST/WS |
 | 行级关闭 UI | 无 Pane 时的确认框由 HomePage 持有 | 与 Pane 确认框文案一致；同一 Session 不会同时出现两个确认框 |
 | 路由守卫网络错误（U6） | 网络抖动可能被当作身份失效 | 保持独立问题，不在 S7 修改 |
 | `authNotice` 覆盖 | logout 后 `/me` 可能先写「登录已过期」 | 跳转后写清理反馈；真实 router 需浏览器验证 |
-| 同步抛错 | 自定义 Pane 句柄可能同步 throw | 包装为 Promise；测试覆盖 |
+| 同步抛错 | 自定义 Pane 句柄可能同步 throw | 同步 `try/catch` 转为 rejected Promise；测试覆盖 |
 | 真实环境差异 | Mock 不能证明真实网络/SSH 行为 | S7-6 明确标记未验证项，不伪造结论 |
 | localStop 契约漂移 | 若未来 `Pane.stop()` 把失效动作移到 await 之后，同步屏障失效 | S7-1 增加顺序断言；变更 stop 需重新审查 |
-| `closed` 证据依赖 CLOSING 不可逆 | 若服务端新增「Binding 结束但 Session 仍可 attach」的路径，证据 B 失效 | 记录为协议前提；变更需重新审查 |
+| `closed` 证据依赖 CLOSING 不可逆 | 若服务端新增「Binding 结束但 Session 仍可 attach」的路径，证据 B 失效；当前代码不存在该路径 | 记录为协议前提；变更需重新审查 |
 | 旧 DELETE 竞态 | 刷新后旧 DELETE 可能在新 takeover 之后到达并关闭新连接 | 列为 D1 接受条件；如需消除需持久化或后端方案 |
 
 ### 17.2 非目标
@@ -1702,13 +1898,13 @@ S7-0（裁决）
 - 不新增 localStorage/IndexedDB/后端关闭意图记录（仅作为备选列出）。
 - 不提前实现 S8。
 
-## 18. 需要用户明确裁决的问题
+## 18. S7-0 裁决登记（已接受）
 
-裁决分两层：**D1 只决定整体所有权与架构边界**；D1-A～D1-E 是独立技术规则，必须分别裁决。接受 D1 不等于自动接受 D1-A～D1-E。
+D1、D1-A～D1-E、D2-1、D2-2、D3-1、D4-1、D5-1、D5-2 均已在 S7-0 接受，不再作为待裁决项。
 
-### 18.1 第一层：D1 整体架构决策（BLOCKER）
+### 18.1 第一层：D1 整体架构决策（已接受）
 
-接受 D1 表示同时接受以下全部内容：
+D1 已接受，包含以下全部内容：
 
 1. HomePage 持有按 Session ID 管理的 `CloseCoordinator`；
 2. Pane 只负责关闭 UI，不拥有跨 Pane 生命周期的关闭任务；
@@ -1719,40 +1915,67 @@ S7-0（裁决）
 7. **接受 §4.7.2 的旧 DELETE / 新 takeover 竞态**：刷新后旧 DELETE 可能在新页面 takeover 成功之后到达并关闭新连接，现有接口无法消除；
 8. 授权新增 `frontend/src/session/close.ts` 作为 S7-1 正式文件。
 
-D1 只裁决整体所有权与架构边界，不包含 D1-A～D1-E 的具体协议规则。
+D1 只决定整体所有权与架构边界；D1-A～D1-E 作为独立技术规则已分别接受。
 
-### 18.2 第二层：独立技术规则
+### 18.2 第二层：独立技术规则（已接受）
 
-| 编号 | 推荐方案 | 拒绝推荐方案的后果 | 影响 S7-1 | 依赖 D1 |
-|---|---|---|---|---|
-| D1-A | §4.4 详情判定表：详情 GET 永不把非 idle 解除为 idle；unknown/failed + CLOSING 升格为 requested | 关闭意图可能被一次普通查询解除，重新放开 takeover | 是：状态机核心 | 是 |
-| D1-B | §4.5 `ended` 只接受详情 `SESSION_NOT_FOUND` 与服务端 `closed` 控制消息 | 误把本地关闭/WS 断开当成远端结束，提前释放预占 | 是：ended 判定 | 是 |
-| D1-C | §4.8.1 / §4.8.5 同步顺序：建立 pending → 本地 stop 同步部分 → DELETE | 关闭与 takeover 之间出现竞态窗口 | 是：requestClose 实现 | 是 |
-| D1-D | §8.2 DELETE 分类表：`failed` 仅限可证明的前置拒绝，其余 unknown | 误判「服务端未执行」，可能提前放开接管 | 是：错误分类 | 是 |
-| D1-E | 本地 abort 只停止等待、不新增本地超时、`failed` 保留关闭意图、DELETE 200 不等于 CLOSED | 取消等待被误解为撤销关闭，或 200 被当成 CLOSED | 是：状态语义 | 部分（引用第三轮已列裁决） |
-
-每项均可在 D1 被接受后单独调整；调整 D1-A～D1-E 不改变 D1 的所有权结论，但会改变 S7-1 的状态机细节。
-
-### 18.3 D2–D5 与既有裁决
-
-| 编号 | 级别 | 内容 | 依赖 / 引用 |
+| 编号 | 已接受方案 | 影响 S7-1 | 依赖 D1 |
 |---|---|---|---|
-| D2-1 | BLOCKER | 是否增加 SessionManager 行级「关闭」；CONNECTING 允许关闭、CLOSING 允许幂等重复关闭（推荐均为是） | 依赖 D1、D1-C |
-| D2-2 | MAJOR | 非 idle 时打开 Session：创建「只读关闭状态 Pane」还是 HomePage 直接提示（推荐前者） | 依赖 D1 |
-| D3-1 | MAJOR | 确认 `logoutPending` 不覆盖本地 close、`auth.ts` 不改、`signOut` 同步 `dispose()` | 引用 S6 §6.5 已冻结顺序与第四阶段 §13.2；本项只确认实施选择，不重新裁决登出语义 |
-| D4-1 | MAJOR | SessionManager 直接读取 `logoutPending`、`queueMicrotask` 合并、ended tombstone 过滤 | 引用实施计划 §6.1 D1=A；依赖 D1、D1-A |
-| D5-1 | MINOR | 关闭确认框内显示 DELETE 错误、localStop 失败独立提示 | 引用第四阶段 §17 的「失败保留明确结果」；不新增裁决 |
-| D5-2 | MINOR | `router.replace` reject 时记录日志并仍写清理反馈 | 实施细节；不改登出成功语义 |
-| S7-0 | — | 是否授权在裁决后修订实施计划或新增 S7 子计划文档 | 本轮未修改任何冻结文档 |
+| D1-A | §4.4 详情判定表：详情 GET 永不把非 idle 解除为 idle；unknown/failed + CLOSING 升格为 requested | 状态机核心 | 是 |
+| D1-B | §4.5 `ended` 只接受详情 `SESSION_NOT_FOUND` 与服务端 `closed` 控制消息；语义限定为「已不可接管」，不宣称资源回收完成 | ended 判定 | 是 |
+| D1-C | §4.8.1 / §4.8.5 同步顺序：建立 pending → 本地 stop 同步部分 → DELETE | requestClose 实现 | 是 |
+| D1-D | §8.2 DELETE 分类表：`failed` 仅限可证明的前置拒绝，其余 unknown | 错误分类 | 是 |
+| D1-E | 本地 abort 只停止等待、不新增本地超时、`failed` 保留关闭意图、DELETE 200 不等于 CLOSED | 状态语义 | 是 |
 
-不存在「接受 D1 即自动接受 D1-A～D1-E」的隐含关系；也不存在与已冻结规则重复的裁决项。
+### 18.3 D2–D5 与 S7-0 授权（已接受）
+
+| 编号 | 历史级别 | 已接受内容 | 依赖 / 引用 |
+|---|---|---|---|
+| D2-1 | BLOCKER | 增加 SessionManager 行级「关闭」；CONNECTING 允许关闭、CLOSING 允许幂等重复关闭；重复关闭复用同一协调器状态与流程 | D1、D1-C |
+| D2-2 | MAJOR | 非 idle 时采用只读关闭状态 Pane；Pane 不申请凭证、不创建 WebSocket、不执行 takeover | D1 |
+| D3-1 | MAJOR | `logoutPending` 不覆盖本地 close、`auth.ts` 不改；`signOut` 同步 `manager.invalidate()` 后，从 `records[].handle` 调用 `stop()` 取得共享 stop Promise，再同步 `dispose()`；严格沿用 S6 登出顺序 | S6 §6.5、第四阶段 §13.2 |
+| D4-1 | MAJOR | SessionManager 直接读取 `logoutPending`、`queueMicrotask` 合并、ended tombstone 过滤 | 实施计划 §6.1、D1、D1-A |
+| D5-1 | MINOR | 关闭确认框内显示 DELETE 错误；localStop 失败独立提示 | 第四阶段 §17 |
+| D5-2 | MINOR | `router.replace` reject 时记录日志并仍写清理反馈；不改变已成功的 logout | 实施细节 |
+| S7-0 | — | 已授权修订 S7 设计提案与实施计划；不构成 S7-1 编码授权 | 本次用户授权 |
+
+当前没有未裁决的 BLOCKER 或 MAJOR；旧 DELETE 与新 takeover 的竞态按 D1 第 7 项作为已接受残余风险保留。
 
 ## 19. 结论
 
-1. **`closed` 证据已核实。** 它只在 `Session.reap` 中通过 `old.end("closed:" + reason)` 产生，发出时 Session 处于不可逆的 `CLOSING`；`canBind` 与 `closeLocked` 保证不会回到 CONNECTED/DISCONNECTED。因此可以保留为 `ended` 证据，但依据必须写成「CLOSING 不可逆」，不是「Binding 结束」。
-2. **localStop 同步契约已补齐。** 当前 `Pane.stop()` 在返回 Promise 前已完成 takeover/recovery 失效与 `client.stop()` 同步部分，满足「先 stop 后 DELETE」；同步 throw / Promise reject 均不恢复准入，DELETE 继续，失败独立反馈。
-3. **刷新竞态已如实记录。** 旧 DELETE 可能在新页面 takeover 之后到达；详情 GET 与提交复查都无法消除。该风险已写入 §4.7.2，并作为 D1 的接受条件，不是普通备注。
-4. **裁决已分层。** D1 只决定所有权与架构；D1-A～D1-E 是独立技术规则，分别说明推荐方案、拒绝后果、对 S7-1 的影响与对 D1 的依赖。
-5. **接口与术语已统一。** `getCloseState` 区分「从未创建 / 已创建 idle / ended tombstone / disposed」；`registerLocalStop` 使用 token 身份隔离；状态发布规则覆盖注销、旧 Pane、dispose 与重复注销。
-6. **当前仍不具备直接开始 S7 编码的条件。** 需要用户先对 §18 的 D1、D1-A～D1-E、D2-1 作出裁决；裁决后按 S7-0 → S7-1 → S7-2 → S7-3 → S7-4 → S7-5 → S7-6 推进。
-7. **本轮没有修改任何生产代码、测试、配置或既有冻结文档**；只修改本提案文档。Git 工作区只有本提案的未暂存修改；暂存区为空。
+1. **`closed` 语义已收敛。** `closed:` 原因只在 `Session.reap` 中设置；原因设置时 Session 处于不可逆 `CLOSING`，SSH 终端已关闭、任务已排空。`closed` 消息由 `writer()` 异步发送，可能晚于 `CLOSED` 写入或 Map 删除；它证明「已不可重新接管」，不证明「服务端资源已回收完成」。
+2. **`SESSION_NOT_FOUND` 也已限定。** `Get` 在状态 `CLOSED` 时即返回 404，而 `reap` 后续仍会清 buffer、释放 lease、删除 Map；因此 404 只证明「当前无可用 Session」，不证明完整回收。
+3. **Pane last-wins 前提已核实。** 当前 S6 用 `records` 从打开预占到 `closed` 后释放，且 `close()` 先同步进入 `disposing`、失效 takeover/recovery，完成 `client.dispose()` 后才 emit `closed`；新 Pane 注册前旧 Pane 已 `closed`。因此保留方案 A，但 token 只负责注销身份隔离，旧 Pane 的停止由 Pane 生命周期和关闭准入保证。
+4. **signOut 所有权已明确。** HomePage 的 `records[].handle` 是独立于协调器的 Pane handle 集合；signOut 同步 `manager.invalidate()` 后，由该快照调用 `stop()`；已有 Client 时取得 watcher 已创建的共享 stop Promise，建立 barrier，再 `coordinator.dispose()`，然后立即 logout。stop/close 不依赖 dispose 后的 `localStop` 注册表，S6 §6.5 的 stop/logout/close 顺序保持不变。
+5. **localStop 同步契约保持。** 当前 `Pane.stop()` 在返回 Promise 前完成 takeover/recovery 失效与 `client.stop()` 同步部分；同步 throw / Promise reject 均不恢复准入，DELETE 继续，失败独立反馈。
+6. **刷新竞态保持原结论。** 旧 DELETE 可能在新页面 takeover 之后到达；详情 GET 与提交复查都无法消除。该风险仍是 D1 的接受条件，不是普通备注。
+7. **裁决与接口术语已冻结。** D1 只决定所有权与架构；D1-A～D1-E 是独立技术规则；`getCloseState` 四态、`registerLocalStop` token 与状态发布规则不变。
+8. **S7-0 已冻结，S7-1 尚未授权。** 后续按 S7-1 → S7-2/S7-3/S7-4/S7-5 → S7-6 推进；S7-4 同时依赖 S7-3，任何生产代码实施都必须由用户单独授权。
+9. **本轮没有修改任何生产代码、测试、配置或既有冻结文档**；只修改 S7 设计提案与实施计划。Git 工作区仅包含这两个文档的未暂存修改；暂存区为空。
+
+## 20. S7-0 正式裁决记录
+
+### 20.1 授权状态
+
+- S7-0 已获得用户授权，允许修订 S7 设计提案与实施计划。
+- S7-1 尚未获得编码授权；本文和 `doc/stage-5-implementation-plan.md` 的冻结内容不构成编码许可。
+- 后续任何生产代码、测试代码、后端、API 或配置实施，均须由用户单独授权并重新确认基线。
+
+### 20.2 裁决清单
+
+| 编号 | 裁决 | 主要落地位置 |
+|---|---|---|
+| D1 | 接受 | §2.4、§4、§5.2、§10、§12、§13 |
+| D1-A | 接受 | §4.4、§5.4、§12 S7-1 |
+| D1-B | 接受 | §4.5、§5.6、§12 S7-1 |
+| D1-C | 接受 | §4.8、§5.3、§12 S7-1 |
+| D1-D | 接受 | §8.2、§12 S7-1 |
+| D1-E | 接受 | §4.3、§5.3、§12 S7-1 |
+| D2-1 | 接受 | §5.5、§12 S7-2 |
+| D2-2 | 接受 | §5.5、§5.6、§12 S7-1 |
+| D3-1 | 接受 | §6.3、§10.5、§12 S7-4 |
+| D4-1 | 接受 | §7.3、§12 S7-3 |
+| D5-1 | 接受 | §8.3、§8.4、§12 S7-1 |
+| D5-2 | 接受 | §8.6、§12 S7-4 |
+
+以上 12 项均已接受，无遗漏；当前没有需要用户再次裁决的设计项。
