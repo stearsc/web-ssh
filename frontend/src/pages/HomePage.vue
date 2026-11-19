@@ -53,6 +53,7 @@ interface PaneEntry {
 const records = ref<PaneRecord[]>([])
 let nextPaneKey = 0
 let pageDisposed = false
+let closeCoordinatorDisposed = false
 // 页面级唯一关闭所有者：Pane 与后续无 Pane 入口共用同一状态机。
 const closeCoordinator = new CloseCoordinator()
 // 协调器不是 Vue 响应式对象；这里只桥接 ended tombstone 供列表禁用入口。
@@ -108,7 +109,7 @@ function trackCloseState(sessionId: string): void {
   closeUnsubscribes.set(
     sessionId,
     closeCoordinator.handle(sessionId).subscribe((snapshot) => {
-      if (pageDisposed) return
+      if (pageDisposed || logoutPending.value || !identity.value) return
       if (snapshot.state === 'ended') markSessionEnded(sessionId)
       // 关闭状态落地后统一走合并刷新，Pane 与无 Pane 路径共用同一入口。
       if (CLOSE_REFRESH_STATES.has(snapshot.state)) scheduleRefresh()
@@ -154,6 +155,11 @@ function paneClosed(key: number): void {
   const [record] = records.value.splice(index, 1)
   if (activeTab.value === record.session.id)
     activeTab.value = records.value.at(-1)?.session.id ?? ''
+}
+function disposeCloseCoordinator(): void {
+  if (closeCoordinatorDisposed) return
+  closeCoordinatorDisposed = true
+  closeCoordinator.dispose()
 }
 function scheduleRefresh(): void {
   if (changedQueued) return
@@ -217,7 +223,8 @@ async function confirmSessionClose(): Promise<void> {
   const task = closeCoordinator.requestClose(target.id)
   if (record) focusRecord(target.id)
   const snapshot = await task
-  if (pageDisposed) return
+  // 登出已开始或身份已失效时，迟到的关闭结果不得覆盖退出反馈。
+  if (pageDisposed || logoutPending.value || !identity.value) return
   if (snapshot.state === 'ended') markSessionEnded(target.id)
   // 关闭结束时仍无 Pane 才需要页面级反馈；有 Pane 时由其自身展示状态。
   if (!findRecord(target.id)) notice.value = closeResultNotice(snapshot)
@@ -248,6 +255,14 @@ function rejectedSessions(
 }
 function stopSummary(failed: string[]): string {
   return failed.length > 0 ? `；${failed.length} 个终端未确认停止` : ''
+}
+// 同步 throw 必须转成 rejected Promise，且调用本身仍留在当前同步调用栈。
+function startPaneTask(action: () => Promise<void>): Promise<void> {
+  try {
+    return action()
+  } catch (error) {
+    return Promise.reject(error)
+  }
 }
 function cleanupSummary(
   stopFailed: string[],
@@ -362,7 +377,7 @@ onBeforeUnmount(() => {
   operations.abort()
   for (const unsubscribe of closeUnsubscribes.values()) unsubscribe()
   closeUnsubscribes.clear()
-  closeCoordinator.dispose()
+  disposeCloseCoordinator()
   clearTimeout(debounce)
   probe.value = null
 })
@@ -475,16 +490,18 @@ async function signOut(): Promise<void> {
   if (signingOut.value) return
   signingOut.value = true
   logoutPending.value = true // 同步：Pane watcher 调用 stop()，候选接管同步失效
-  manager.value?.invalidate() // 同步撤销列表发布身份，早于 logout 请求
   operations.abort()
   query?.abort()
   clearTimeout(debounce)
   probe.value = null
+  manager.value?.invalidate() // 同步撤销列表发布身份，早于 logout 请求
   closeTarget.value = null
   const entries = registeredPanes()
   const stopTask = Promise.allSettled(
-    entries.map((entry) => entry.handle.stop()),
+    entries.map((entry) => startPaneTask(() => entry.handle.stop())),
   )
+  // stop 调用已在当前同步栈发起；dispose 只清理协调器自身，不影响 entries 句柄。
+  disposeCloseCoordinator()
   try {
     try {
       await logout() // 与本地排空并行，不等 drain
@@ -498,12 +515,17 @@ async function signOut(): Promise<void> {
     const closeFailed = rejectedSessions(
       entries,
       await Promise.allSettled(
-        entries.map((entry) => entry.handle.close()),
+        entries.map((entry) => startPaneTask(() => entry.handle.close())),
       ),
       '本地资源释放',
     )
-    await router.replace('/login') // close 失败不阻止跳转
-    // 跳转时路由守卫可能改写 authNotice，所以清理反馈在跳转完成后写入。
+    try {
+      await router.replace('/login') // close 失败不阻止跳转
+    } catch (error) {
+      // 跳转失败不改写已成功的 logout，也不重新 logout。
+      console.error('退出登录后跳转失败', error)
+    }
+    // 跳转时路由守卫可能改写 authNotice，所以清理反馈在跳转尝试后写入。
     if (stopFailed.length > 0 || closeFailed.length > 0)
       authNotice.value = cleanupSummary(stopFailed, closeFailed)
   } finally {

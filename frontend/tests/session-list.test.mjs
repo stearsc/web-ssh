@@ -72,6 +72,8 @@ const homeCode = ts
             async replace(path) {
               globalThis.__routerReplaceHook?.(path)
               globalThis.__routerReplaces?.push(path)
+              if (globalThis.__routerReplaceReject)
+                throw new Error('router replace failed')
             },
           }
         }`,
@@ -91,10 +93,12 @@ const homeCode = ts
               closeCalls: 0,
               stop() {
                 handle.stopCalls++
+                globalThis.__managerEvents?.push('stop')
                 return globalThis.__homePaneStop?.(handle.sessionId) ?? Promise.resolve()
               },
               close() {
                 handle.closeCalls++
+                globalThis.__managerEvents?.push('close')
                 return globalThis.__homePaneClose?.(handle.sessionId) ?? Promise.resolve()
               },
             }
@@ -848,6 +852,7 @@ async function mountHomePage(t, options = {}) {
   globalThis.__homePaneStop = null
   globalThis.__homePaneClose = null
   globalThis.__routerReplaceHook = null
+  globalThis.__routerReplaceReject = false
   authNotice.value = ''
   logoutPending.value = false
   globalThis.matchMedia = () => ({ matches: false })
@@ -938,6 +943,7 @@ async function mountHomePage(t, options = {}) {
     delete globalThis.__homePaneStop
     delete globalThis.__homePaneClose
     delete globalThis.__routerReplaceHook
+    delete globalThis.__routerReplaceReject
     delete globalThis.__managerOpen
     delete globalThis.__managerClose
     delete globalThis.__managerEndedIds
@@ -1188,6 +1194,112 @@ test('S6-T35 signOut 正常路径：先 stop，logout 与 stop 完成后再 clos
   assert.equal(authNotice.value, '')
 })
 
+test('S7-4/C14 signOut 顺序：invalidate、stop、dispose、logout，dispose 只一次', async (t) => {
+  const originalDispose = CloseCoordinator.prototype.dispose
+  const dispose = t.mock.method(
+    CloseCoordinator.prototype,
+    'dispose',
+    function () {
+      globalThis.__managerEvents.push('dispose')
+      return originalDispose.call(this)
+    },
+  )
+  const h = await mountHomePage(t)
+  click(button(h.root, '会话管理'))
+  await flush()
+  globalThis.__managerOpen(view('a'))
+  await flush()
+  click(button(h.root, '会话管理'))
+  await flush()
+
+  click(button(h.root, '退出登录'))
+  assert.deepEqual(globalThis.__managerEvents.slice(0, 4), [
+    'invalidate',
+    'stop',
+    'dispose',
+    'logout',
+  ])
+  assert.equal(dispose.mock.callCount(), 1)
+  await flush()
+  assert.deepEqual(h.routerReplaces, ['/login'])
+
+  h.unmount()
+  assert.equal(dispose.mock.callCount(), 1)
+})
+
+test('S7-4 stop/close 同步 throw 与 reject 相互隔离，仍完成登出', async (t) => {
+  const logged = []
+  t.mock.method(console, 'error', (...args) => logged.push(args))
+  const h = await mountHomePage(t)
+  click(button(h.root, '会话管理'))
+  await flush()
+  const a = view('a')
+  const b = view('b')
+  globalThis.__managerOpen(a)
+  await flush()
+  globalThis.__managerOpen(b)
+  await flush()
+  assert.equal(h.instances.length, 2)
+  const panes = new Map(h.instances.map((item) => [item.sessionId, item]))
+
+  globalThis.__homePaneStop = (id) => {
+    if (id === a.id) throw new Error('stop sync failed')
+    return Promise.reject(new Error('stop async failed'))
+  }
+  globalThis.__homePaneClose = (id) => {
+    if (id === a.id) throw new Error('close sync failed')
+    return Promise.reject(new Error('close async failed'))
+  }
+
+  click(button(h.root, '退出登录'))
+  await flush()
+  assert.equal(panes.get(a.id).handle.stopCalls, 1)
+  assert.equal(panes.get(b.id).handle.stopCalls, 1)
+  assert.equal(panes.get(a.id).handle.closeCalls, 1)
+  assert.equal(panes.get(b.id).handle.closeCalls, 1)
+  assert.equal(
+    h.requests.filter((item) => item.path === '/api/auth/logout').length,
+    1,
+  )
+  assert.deepEqual(h.routerReplaces, ['/login'])
+  assert.equal(
+    authNotice.value,
+    '已退出登录；2 个终端未确认停止，2 个终端本地资源未释放，建议刷新页面',
+  )
+  assert.equal(button(h.root, '退出登录').props.disabled, false)
+  assert.equal(logged.length, 4)
+})
+
+test('S7-4 router.replace reject 不改变登出成功结果，仍写清理反馈', async (t) => {
+  const logged = []
+  t.mock.method(console, 'error', (...args) => logged.push(args))
+  const h = await mountHomePage(t)
+  click(button(h.root, '会话管理'))
+  await flush()
+  globalThis.__managerOpen(view('a'))
+  await flush()
+  globalThis.__homePaneStop = () =>
+    Promise.reject(new Error('stop failed'))
+  globalThis.__routerReplaceReject = true
+
+  click(button(h.root, '退出登录'))
+  await flush()
+  assert.equal(logoutPending.value, false)
+  assert.deepEqual(h.routerReplaces, ['/login'])
+  assert.equal(
+    h.requests.filter((item) => item.path === '/api/auth/logout').length,
+    1,
+  )
+  assert.equal(
+    authNotice.value,
+    '已退出登录；1 个终端未确认停止，建议刷新页面',
+  )
+  assert.ok(
+    logged.some((args) => String(args[0]).includes('跳转失败')),
+  )
+  assert.equal(button(h.root, '退出登录').props.disabled, false)
+})
+
 test('S6-T37 connectServer 仍以 attach 创建并同 id 去重', async (t) => {
   const h = await mountHomePage(t)
   click(button(h.root, '☰'))
@@ -1399,6 +1511,7 @@ test('S6-T50 logout 失败时停留在本页、不 close 并反馈 stop 失败�
       (args) => String(args[0]).includes('停止') && args.includes(item.id),
     ),
   )
+  assert.equal(button(h.root, '重试退出登录').props.disabled, false)
 })
 
 test('S7-C03/C22 非 idle 重开创建只读 Pane，ended 旧行不能重开', async (t) => {
@@ -1446,13 +1559,148 @@ test('S7-C15 HomePage 卸载 dispose 协调器，迟到 DELETE 不发布', async
   const handle = h.instances[0].closeHandle
   const closing = handle.requestClose()
   assert.equal(handle.snapshot().state, 'pending')
+  const deletion = deleteRequests(h)[0]
+  assert.ok(deletion)
+  assert.equal(deletion.options.signal.aborted, false)
+  const before = h.requests.length
 
   h.unmount()
   assert.equal(handle.snapshot().disposed, true)
+  assert.equal(deletion.options.signal.aborted, true)
   pending.resolve(Response.json({ code: 0, message: 'ok', data: {} }))
   await closing
+  await flush()
   assert.equal(handle.snapshot().state, 'pending')
   assert.equal(handle.snapshot().disposed, true)
+  assert.equal(h.requests.length, before)
+})
+
+test('S7-C11 迟到 DELETE 错误不更新已销毁页面', async (t) => {
+  const pending = deferred()
+  const h = await mountHomePage(t, {
+    fetch: (record) =>
+      record.method === 'DELETE' ? pending.promise : undefined,
+  })
+  click(button(h.root, '会话管理'))
+  await flush()
+  globalThis.__managerOpen(view('a'))
+  await flush()
+  const handle = h.instances[0].closeHandle
+  const closing = handle.requestClose()
+  const deletion = deleteRequests(h)[0]
+  assert.ok(deletion)
+  const before = h.requests.length
+
+  h.unmount()
+  pending.reject(new TypeError('network down'))
+  await closing
+  await flush()
+  assert.equal(handle.snapshot().state, 'pending')
+  assert.equal(handle.snapshot().disposed, true)
+  assert.equal(h.requests.length, before)
+  assert.equal(globalThis.__webSocketCreates, 0)
+})
+
+test('S7-C14 登出与 DELETE pending 并发：停止、失效、dispose、logout 严格有序', async (t) => {
+  const pending = deferred()
+  const originalDispose = CloseCoordinator.prototype.dispose
+  const dispose = t.mock.method(
+    CloseCoordinator.prototype,
+    'dispose',
+    function () {
+      globalThis.__managerEvents.push('dispose')
+      return originalDispose.call(this)
+    },
+  )
+  const h = await mountHomePage(t, {
+    fetch: (record) =>
+      record.method === 'DELETE' ? pending.promise : undefined,
+  })
+  click(button(h.root, '会话管理'))
+  await flush()
+  globalThis.__managerOpen(view('a'))
+  await flush()
+  const pane = h.instances[0]
+
+  globalThis.__managerClose(view('a'))
+  await flush()
+  click(button(h.root, '确认关闭'))
+  await flush()
+  click(button(h.root, '会话管理'))
+  await flush()
+  const deletion = deleteRequests(h)[0]
+  assert.ok(deletion)
+  const before = h.requests.length
+  const refreshes = globalThis.__managerRefreshes
+  const stopCalls = pane.handle.stopCalls
+  globalThis.__managerEvents.length = 0
+
+  click(button(h.root, '退出登录'))
+  assert.deepEqual(globalThis.__managerEvents.slice(0, 3), [
+    'invalidate',
+    'stop',
+    'dispose',
+  ])
+  assert.equal(deletion.options.signal.aborted, true)
+  assert.equal(dispose.mock.callCount(), 1)
+  assert.equal(pane.handle.stopCalls, stopCalls + 1)
+  assert.equal(deleteRequests(h).length, 1)
+  assert.equal(globalThis.__managerRefreshes, refreshes)
+  assert.equal(globalThis.__webSocketCreates, 0)
+
+  await flush()
+  assert.deepEqual(globalThis.__managerEvents.slice(0, 5), [
+    'invalidate',
+    'stop',
+    'dispose',
+    'logout',
+    'close',
+  ])
+  assert.equal(pane.handle.closeCalls, 1)
+  assert.equal(pane.mounted, true)
+  assert.equal(h.instances.length, 1)
+  assert.deepEqual(h.routerReplaces, ['/login'])
+  assert.deepEqual(
+    h.requests
+      .slice(before)
+      .map((item) => `${item.method} ${item.path}`),
+    ['POST /api/auth/logout'],
+  )
+
+  pending.resolve(Response.json({ code: 0, message: 'ok', data: {} }))
+  await flush()
+  assert.equal(pane.closeHandle.snapshot().state, 'pending')
+  assert.equal(pane.closeHandle.snapshot().disposed, true)
+})
+
+test('S7-5 登出后迟到关闭结果不覆盖退出反馈', async (t) => {
+  const pending = deferred()
+  const h = await mountHomePage(t, {
+    fetch: (record) => {
+      if (record.method === 'DELETE') return pending.promise
+      if (record.path === '/api/auth/logout')
+        return failure('SERVER_UNAVAILABLE', '登出失败')
+    },
+  })
+  click(button(h.root, '会话管理'))
+  await flush()
+  globalThis.__managerClose(view('a'))
+  await flush()
+  click(button(h.root, '确认关闭'))
+  await flush()
+
+  click(button(h.root, '退出登录'))
+  await flush()
+  assert.match(texts(h.root, 'notice').join(), /退出未完成，请重试/)
+
+  pending.resolve(Response.json({ code: 0, message: 'ok', data: {} }))
+  await flush()
+  assert.match(texts(h.root, 'notice').join(), /退出未完成，请重试/)
+  assert.doesNotMatch(
+    texts(h.root, 'notice').join(),
+    /关闭请求仍在进行|关闭请求已提交/,
+  )
+  assert.equal(deleteRequests(h).length, 1)
 })
 
 const deleteRequests = (h) =>

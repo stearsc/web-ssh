@@ -16,6 +16,7 @@ import {
   logoutPending,
 } from '../src/stores/auth.ts'
 import { CloseCoordinator } from '../src/session/close.ts'
+import { TerminalClient } from '../src/terminal/client.ts'
 
 // 挂载实际 SFC 和 TerminalClient，仅替换浏览器与 xterm 外部接口。
 const sourceURL = new URL(
@@ -434,12 +435,18 @@ async function mountPane(t, options = {}) {
   const root = node('root')
   const app = renderer.createApp(Root)
   app.mount(root)
+  let mounted = true
+  const unmount = () => {
+    if (!mounted) return
+    mounted = false
+    app.unmount()
+  }
   t.after(async () => {
     try {
       await pane?.close()
     } catch {}
     closeCoordinator.dispose()
-    app.unmount()
+    unmount()
     clearIdentity()
     for (const [key, descriptor] of originals) {
       if (descriptor) Object.defineProperty(globalThis, key, descriptor)
@@ -460,6 +467,7 @@ async function mountPane(t, options = {}) {
     observers: ObserverStub.instances,
     closeCoordinator,
     closeHandle,
+    unmount,
   }
 }
 function bind(socket, generation, start = 0, end = 0) {
@@ -1513,6 +1521,29 @@ test('S7-C01 关闭标签不发 DELETE、不置 ended，只释放本地资源', 
   assert.equal(h.events.closed, 1)
 })
 
+test('S7-4/C14 watcher 与 handle.stop 取得同一个 client.stopping', async (t) => {
+  const seen = []
+  const originalStop = TerminalClient.prototype.stop
+  t.mock.method(TerminalClient.prototype, 'stop', function (...args) {
+    const result = originalStop.apply(this, args)
+    seen.push(result)
+    return result
+  })
+  t.after(() => {
+    logoutPending.value = false
+  })
+  const h = await mountPane(t)
+  bind(h.sockets[0], 1)
+  await flush()
+
+  logoutPending.value = true
+  const fromHandle = h.pane.stop()
+  assert.equal(seen.length, 2)
+  assert.equal(seen[0], seen[1])
+  assert.equal(seen[1], fromHandle)
+  await fromHandle
+})
+
 test('S7-C23 确认关闭：同步 pending，localStop 先于 DELETE', async (t) => {
   const order = []
   const h = await mountPane(t, {
@@ -1561,6 +1592,56 @@ test('S7-C01/C15 Pane 销毁不 abort 协调器 DELETE，状态保留', async (t
   await closing
   assert.equal(h.closeHandle.snapshot().state, 'requested')
   assert.equal(h.events.closed, 1)
+})
+
+test('S7-C01/C15 Pane close 只退订并注销本地 stop，不清协调器任务', async (t) => {
+  const coordinator = new CloseCoordinator()
+  const base = coordinator.handle(session.id)
+  let unsubscribed = 0
+  let unregistered = 0
+  const closeHandle = {
+    ...base,
+    subscribe(listener) {
+      const unsubscribe = base.subscribe(listener)
+      return () => {
+        unsubscribed++
+        unsubscribe()
+      }
+    },
+    registerLocalStop(stop) {
+      const unregister = base.registerLocalStop(stop)
+      return () => {
+        unregistered++
+        unregister()
+      }
+    },
+  }
+  const pending = deferredValue()
+  const h = await mountPane(t, {
+    closeCoordinator: coordinator,
+    closeHandle,
+    fetch: (record) =>
+      record.method === 'DELETE' ? pending.promise : undefined,
+  })
+  bind(h.sockets[0], 1)
+  await flush()
+  click(button(h.root, '关闭 SSH 会话'))
+  await flush()
+  click(button(h.root, '确认关闭'))
+  await flush()
+  const deletion = h.requests.find((item) => item.method === 'DELETE')
+  assert.equal(closeHandle.snapshot().state, 'pending')
+
+  await h.pane.close()
+  assert.equal(unsubscribed, 1)
+  assert.equal(unregistered, 1)
+  assert.equal(deletion.signal.aborted, false)
+  assert.equal(closeHandle.snapshot().state, 'pending')
+  assert.equal(h.events.closed, 1)
+
+  pending.resolve(Response.json({ code: 0, message: 'ok', data: {} }))
+  await flush()
+  assert.equal(closeHandle.snapshot().state, 'requested')
 })
 
 test('S7-C02 pending 取消等待后关闭 Pane，unknown 保留且迟到 200 不覆盖', async (t) => {
@@ -1615,7 +1696,7 @@ test('S7-C03/C04 非 idle 新 Pane：零 Prepare/WS，禁止手动恢复', async
   assert.ok(button(h.root, '刷新状态'))
 })
 
-test('S7-C29 idle + CLOSING：保持 idle，零凭证/WS/takeover，不产生 ended', async (t) => {
+test('S7-C29/C12 idle + CLOSING：保持 idle，零凭证/WS/takeover，不产生 ended', async (t) => {
   const h = await mountPane(t, {
     startMode: 'candidate',
     detail: detail({
@@ -1626,6 +1707,9 @@ test('S7-C29 idle + CLOSING：保持 idle，零凭证/WS/takeover，不产生 en
     }),
   })
   assert.equal(h.closeHandle.snapshot().state, 'idle')
+  assert.equal(h.requests.length, 1)
+  assert.equal(h.requests[0].method, 'GET')
+  assert.equal(h.requests[0].path, `/api/sessions/${session.id}`)
   assert.equal(h.sockets.length, 0)
   assert.equal(takeoverPosts(h).length, 0)
   assert.equal(
@@ -1635,6 +1719,30 @@ test('S7-C29 idle + CLOSING：保持 idle，零凭证/WS/takeover，不产生 en
   assert.equal(button(h.root, '确认接管'), undefined)
   assert.equal(texts(h.root, 'close-state').length, 0)
   assert.notEqual(h.closeHandle.snapshot().state, 'ended')
+})
+
+test('S7-C13 页面重新进入详情网络错误：保留候选 Pane，不自动恢复', async (t) => {
+  const h = await mountPane(t, {
+    startMode: 'candidate',
+    fetch: (record) => {
+      if (record.method === 'GET')
+        return Promise.reject(new TypeError('network down'))
+    },
+  })
+  assert.equal(h.events.ready.length, 1)
+  assert.ok(h.pane)
+  assert.equal(h.requests.length, 1)
+  assert.equal(h.requests[0].method, 'GET')
+  assert.equal(h.requests[0].path, `/api/sessions/${session.id}`)
+  assert.equal(takeoverPosts(h).length, 0)
+  assert.equal(h.sockets.length, 0)
+  assert.equal(button(h.root, '确认接管'), undefined)
+  assert.match(texts(h.root, 'notice').join(), /无法连接服务/)
+  assert.equal(h.closeHandle.snapshot().state, 'idle')
+
+  await flush()
+  assert.equal(h.requests.length, 1)
+  assert.equal(h.sockets.length, 0)
 })
 
 test('S7-C29 idle + CONNECTING：保持 idle，拒绝确认', async (t) => {
@@ -1649,6 +1757,13 @@ test('S7-C29 idle + CONNECTING：保持 idle，拒绝确认', async (t) => {
 })
 
 test('S7-C21/C28 ended 只认服务端证据', async (t) => {
+  await t.test('本地 stop 不置 ended', async (t) => {
+    const h = await mountPane(t)
+    bind(h.sockets[0], 1)
+    await flush()
+    await h.pane.stop()
+    assert.equal(h.closeHandle.snapshot().state, 'idle')
+  })
   await t.test('本地关闭标签不置 ended', async (t) => {
     const h = await mountPane(t)
     bind(h.sockets[0], 1)
@@ -1754,4 +1869,48 @@ test('S7-C19 recovery retry_wait 时确认关闭：停止重试，不自动 atta
   )
   assert.equal(h.sockets.length, 1)
   assert.equal(h.closeHandle.snapshot().state, 'requested')
+})
+
+test('S7-5 takeover loading 时卸载：零新 WebSocket，迟到详情不发布', async (t) => {
+  const detailResponse = deferredValue()
+  const h = await mountPane(t, {
+    startMode: 'candidate',
+    fetch: (record) =>
+      record.method === 'GET' ? detailResponse.promise : undefined,
+  })
+  assert.deepEqual(texts(h.root, 'connection-state'), [
+    '正在查询 Session 状态',
+  ])
+  const before = h.requests.length
+
+  h.unmount()
+  await h.pane.close()
+  assert.equal(h.requests.length, before)
+  assert.equal(h.sockets.length, 0)
+  detailResponse.resolve(
+    Response.json({ code: 0, message: 'ok', data: detail() }),
+  )
+  await flush()
+  assert.equal(h.requests.length, before)
+  assert.equal(h.sockets.length, 0)
+  assert.equal(takeoverPosts(h).length, 0)
+  // 组件已卸载，close 完成后的 closed 事件不能再送达已销毁的父级。
+  assert.equal(h.events.closed, 0)
+  assert.equal(h.closeHandle.snapshot().state, 'idle')
+})
+
+test('S7-5 recovery retry_wait 时卸载：不自动恢复', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const h = await mountRacePane(t, 'retry_wait')
+  const before = h.requests.length
+
+  h.unmount()
+  await h.pane.close()
+  await flush()
+  t.mock.timers.tick(5000)
+  await flush()
+  assert.equal(h.requests.length, before)
+  assert.equal(h.sockets.length, 1)
+  assert.equal(takeoverPosts(h).length, 0)
+  assert.equal(h.closeHandle.snapshot().state, 'idle')
 })
