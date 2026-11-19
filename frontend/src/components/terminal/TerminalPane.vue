@@ -20,11 +20,13 @@ import {
 import { SessionTakeover } from '../../terminal/takeover'
 import { identity, logoutPending } from '../../stores/auth'
 import { message, notifyAuthExpired } from '../../api/management'
+import { type SessionStatus, type SessionView } from '../../api/sessions'
 import {
-  closeSession,
-  type SessionStatus,
-  type SessionView,
-} from '../../api/sessions'
+  type CloseHandle,
+  type CloseServerStatus,
+  type CloseSnapshot,
+  type CloseState,
+} from '../../session/close'
 import Modal from '../layout/Modal.vue'
 
 type PaneStartMode = 'attach' | 'candidate'
@@ -45,6 +47,7 @@ const props = defineProps<{
   session: SessionView
   active: boolean
   startMode: PaneStartMode
+  closeHandle: CloseHandle
 }>()
 const emit = defineEmits<{
   ready: [handle: PaneHandle]
@@ -60,8 +63,6 @@ const connected = ref(false)
 const networkOnline = ref(navigator.onLine)
 const awaitingNetworkConfirmation = ref(!navigator.onLine)
 const busy = ref(false)
-const remoteBusy = ref(false)
-const closeRequested = ref(false)
 const phase = ref('idle')
 const retryLabel = ref('')
 const recovery = shallowRef<SessionRecovery | null>(null)
@@ -70,12 +71,15 @@ const revision = ref(0)
 const closing = ref(false)
 const ended = ref(false)
 const life = ref<PaneLife>('mounting')
+const closeSnapshot = shallowRef<CloseSnapshot>(props.closeHandle.snapshot())
 let client: TerminalClient | null = null
 let terminal: Terminal | null = null
 let fit: FitAddon | null = null
 let resize: ResizeObserver | null = null
 let theme: MutationObserver | null = null
 let closeTask: Promise<void> | null = null
+let unsubscribeClose: (() => void) | null = null
+let unregisterStop: (() => void) | null = null
 // 终端工厂回滚自身资源失败时记录的错误；非 null 表示可能有 xterm 残留，close() 必须失败。
 let terminalCleanupError: unknown = null
 let localCols = props.session.current_cols
@@ -83,8 +87,11 @@ let localRows = props.session.current_rows
 
 const live = (): boolean =>
   life.value === 'ready' && !logoutPending.value && identity.value !== null
+// 第一层准入：本地关闭意图为 idle；它不是接管许可，S6 详情检查仍然必须通过。
+const closeAllows = (): boolean => closeSnapshot.value.state === 'idle'
 const detail = computed(() => {
   revision.value
+  closeSnapshot.value
   const r = recovery.value
   return {
     loading: r?.loading ?? false,
@@ -97,6 +104,7 @@ const detail = computed(() => {
 })
 const takeoverView = computed(() => {
   revision.value
+  closeSnapshot.value
   const t = takeover.value
   return {
     phase: t?.phase ?? 'idle',
@@ -121,6 +129,46 @@ const statusLabels: Record<SessionStatus, string> = {
 function statusLabel(status: SessionStatus): string {
   return statusLabels[status]
 }
+const closeServerLabels: Record<NonNullable<CloseServerStatus>, string> = {
+  CONNECTING: '正在连接',
+  CONNECTED: '已连接',
+  DISCONNECTED: '已断开',
+  CLOSING: '正在关闭',
+  NOT_FOUND: '当前没有可用 Session',
+}
+const closeStateLabels: Record<Exclude<CloseState, 'idle'>, string> = {
+  pending: '正在请求关闭',
+  requested: '已请求关闭，正在回收',
+  unknown: '关闭结果未知',
+  failed: '关闭请求失败',
+  ended: '会话已结束或正在完成关闭（远端已不可接管）',
+}
+const closeView = computed(() => {
+  const snapshot = closeSnapshot.value
+  return {
+    state: snapshot.state,
+    active: snapshot.state !== 'idle',
+    pending: snapshot.state === 'pending',
+    retryable: ['requested', 'unknown', 'failed'].includes(snapshot.state),
+    ended: snapshot.state === 'ended',
+  }
+})
+// 本地关闭状态与服务端详情分开展示，禁止用 CONNECTED 覆盖 unknown。
+const closeNotice = computed(() => {
+  const snapshot = closeSnapshot.value
+  if (snapshot.state === 'idle') return ''
+  const label = closeStateLabels[snapshot.state]
+  // 状态标签独立于 message：详情查询失败只追加错误，不覆盖关闭状态。
+  const detail =
+    snapshot.message && snapshot.message !== label
+      ? `；${snapshot.message}`
+      : ''
+  const server = snapshot.serverStatus
+    ? ` · 服务端显示${closeServerLabels[snapshot.serverStatus]}`
+    : ''
+  const local = snapshot.localStopFailed ? '；本地终端未确认停止' : ''
+  return `${label}${detail}${server}${local}`
+})
 // 网络事件仅影响展示，不终止 socket、不启动或重置恢复任务。
 function networkOffline(): void {
   networkOnline.value = false
@@ -176,6 +224,8 @@ function stoppedState(state: RecoveryState): void {
     if (state.code === 'closed') {
       ended.value = true
       if (recovery.value) recovery.value.ended = true
+      // 服务端 closed 控制消息是关闭不可逆证据，与本地 stop/WS 断开严格区分。
+      props.closeHandle.markEnded()
     }
     if (state.code === 'AUTH_REQUIRED' && !logoutPending.value)
       notifyAuthExpired()
@@ -202,6 +252,11 @@ function close(): Promise<void> {
   if (closeTask) return closeTask
   life.value = 'disposing' // live() 立即为假，所有回调、按钮、准入同步失效
   closing.value = false
+  // Pane 销毁只退订并注销本地 stop；协调器任务与状态继续存在，不 abort。
+  unsubscribeClose?.()
+  unsubscribeClose = null
+  unregisterStop?.()
+  unregisterStop = null
   takeover.value?.invalidate()
   recovery.value?.invalidate()
   window.removeEventListener('offline', networkOffline)
@@ -363,31 +418,26 @@ async function inspect(): Promise<void> {
   if (!live() || takeoverView.value.phase !== 'idle') return
   await recovery.value?.refresh()
 }
-async function closeRemote(): Promise<void> {
-  if (remoteBusy.value || !live()) return
-  remoteBusy.value = true
-  closeRequested.value = true
-  const stopping = stop()
+async function confirmClose(): Promise<void> {
+  if (closing.value === false || !live() || !closeAllows()) return
+  closing.value = false
   try {
-    // DELETE 与本地排空并行，不能等待终端回调才向服务端提交关闭。
-    await closeSession(props.session.id)
-    if (life.value !== 'ready') return
-    if (recovery.value) recovery.value.ended = true
-    closing.value = false
-    notice.value = '已请求关闭 SSH 会话，正在回收；可刷新状态确认'
-  } catch (error) {
-    closeRequested.value = false
-    if (live()) notice.value = message(error)
+    // 协调器同步建立 pending 并触发本地 stop，随后才发 DELETE；错误由快照展示。
+    await props.closeHandle.requestClose()
   } finally {
-    try {
-      await stopping
-    } catch (error) {
-      if (live()) notice.value = message(error)
-    }
-    remoteBusy.value = false
-    revision.value++
-    emit('changed')
+    // 已销毁 Pane 不再通知页面，避免迟到结果触发无关刷新。
+    if (life.value === 'ready') emit('changed')
   }
+}
+async function retryClose(): Promise<void> {
+  await props.closeHandle.retryClose()
+  if (life.value === 'ready') emit('changed')
+}
+async function refreshClose(): Promise<void> {
+  await props.closeHandle.refreshClose()
+}
+function cancelCloseWaiting(): void {
+  props.closeHandle.cancelWaiting()
 }
 function rollbackInitialization(): void {
   window.removeEventListener('offline', networkOffline) // 对未注册的监听是空操作
@@ -403,6 +453,12 @@ function failInitialization(error: unknown): void {
 }
 onMounted(() => {
   if (life.value !== 'mounting') return
+  // 先注册本地 stop，再同步读取关闭状态；非 idle 时禁止自动 prepare/connect。
+  unregisterStop = props.closeHandle.registerLocalStop(stop)
+  unsubscribeClose = props.closeHandle.subscribe((snapshot) => {
+    closeSnapshot.value = snapshot
+    revision.value++
+  })
   // 第一段：只做可能失败的校验和纯计算，不创建任何资源，不发请求。
   let settings: ReturnType<typeof clientSettings>
   try {
@@ -433,7 +489,7 @@ onMounted(() => {
         }
       },
       stoppedState,
-      () => live() && !closeRequested.value,
+      () => live() && closeAllows(),
       confirmNetworkConnection,
     )
     // 以下两个对象没有长期资源。
@@ -442,17 +498,22 @@ onMounted(() => {
       client,
       () =>
         live() &&
-        !remoteBusy.value &&
+        closeAllows() &&
         (takeover.value?.phase ?? 'idle') === 'idle',
       () => {
         revision.value++
+        // 详情 GET 返回 SESSION_NOT_FOUND 是 ended 强证据。
+        if (recovery.value?.ended) {
+          ended.value = true
+          props.closeHandle.markEnded()
+        }
       },
     )
     takeover.value = new SessionTakeover({
       id: props.session.id,
       client,
       invalidateRecovery: () => recovery.value?.invalidate(),
-      allowed: () => live() && !remoteBusy.value && !closeRequested.value,
+      allowed: () => live() && closeAllows(),
       canBegin: () =>
         !connected.value &&
         !['online', 'replaying'].includes(phase.value) &&
@@ -461,6 +522,8 @@ onMounted(() => {
       markEnded: () => {
         ended.value = true
         if (recovery.value) recovery.value.ended = true
+        // 详情 SESSION_NOT_FOUND 与 server closed 同等作为权威 ended 证据。
+        props.closeHandle.markEnded()
       },
       changed: () => {
         revision.value++
@@ -490,6 +553,8 @@ onMounted(() => {
   life.value = 'ready'
   emit('ready', handle)
   if (!live()) return
+  // 非 idle 时 Pane 只是关闭状态的只读载体：零凭证、零 WebSocket、零 takeover。
+  if (!closeAllows()) return
   if (props.startMode === 'attach') void connect()
   else void takeover.value.prepare() // 只做 stop 屏障加 GET 详情，不连接
 })
@@ -535,7 +600,7 @@ onBeforeUnmount(() => {
         :disabled="
           life !== 'ready' ||
           !detail.canRecover ||
-          closeRequested ||
+          closeView.active ||
           ended ||
           logoutPending ||
           takeoverView.phase !== 'idle'
@@ -550,6 +615,7 @@ onBeforeUnmount(() => {
           logoutPending ||
           detail.acting ||
           takeoverView.phase !== 'idle' ||
+          closeView.active ||
           !['idle', 'stopped'].includes(phase)
         "
         @click="inspect"
@@ -580,13 +646,26 @@ onBeforeUnmount(() => {
       <button
         class="danger"
         :disabled="
-          life !== 'ready' || ended || closeRequested || logoutPending
+          life !== 'ready' ||
+          ended ||
+          closeView.active ||
+          logoutPending
         "
         @click="closing = true"
       >
         关闭 SSH 会话
       </button>
+      <button v-if="closeView.pending" @click="cancelCloseWaiting">
+        取消等待
+      </button>
+      <button v-if="closeView.retryable" @click="retryClose">重试关闭</button>
+      <button v-if="closeView.retryable" @click="refreshClose">
+        刷新状态
+      </button>
     </div>
+    <p v-if="closeView.active" class="notice close-state" role="status">
+      {{ closeNotice }}
+    </p>
     <p v-if="detail.snapshot" class="notice" role="status">
       会话状态：{{ detail.snapshot.status }} · 代次
       {{ detail.snapshot.binding_generation }}
@@ -634,8 +713,8 @@ onBeforeUnmount(() => {
         <button @click="closing = false">取消</button
         ><button
           class="danger"
-          :disabled="remoteBusy || logoutPending"
-          @click="closeRemote"
+          :disabled="logoutPending || closeView.active"
+          @click="confirmClose"
         >
           确认关闭
         </button>

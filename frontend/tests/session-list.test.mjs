@@ -79,7 +79,7 @@ const homeCode = ts
         import { defineComponent, h, onBeforeUnmount, onMounted } from ${JSON.stringify(vueModuleURL)}
         export default defineComponent({
           name: 'TerminalPaneStub',
-          props: ['active', 'session', 'startMode'],
+          props: ['active', 'session', 'startMode', 'closeHandle'],
           emits: ['ready', 'failed', 'closed', 'changed'],
           setup(props, { emit }) {
             const behavior = globalThis.__homePaneBehavior
@@ -99,6 +99,7 @@ const homeCode = ts
             const instance = {
               sessionId: props.session.id,
               startMode: props.startMode,
+              closeHandle: props.closeHandle,
               handle,
               mounted: false,
               get active() { return props.active },
@@ -743,6 +744,14 @@ async function mountHomePage(t, options = {}) {
       })
     if (path === '/api/auth/logout' && record.method === 'POST')
       return Response.json({ code: 0, message: 'ok', data: {} })
+    if (record.method === 'DELETE' && path.startsWith('/api/sessions/'))
+      return Response.json({ code: 0, message: 'ok', data: {} })
+    if (record.method === 'GET' && path.startsWith('/api/sessions/'))
+      return Response.json({
+        code: 0,
+        message: 'ok',
+        data: options.sessionDetail ?? options.session ?? view('a'),
+      })
     throw new Error(`unexpected request: ${path}`)
   }
   const root = node('root')
@@ -1234,4 +1243,58 @@ test('S6-T50 logout 失败时停留在本页、不 close 并反馈 stop 失败�
       (args) => String(args[0]).includes('停止') && args.includes(item.id),
     ),
   )
+})
+
+test('S7-C03/C22 非 idle 重开创建只读 Pane，ended 旧行不能重开', async (t) => {
+  const h = await mountHomePage(t)
+  click(button(h.root, '会话管理'))
+  await flush()
+  globalThis.__managerOpen(view('a'))
+  await flush()
+  assert.equal(h.instances.length, 1)
+  const first = h.instances[0]
+  await first.closeHandle.requestClose()
+  assert.equal(first.closeHandle.snapshot().state, 'requested')
+  first.emitClosed()
+  await flush()
+  assert.equal(first.mounted, false)
+
+  globalThis.__managerOpen(view('a'))
+  await flush()
+  assert.equal(h.instances.length, 2)
+  assert.equal(
+    h.instances[1].closeHandle.snapshot().state,
+    'requested',
+  )
+
+  h.instances[1].closeHandle.markEnded()
+  h.instances[1].emitClosed()
+  await flush()
+  const before = h.instances.length
+  globalThis.__managerOpen(view('a'))
+  await flush()
+  assert.equal(h.instances.length, before)
+  assert.match(textContent(h.root), /已结束或正在完成关闭/)
+})
+
+test('S7-C15 HomePage 卸载 dispose 协调器，迟到 DELETE 不发布', async (t) => {
+  const pending = deferred()
+  const h = await mountHomePage(t, {
+    fetch: (record) =>
+      record.method === 'DELETE' ? pending.promise : undefined,
+  })
+  click(button(h.root, '会话管理'))
+  await flush()
+  globalThis.__managerOpen(view('a'))
+  await flush()
+  const handle = h.instances[0].closeHandle
+  const closing = handle.requestClose()
+  assert.equal(handle.snapshot().state, 'pending')
+
+  h.unmount()
+  assert.equal(handle.snapshot().disposed, true)
+  pending.resolve(Response.json({ code: 0, message: 'ok', data: {} }))
+  await closing
+  assert.equal(handle.snapshot().state, 'pending')
+  assert.equal(handle.snapshot().disposed, true)
 })

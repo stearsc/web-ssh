@@ -22,6 +22,7 @@ import {
   authNotice,
 } from '../stores/auth'
 import { createSession, type SessionView } from '../api/sessions'
+import { CloseCoordinator } from '../session/close'
 import TerminalPane from '../components/terminal/TerminalPane.vue'
 import ThemeButton from '../components/layout/ThemeButton.vue'
 import Modal from '../components/layout/Modal.vue'
@@ -48,6 +49,8 @@ interface PaneEntry {
 const records = ref<PaneRecord[]>([])
 let nextPaneKey = 0
 let pageDisposed = false
+// 页面级唯一关闭所有者：Pane 与后续无 Pane 入口共用同一状态机。
+const closeCoordinator = new CloseCoordinator()
 const manager = ref<{ refresh(): void } | null>(null)
 const signingOut = ref(false)
 const view = ref<'servers' | 'sessions'>('servers')
@@ -81,13 +84,21 @@ function openSession(item: SessionView): void {
     focusRecord(item.id) // D2：已有记录（任何状态）只定位
     return
   }
-  if (item.status === 'CONNECTING') {
-    notice.value = 'Session 正在建立，暂不能打开，请稍后刷新列表'
+  const closeState = closeCoordinator.getCloseState(item.id).state
+  if (closeState === 'ended') {
+    notice.value = 'Session 已结束或正在完成关闭（远端已不可接管）'
     return
   }
-  if (item.status === 'CLOSING') {
-    notice.value = 'Session 正在关闭，不能打开'
-    return
+  // 协调器非 idle 时创建只读 Pane；Pane 自己读取状态并跳过自动 prepare/connect。
+  if (closeState === 'idle') {
+    if (item.status === 'CONNECTING') {
+      notice.value = 'Session 正在建立，暂不能打开，请稍后刷新列表'
+      return
+    }
+    if (item.status === 'CLOSING') {
+      notice.value = 'Session 正在关闭，不能打开'
+      return
+    }
   }
   notice.value = ''
   reserveRecord(item, 'candidate') // D3
@@ -242,6 +253,7 @@ onBeforeUnmount(() => {
   pageDisposed = true
   query?.abort()
   operations.abort()
+  closeCoordinator.dispose()
   clearTimeout(debounce)
   probe.value = null
 })
@@ -511,6 +523,7 @@ async function signOut(): Promise<void> {
         :session="record.session"
         :start-mode="record.startMode"
         :active="view === 'servers' && activeTab === record.session.id"
+        :close-handle="closeCoordinator.handle(record.session.id)"
         @ready="(handle) => registerPane(record.key, handle)"
         @failed="(handle) => registerPane(record.key, handle)"
         @closed="paneClosed(record.key)"

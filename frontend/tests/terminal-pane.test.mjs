@@ -15,6 +15,7 @@ import {
   clearIdentity,
   logoutPending,
 } from '../src/stores/auth.ts'
+import { CloseCoordinator } from '../src/session/close.ts'
 
 // 挂载实际 SFC 和 TerminalClient，仅替换浏览器与 xterm 外部接口。
 const sourceURL = new URL(
@@ -399,6 +400,10 @@ async function mountPane(t, options = {}) {
       client_settings: options.settings ?? settings,
     })
   const { default: Pane } = await import(moduleURL(code))
+  const closeCoordinator = options.closeCoordinator ?? new CloseCoordinator()
+  const closeHandle =
+    options.closeHandle ??
+    closeCoordinator.handle((options.session ?? session).id)
   const events = { ready: [], failed: [], closed: 0, changed: 0 }
   const props = reactive({
     active: options.active ?? true,
@@ -411,6 +416,7 @@ async function mountPane(t, options = {}) {
       return () =>
         h(Pane, {
           ...props,
+          closeHandle,
           ref: (value) => {
             pane = value
           },
@@ -432,6 +438,7 @@ async function mountPane(t, options = {}) {
     try {
       await pane?.close()
     } catch {}
+    closeCoordinator.dispose()
     app.unmount()
     clearIdentity()
     for (const [key, descriptor] of originals) {
@@ -451,6 +458,8 @@ async function mountPane(t, options = {}) {
     terminalInstances: TerminalStub.instances,
     fitInstances: FitAddonStub.instances,
     observers: ObserverStub.instances,
+    closeCoordinator,
+    closeHandle,
   }
 }
 function bind(socket, generation, start = 0, end = 0) {
@@ -1492,4 +1501,257 @@ test('S6-T47 Observer 创建或 observe 失败：回滚 Client、移除监听', 
     assert.equal(h.events.closed, 0)
     assert.deepEqual(texts(h.root, 'connection-state'), ['终端清理失败'])
   })
+})
+
+test('S7-C01 关闭标签不发 DELETE、不置 ended，只释放本地资源', async (t) => {
+  const h = await mountPane(t)
+  bind(h.sockets[0], 1)
+  await flush()
+  await h.pane.close()
+  assert.equal(h.requests.filter((item) => item.method === 'DELETE').length, 0)
+  assert.equal(h.closeHandle.snapshot().state, 'idle')
+  assert.equal(h.events.closed, 1)
+})
+
+test('S7-C23 确认关闭：同步 pending，localStop 先于 DELETE', async (t) => {
+  const order = []
+  const h = await mountPane(t, {
+    fetch: (record) => {
+      if (record.method === 'DELETE') order.push('delete')
+    },
+  })
+  bind(h.sockets[0], 1)
+  await flush()
+  const socket = h.sockets[0]
+  const originalClose = socket.close.bind(socket)
+  socket.close = (code) => {
+    order.push('stop')
+    originalClose(code)
+  }
+  click(button(h.root, '关闭 SSH 会话'))
+  await flush()
+  click(button(h.root, '确认关闭'))
+  // 同步调用栈内：先 stop（takeover/recovery/client 失效），再发 DELETE。
+  assert.deepEqual(order, ['stop', 'delete'])
+  assert.equal(h.closeHandle.snapshot().state, 'pending')
+  await flush()
+  assert.equal(h.closeHandle.snapshot().state, 'requested')
+})
+
+test('S7-C01/C15 Pane 销毁不 abort 协调器 DELETE，状态保留', async (t) => {
+  const pending = deferredValue()
+  const h = await mountPane(t, {
+    fetch: (record) =>
+      record.method === 'DELETE' ? pending.promise : undefined,
+  })
+  bind(h.sockets[0], 1)
+  await flush()
+  click(button(h.root, '关闭 SSH 会话'))
+  await flush()
+  click(button(h.root, '确认关闭'))
+  await flush()
+  const deleteRequest = h.requests.find((item) => item.method === 'DELETE')
+  assert.equal(h.closeHandle.snapshot().state, 'pending')
+  const closing = h.pane.close()
+  assert.equal(deleteRequest.signal.aborted, false)
+  assert.equal(h.closeHandle.snapshot().state, 'pending')
+
+  pending.resolve(Response.json({ code: 0, message: 'ok', data: {} }))
+  await flush()
+  await closing
+  assert.equal(h.closeHandle.snapshot().state, 'requested')
+  assert.equal(h.events.closed, 1)
+})
+
+test('S7-C02 pending 取消等待后关闭 Pane，unknown 保留且迟到 200 不覆盖', async (t) => {
+  const pending = deferredValue()
+  const h = await mountPane(t, {
+    fetch: (record) =>
+      record.method === 'DELETE' ? pending.promise : undefined,
+  })
+  bind(h.sockets[0], 1)
+  await flush()
+  click(button(h.root, '关闭 SSH 会话'))
+  await flush()
+  click(button(h.root, '确认关闭'))
+  await flush()
+  click(button(h.root, '取消等待'))
+  await flush()
+  assert.equal(h.closeHandle.snapshot().state, 'unknown')
+  assert.match(texts(h.root, 'close-state').join(), /已停止等待/)
+
+  await h.pane.close()
+  assert.equal(h.closeHandle.snapshot().state, 'unknown')
+  pending.resolve(Response.json({ code: 0, message: 'ok', data: {} }))
+  await flush()
+  assert.equal(h.closeHandle.snapshot().state, 'unknown')
+})
+
+test('S7-C03/C04 非 idle 新 Pane：零 Prepare/WS，禁止手动恢复', async (t) => {
+  const coordinator = new CloseCoordinator()
+  const handle = coordinator.handle(session.id)
+  const original = globalThis.fetch
+  try {
+    globalThis.fetch = async () => {
+      throw new TypeError('network down')
+    }
+    await handle.requestClose()
+  } finally {
+    globalThis.fetch = original
+  }
+  assert.equal(handle.snapshot().state, 'unknown')
+
+  const h = await mountPane(t, {
+    closeCoordinator: coordinator,
+    startMode: 'candidate',
+  })
+  assert.equal(h.requests.length, 0)
+  assert.equal(h.sockets.length, 0)
+  assert.equal(takeoverPosts(h).length, 0)
+  assert.equal(button(h.root, '确认接管'), undefined)
+  assert.equal(button(h.root, '手动恢复').props.disabled, true)
+  assert.match(texts(h.root, 'close-state').join(), /关闭结果未知/)
+  assert.ok(button(h.root, '重试关闭'))
+  assert.ok(button(h.root, '刷新状态'))
+})
+
+test('S7-C29 idle + CLOSING：保持 idle，零凭证/WS/takeover，不产生 ended', async (t) => {
+  const h = await mountPane(t, {
+    startMode: 'candidate',
+    detail: detail({
+      status: 'CLOSING',
+      disconnected_at: null,
+      offline_expires_at: null,
+      remaining_seconds: null,
+    }),
+  })
+  assert.equal(h.closeHandle.snapshot().state, 'idle')
+  assert.equal(h.sockets.length, 0)
+  assert.equal(takeoverPosts(h).length, 0)
+  assert.equal(
+    h.requests.filter((item) => item.method === 'POST').length,
+    0,
+  )
+  assert.equal(button(h.root, '确认接管'), undefined)
+  assert.equal(texts(h.root, 'close-state').length, 0)
+  assert.notEqual(h.closeHandle.snapshot().state, 'ended')
+})
+
+test('S7-C29 idle + CONNECTING：保持 idle，拒绝确认', async (t) => {
+  const h = await mountPane(t, {
+    startMode: 'candidate',
+    detail: detail({ status: 'CONNECTING' }),
+  })
+  assert.equal(h.closeHandle.snapshot().state, 'idle')
+  assert.equal(h.sockets.length, 0)
+  assert.equal(takeoverPosts(h).length, 0)
+  assert.equal(button(h.root, '确认接管'), undefined)
+})
+
+test('S7-C21/C28 ended 只认服务端证据', async (t) => {
+  await t.test('本地关闭标签不置 ended', async (t) => {
+    const h = await mountPane(t)
+    bind(h.sockets[0], 1)
+    await flush()
+    await h.pane.close()
+    assert.equal(h.closeHandle.snapshot().state, 'idle')
+  })
+  await t.test('WS 1006 不置 ended', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    const h = await mountPane(t)
+    bind(h.sockets[0], 1)
+    await flush()
+    h.sockets[0].onclose({ code: 1006 })
+    await flush()
+    assert.equal(h.closeHandle.snapshot().state, 'idle')
+  })
+  await t.test('taken_over 不置 ended', async (t) => {
+    const h = await mountPane(t)
+    bind(h.sockets[0], 1)
+    await flush()
+    h.sockets[0].message({ type: 'taken_over', message: '被接管' })
+    await flush()
+    assert.equal(h.closeHandle.snapshot().state, 'idle')
+  })
+  await t.test('AUTH_REQUIRED 不置 ended', async (t) => {
+    const h = await mountPane(t)
+    bind(h.sockets[0], 1)
+    await flush()
+    h.sockets[0].message({
+      type: 'error',
+      code: 'AUTH_REQUIRED',
+      message: '需要登录',
+    })
+    await flush()
+    assert.equal(h.closeHandle.snapshot().state, 'idle')
+  })
+  await t.test('服务端 closed 置 ended', async (t) => {
+    const h = await mountPane(t)
+    bind(h.sockets[0], 1)
+    await flush()
+    h.sockets[0].message({
+      type: 'closed',
+      reason: 'user_closed',
+      message: '会话已关闭',
+    })
+    await flush()
+    assert.equal(h.closeHandle.snapshot().state, 'ended')
+    assert.match(texts(h.root, 'close-state').join(), /已结束|不可接管/)
+    assert.equal(
+      texts(h.root, 'close-state').join().includes('资源已回收'),
+      false,
+    )
+  })
+})
+
+test('S7-C30 Pane DELETE 失败归 unknown，不显示 failed', async (t) => {
+  const h = await mountPane(t, {
+    fetch: (record) =>
+      record.method === 'DELETE'
+        ? Response.json(
+            { code: 'PERMISSION_DENIED', message: '拒绝', data: {} },
+            { status: 403 },
+          )
+        : undefined,
+  })
+  bind(h.sockets[0], 1)
+  await flush()
+  click(button(h.root, '关闭 SSH 会话'))
+  await flush()
+  click(button(h.root, '确认关闭'))
+  await flush()
+  assert.equal(h.closeHandle.snapshot().state, 'unknown')
+  assert.match(texts(h.root, 'close-state').join(), /关闭结果未知/)
+  assert.equal(
+    texts(h.root, 'close-state').join().includes('未被服务端接受'),
+    false,
+  )
+  assert.equal(h.events.closed, 0)
+  assert.ok(button(h.root, '重试关闭'))
+})
+
+test('S7-C19 recovery retry_wait 时确认关闭：停止重试，不自动 attach', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const h = await mountRacePane(t, 'retry_wait')
+  const before = h.requests.length
+  click(button(h.root, '关闭 SSH 会话'))
+  await flush()
+  click(button(h.root, '确认关闭'))
+  await h.release()
+  await flush()
+  assert.equal(
+    h.requests.filter((item) => item.method === 'DELETE').length,
+    1,
+  )
+  assert.equal(
+    h.requests
+      .slice(before)
+      .filter(
+        (item) =>
+          item.method === 'POST' && item.path.endsWith('/takeover'),
+      ).length,
+    0,
+  )
+  assert.equal(h.sockets.length, 1)
+  assert.equal(h.closeHandle.snapshot().state, 'requested')
 })

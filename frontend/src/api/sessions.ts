@@ -37,8 +37,11 @@ export function createSession(
     signal,
   )
 }
-export function closeSession(id: string): Promise<unknown> {
-  return request(`/api/sessions/${id}`, 'DELETE', {})
+export function closeSession(
+  id: string,
+  signal?: AbortSignal,
+): Promise<unknown> {
+  return request(`/api/sessions/${id}`, 'DELETE', {}, signal)
 }
 
 // 详情是人工恢复唯一代次来源；不能用类型断言或旧 props 填补缺失字段。
