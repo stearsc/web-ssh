@@ -18,9 +18,14 @@ const props = defineProps<{
   servers: ServerView[]
   canRefresh: boolean
   authToken: unknown
+  // 结束与否由 HomePage 的协调器裁决，列表只按该结果禁用入口。
+  isEnded?: (sessionId: string) => boolean
 }>()
 
-const emit = defineEmits<{ open: [item: SessionView] }>()
+const emit = defineEmits<{
+  open: [item: SessionView]
+  close: [item: SessionView]
+}>()
 
 const serverFilter = ref('')
 const statusFilter = ref<SessionStatus | 'ALL'>('ALL')
@@ -102,6 +107,15 @@ function formatRemaining(item: SessionView): string {
   return item.remaining_seconds === null
     ? '—'
     : `${item.remaining_seconds} 秒`
+}
+
+function closeDisabled(item: SessionView): boolean {
+  return !props.canRefresh || props.isEnded?.(item.id) === true
+}
+
+function requestClose(item: SessionView): void {
+  if (closeDisabled(item)) return
+  emit('close', item)
 }
 
 watch(serverFilter, refresh)
@@ -284,6 +298,12 @@ defineExpose({
                 @click="emit('open', item)"
               >
                 打开
+              </button>
+              <button
+                :disabled="closeDisabled(item)"
+                @click="requestClose(item)"
+              >
+                关闭
               </button>
             </td>
           </tr>

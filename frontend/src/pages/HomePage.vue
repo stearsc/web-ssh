@@ -121,6 +121,33 @@ function paneChanged(): void {
   // D1：操作完成后刷新；不在管理视图时，下次进入会在挂载时刷新。
   if (!pageDisposed && view.value === 'sessions') manager.value?.refresh()
 }
+function isSessionEnded(sessionId: string): boolean {
+  return closeCoordinator.getCloseState(sessionId).state === 'ended'
+}
+function requestSessionClose(item: SessionView): void {
+  if (pageDisposed || !identity.value || logoutPending.value) return
+  if (isSessionEnded(item.id)) {
+    notice.value = 'Session 已结束或正在完成关闭（远端已不可接管）'
+    return
+  }
+  notice.value = ''
+  closeTarget.value = item
+}
+function cancelSessionClose(): void {
+  closeTarget.value = null
+}
+async function confirmSessionClose(): Promise<void> {
+  const target = closeTarget.value
+  closeTarget.value = null
+  // 确认期间可能已开始登出；登出后不得再发起关闭请求。
+  if (!target || pageDisposed || logoutPending.value) return
+  // 唯一关闭所有者仍是协调器：有 Pane 时由它调用已注册的本地 stop，再发 DELETE。
+  const task = closeCoordinator.requestClose(target.id)
+  if (findRecord(target.id)) focusRecord(target.id)
+  await task
+  if (pageDisposed) return
+  paneChanged()
+}
 function registeredPanes(): PaneEntry[] {
   return records.value.flatMap((record) =>
     record.handle
@@ -205,6 +232,7 @@ const editTarget = ref<ServerView | null>(null)
 const deleting = ref(false)
 const busy = ref(false)
 const notice = ref('')
+const closeTarget = ref<SessionView | null>(null)
 const loading = ref(false)
 const probe = ref<Probe | null>(null)
 const probeTarget = ref('')
@@ -370,6 +398,7 @@ async function signOut(): Promise<void> {
   query?.abort()
   clearTimeout(debounce)
   probe.value = null
+  closeTarget.value = null
   const entries = registeredPanes()
   const stopTask = Promise.allSettled(
     entries.map((entry) => entry.handle.stop()),
@@ -535,7 +564,9 @@ async function signOut(): Promise<void> {
         :servers="items"
         :can-refresh="identity !== null && !logoutPending"
         :auth-token="identity"
+        :is-ended="isSessionEnded"
         @open="openSession"
+        @close="requestSessionClose"
       />
       <section
         v-else-if="selected && !activeTab"
@@ -624,6 +655,29 @@ async function signOut(): Promise<void> {
         <button @click="deleting = false">取消</button
         ><button class="primary" :disabled="busy" @click="remove">
           确认删除
+        </button>
+      </div></Modal
+    >
+    <Modal
+      v-if="closeTarget"
+      title="关闭远端 SSH Session？"
+      @close="cancelSessionClose"
+      ><div class="dialog-body">
+        <p>
+          将请求服务端关闭这条远端 SSH Session；不是关闭列表、本地终端或浏览器标签。
+        </p>
+        <p class="mono">
+          {{ closeTarget.name }} / {{ closeTarget.id }}
+        </p>
+      </div>
+      <div class="dialog-footer">
+        <button @click="cancelSessionClose">取消</button
+        ><button
+          class="primary"
+          :disabled="logoutPending"
+          @click="confirmSessionClose"
+        >
+          确认关闭
         </button>
       </div></Modal
     >
