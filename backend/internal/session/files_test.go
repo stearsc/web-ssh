@@ -8,8 +8,10 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -23,7 +25,7 @@ import (
 
 // 这里使用真实 OpenSSH 子系统和真实 SSH channel；缺少程序的平台明确跳过该组，
 // 不把 pkg/sftp 测试服务端的行为当作 OpenSSH 能力证明。
-func openSSHFileServer(t *testing.T) func(ssh.NewChannel, <-chan struct{}) {
+func openSSHFileServer(t *testing.T, arguments ...string) func(ssh.NewChannel, <-chan struct{}) {
 	t.Helper()
 	program := "/usr/libexec/sftp-server"
 	if _, err := os.Stat(program); err != nil {
@@ -41,7 +43,7 @@ func openSSHFileServer(t *testing.T) func(ssh.NewChannel, <-chan struct{}) {
 				continue
 			}
 			_ = r.Reply(true, nil)
-			cmd := exec.Command(program)
+			cmd := exec.Command(program, arguments...)
 			cmd.Stdin = ch
 			cmd.Stdout = ch
 			cmd.Stderr = io.Discard
@@ -324,7 +326,7 @@ func (r rejectCommit) PosixRename(*sftp.Request) error { return sftp.ErrSSHFxPer
 func TestSFTPProtocolWriteAndCommitFailures(t *testing.T) {
 	for _, mode := range []string{"permission", "no-space", "commit"} {
 		t.Run(mode, func(t *testing.T) {
-			handlers := sftp.InMemHandler()
+			handlers, _ := permissionMemoryHandlers()
 			if mode == "commit" {
 				handlers.FileCmd = rejectCommit{handlers.FileCmd}
 			} else {
@@ -577,5 +579,574 @@ func TestSFTPCancelCleansAfterIndependentChannelLoss(t *testing.T) {
 	waitBytes(t, s, []byte("shell-after-cleanup-channel"))
 	if s.View().Status != "DISCONNECTED" {
 		t.Fatal(s.View())
+	}
+}
+
+// 上游示例内存文件系统忽略 chmod；补齐协议权限模型，保留原有失败断言及其触发点。
+type permissionMemoryFS struct {
+	sftp.FileCmder
+	sftp.FileLister
+	mu         sync.Mutex
+	modes      map[string]os.FileMode
+	command    func(*sftp.Request) error
+	attributes func(string, os.FileInfo) (os.FileInfo, error)
+}
+
+func permissionMemoryHandlers() (sftp.Handlers, *permissionMemoryFS) {
+	h := sftp.InMemHandler()
+	fs := &permissionMemoryFS{FileCmder: h.FileCmd, FileLister: h.FileList, modes: make(map[string]os.FileMode)}
+	h.FileCmd, h.FileList = fs, fs
+	return h, fs
+}
+
+func (fs *permissionMemoryFS) Filecmd(r *sftp.Request) error {
+	if fs.command != nil {
+		if err := fs.command(r); err != nil {
+			return err
+		}
+	}
+	if r.Method == "Setstat" && r.AttrFlags().Permissions {
+		fs.mu.Lock()
+		fs.modes[r.Filepath] = os.FileMode(r.Attributes().Mode & 07777)
+		fs.mu.Unlock()
+		return nil
+	}
+	return fs.FileCmder.Filecmd(r)
+}
+
+func (fs *permissionMemoryFS) PosixRename(r *sftp.Request) error {
+	if fs.command != nil {
+		if err := fs.command(r); err != nil {
+			return err
+		}
+	}
+	return fs.FileCmder.(sftp.PosixRenameFileCmder).PosixRename(r)
+}
+
+func (fs *permissionMemoryFS) Filelist(r *sftp.Request) (sftp.ListerAt, error) {
+	var list sftp.ListerAt
+	var err error
+	if r.Method == "Lstat" {
+		list, err = fs.FileLister.(sftp.LstatFileLister).Lstat(r)
+	} else {
+		list, err = fs.FileLister.Filelist(r)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return permissionLister{list, fs, r.Filepath, r.Method == "List"}, nil
+}
+func (fs *permissionMemoryFS) Lstat(r *sftp.Request) (sftp.ListerAt, error) { return fs.Filelist(r) }
+
+type permissionLister struct {
+	sftp.ListerAt
+	fs      *permissionMemoryFS
+	name    string
+	listing bool
+}
+
+func (l permissionLister) ListAt(entries []os.FileInfo, offset int64) (int, error) {
+	n, err := l.ListerAt.ListAt(entries, offset)
+	for i := 0; i < n; i++ {
+		name := l.name
+		if l.listing {
+			name = path.Join(name, entries[i].Name())
+		}
+		l.fs.mu.Lock()
+		mode, exists := l.fs.modes[name]
+		l.fs.mu.Unlock()
+		if exists {
+			entries[i] = permissionInfo{entries[i], entries[i].Mode().Type() | mode}
+		}
+		if l.fs.attributes != nil {
+			var attributeErr error
+			entries[i], attributeErr = l.fs.attributes(name, entries[i])
+			if attributeErr != nil {
+				return 0, attributeErr
+			}
+		}
+	}
+	return n, err
+}
+
+type permissionInfo struct {
+	os.FileInfo
+	mode os.FileMode
+}
+
+func (i permissionInfo) Mode() os.FileMode { return i.mode }
+
+func memoryUploadSession(t *testing.T, h sftp.Handlers) *Session {
+	t.Helper()
+	m, login, id, _ := setupWith(t, testutil.TerminalOptions{FileChannel: func(incoming ssh.NewChannel, _ <-chan struct{}) {
+		ch, requests, err := incoming.Accept()
+		if err != nil {
+			return
+		}
+		defer ch.Close()
+		request := <-requests
+		if request == nil {
+			return
+		}
+		_ = request.Reply(true, nil)
+		requestsDone := make(chan struct{})
+		go func() { ssh.DiscardRequests(requests); close(requestsDone) }()
+		defer func() { _ = ch.Close(); <-requestsDone }()
+		srv := sftp.NewRequestServer(ch, h)
+		_ = srv.Serve()
+		_ = srv.Close()
+	}}, nil)
+	return createSession(t, m, login, id)
+}
+
+func TestSFTPPrivateStagingRealOpenSSH(t *testing.T) {
+	for _, mask := range []string{"0000", "0022", "0077"} {
+		t.Run(mask, func(t *testing.T) {
+			directory, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = os.Chmod(directory, 0777); err != nil {
+				t.Fatal(err)
+			}
+			m, login, id, _ := setupWith(t, testutil.TerminalOptions{FileChannel: openSSHFileServer(t, "-u", mask)}, nil)
+			s := createSession(t, m, login, id)
+			written, release := make(chan struct{}), make(chan struct{})
+			result := make(chan error, 1)
+			go func() {
+				_, e := s.UploadFile(t.Context(), directory, "new", false, FileSource{Reader: strings.NewReader("private-content"), Finish: func() error { close(written); <-release; return nil }})
+				result <- e
+			}()
+			select {
+			case <-written:
+			case e := <-result:
+				t.Fatal("尚未写入便结束", e)
+			}
+			// Finish 屏障证明内容已经写完，而提交尚未发生；无须按时间猜测上传窗口。
+			matches, err := filepath.Glob(filepath.Join(directory, ".web-ssh-upload-*"))
+			if err != nil || len(matches) != 1 {
+				close(release)
+				t.Fatal(matches, err)
+			}
+			stage, err := os.Lstat(matches[0])
+			if err != nil || !stage.IsDir() || stage.Mode().Perm() != 0700 {
+				close(release)
+				t.Fatal(stage, err)
+			}
+			payload, err := os.Lstat(filepath.Join(matches[0], "payload"))
+			if err != nil || payload.Mode().Perm() != 0600 {
+				close(release)
+				t.Fatal(payload, err)
+			}
+			data, err := os.ReadFile(filepath.Join(matches[0], "payload"))
+			if err != nil || string(data) != "private-content" {
+				close(release)
+				t.Fatal(string(data), err)
+			}
+			if _, err = os.Stat(filepath.Join(directory, "new")); !os.IsNotExist(err) {
+				close(release)
+				t.Fatal("提前提交", err)
+			}
+			close(release)
+			if err = awaitFileResult(t, result); err != nil {
+				t.Fatal(err)
+			}
+			final, err := os.Stat(filepath.Join(directory, "new"))
+			if err != nil || final.Mode().Perm() != 0600 {
+				t.Fatal(final, err)
+			}
+			assertNoTemporary(t, directory)
+		})
+	}
+}
+
+func TestSFTPOverwritePermissionsRealOpenSSH(t *testing.T) {
+	for _, mode := range []os.FileMode{0644, 0755, 0640, 0600} {
+		t.Run(mode.String(), func(t *testing.T) {
+			s, directory := uploadSession(t)
+			target := filepath.Join(directory, "old")
+			if err := os.WriteFile(target, []byte("ORIGINAL"), mode); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(target, mode); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.UploadFile(t.Context(), directory, "old", true, source("replacement")); err != nil {
+				t.Fatal(err)
+			}
+			info, err := os.Stat(target)
+			if err != nil || info.Mode().Perm() != mode {
+				t.Fatal(info, err)
+			}
+			data, err := os.ReadFile(target)
+			if err != nil || string(data) != "replacement" {
+				t.Fatal(string(data), err)
+			}
+			assertNoTemporary(t, directory)
+		})
+	}
+}
+
+type uploadOwnerInfo struct {
+	os.FileInfo
+	uid, gid uint32
+}
+
+func (i uploadOwnerInfo) Sys() any { return &syscall.Stat_t{Uid: i.uid, Gid: i.gid} }
+
+type uploadMissingOwnerInfo struct{ os.FileInfo }
+
+func (i uploadMissingOwnerInfo) Sys() any { return nil }
+
+func TestSFTPRejectUnsafeOverwrite(t *testing.T) {
+	for _, failure := range []string{"setuid", "setgid", "sticky", "uid", "gid", "missing-owner", "zero-owner", "stat-error", "target-change", "late-target-change", "final-chmod", "final-verify"} {
+		t.Run(failure, func(t *testing.T) {
+			h, fs := permissionMemoryHandlers()
+			s := memoryUploadSession(t, h)
+			if err := s.withFileClient(t.Context(), func(_ context.Context, c *sftp.Client, _ func()) error {
+				f, err := c.Create("/old")
+				if err != nil {
+					return err
+				}
+				_, err = f.Write([]byte("ORIGINAL"))
+				closeErr := f.Close()
+				if err != nil {
+					return err
+				}
+				return closeErr
+			}); err != nil {
+				t.Fatal(err)
+			}
+			statCount, payloadStats := 0, 0
+			fs.attributes = func(name string, info os.FileInfo) (os.FileInfo, error) {
+				if name != "/old" {
+					if strings.HasSuffix(name, "/payload") {
+						payloadStats++
+						if failure == "final-verify" && payloadStats == 3 {
+							return permissionInfo{info, 0777}, nil
+						}
+					}
+					return info, nil
+				}
+				statCount++
+				switch failure {
+				case "setuid":
+					return permissionInfo{info, info.Mode() | os.ModeSetuid}, nil
+				case "setgid":
+					return permissionInfo{info, info.Mode() | os.ModeSetgid}, nil
+				case "sticky":
+					return permissionInfo{info, info.Mode() | os.ModeSticky}, nil
+				case "uid":
+					return uploadOwnerInfo{info, 123, 65534}, nil
+				case "gid":
+					return uploadOwnerInfo{info, 65534, 123}, nil
+				case "zero-owner":
+					return uploadOwnerInfo{info, 0, 0}, nil
+				case "missing-owner":
+					return uploadMissingOwnerInfo{info}, nil
+				case "stat-error":
+					return nil, sftp.ErrSSHFxPermissionDenied
+				case "late-target-change":
+					if statCount > 2 {
+						return permissionInfo{info, 0755}, nil
+					}
+				case "target-change":
+					if statCount > 1 {
+						return permissionInfo{info, 0755}, nil
+					}
+				}
+				return info, nil
+			}
+			payloadChmods := 0
+			fs.command = func(r *sftp.Request) error {
+				if failure == "final-chmod" && r.Method == "Setstat" && strings.HasSuffix(r.Filepath, "/payload") {
+					payloadChmods++
+					if payloadChmods == 2 {
+						return sftp.ErrSSHFxPermissionDenied
+					}
+				}
+				if r.Method == "PosixRename" {
+					t.Error("不安全目标进入了提交")
+				}
+				return nil
+			}
+			want := fault.Error("SFTP_PERMISSION_DENIED")
+			if failure == "target-change" || failure == "late-target-change" {
+				want = "SFTP_FAILED"
+			}
+			if _, err := s.UploadFile(t.Context(), "/", "old", true, source("replacement")); err != want {
+				t.Fatal("未按预期拒绝覆盖", err, want)
+			}
+			fs.attributes, fs.command = nil, nil
+			if err := s.withFileClient(t.Context(), func(_ context.Context, c *sftp.Client, _ func()) error {
+				f, err := c.Open("/old")
+				if err != nil {
+					return err
+				}
+				defer f.Close()
+				data, err := io.ReadAll(f)
+				if err == nil && string(data) != "ORIGINAL" {
+					t.Error("原文件被破坏", string(data))
+				}
+				list, listErr := c.ReadDir("/")
+				if listErr != nil {
+					return listErr
+				}
+				for _, entry := range list {
+					if strings.HasPrefix(entry.Name(), ".web-ssh-upload-") {
+						t.Error("暂存目录未清理")
+					}
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestSFTPRejectUnsafeStagingBeforeReading(t *testing.T) {
+	for _, failure := range []string{"mkdir", "directory-chmod", "directory-verify", "payload-chmod", "payload-verify"} {
+		t.Run(failure, func(t *testing.T) {
+			h, fs := permissionMemoryHandlers()
+			fs.command = func(r *sftp.Request) error {
+				if failure == "mkdir" && r.Method == "Mkdir" {
+					return sftp.ErrSSHFxFailure
+				}
+				if r.Method == "Setstat" {
+					payload := strings.HasSuffix(r.Filepath, "/payload")
+					if failure == "directory-chmod" && !payload || failure == "payload-chmod" && payload {
+						return sftp.ErrSSHFxPermissionDenied
+					}
+				}
+				return nil
+			}
+			fs.attributes = func(name string, info os.FileInfo) (os.FileInfo, error) {
+				if strings.Contains(name, ".web-ssh-upload-") {
+					payload := strings.HasSuffix(name, "/payload")
+					if failure == "directory-verify" && !payload || failure == "payload-verify" && payload {
+						return permissionInfo{info, info.Mode().Type() | 0777}, nil
+					}
+				}
+				return info, nil
+			}
+
+			s := memoryUploadSession(t, h)
+			reads := 0
+			reader := readerFunction(func([]byte) (int, error) { reads++; return 0, io.EOF })
+			if _, err := s.UploadFile(t.Context(), "/", "new", false, FileSource{Reader: reader}); err == nil {
+				t.Fatal("不安全暂存条件未拒绝")
+			}
+			if reads != 0 {
+				t.Fatal("权限确认前读取了上传内容", reads)
+			}
+		})
+	}
+}
+
+type readerFunction func([]byte) (int, error)
+
+func (f readerFunction) Read(p []byte) (int, error) { return f(p) }
+
+func TestSFTPCommitOutcomeSurvivesCleanup(t *testing.T) {
+	for _, event := range []string{"cancel-after-commit", "cleanup-denied", "commit-response-lost"} {
+		t.Run(event, func(t *testing.T) {
+			h, fs := permissionMemoryHandlers()
+			s := memoryUploadSession(t, h)
+			cleanupEntered, release := make(chan struct{}), make(chan struct{})
+			var once sync.Once
+			fs.command = func(r *sftp.Request) error {
+				if event == "commit-response-lost" && r.Method == "Link" {
+					// 服务端已执行，但明确成功响应未送达客户端，不能推测成功。
+					if err := fs.FileCmder.Filecmd(r); err != nil {
+						return err
+					}
+					return sftp.ErrSSHFxConnectionLost
+				}
+				if r.Method == "Remove" || r.Method == "Rmdir" {
+					once.Do(func() { close(cleanupEntered); <-release })
+					if event == "cleanup-denied" {
+						return sftp.ErrSSHFxPermissionDenied
+					}
+				}
+				return nil
+			}
+			finished := make(chan error, 1)
+			go func() { _, err := s.UploadFile(t.Context(), "/", "new", false, source("COMMITTED")); finished <- err }()
+			select {
+			case <-cleanupEntered:
+			case err := <-finished:
+				t.Fatal("未进入清理", err)
+			}
+			s.mu.Lock()
+			op := s.fileOperation
+			s.mu.Unlock()
+			if op.hasCommitted() != (event != "commit-response-lost") {
+				close(release)
+				t.Fatal("提交确认时机错误")
+			}
+			if event == "cancel-after-commit" {
+				op.cancel()
+			}
+			select {
+			case err := <-finished:
+				close(release)
+				t.Fatal("清理结束前返回", err)
+			default:
+			}
+			close(release)
+			err := awaitFileResult(t, finished)
+			if event == "commit-response-lost" {
+				if err != fault.Error("SFTP_UNAVAILABLE") {
+					t.Fatal("未确认提交却报告成功", err)
+				}
+			} else if err != nil {
+				t.Fatal("已提交成功被改写", err)
+			}
+			fs.command = nil
+			if err = s.withFileClient(t.Context(), func(_ context.Context, c *sftp.Client, _ func()) error {
+				file, err := c.Open("/new")
+				if err != nil {
+					return err
+				}
+				defer file.Close()
+				data, err := io.ReadAll(file)
+				if err == nil && string(data) != "COMMITTED" {
+					t.Error("提交内容错误", string(data))
+				}
+				entries, listErr := c.ReadDir("/")
+				if listErr != nil {
+					return listErr
+				}
+				stagingCount := 0
+				for _, entry := range entries {
+					if strings.HasPrefix(entry.Name(), ".web-ssh-upload-") {
+						stagingCount++
+					}
+				}
+				if event == "cleanup-denied" && stagingCount != 1 {
+					t.Error("未保留清理失败的真实状态", stagingCount)
+				}
+				if event != "cleanup-denied" && stagingCount != 0 {
+					t.Error("成功清理后仍有残留", stagingCount)
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if s.View().Status != "DISCONNECTED" {
+				t.Fatal("普通清理错误关闭了 Shell", s.View())
+			}
+		})
+	}
+}
+
+func TestSFTPCancelDuringPermissionChange(t *testing.T) {
+	h, fs := permissionMemoryHandlers()
+	entered, release := make(chan struct{}), make(chan struct{})
+	fs.command = func(r *sftp.Request) error {
+		if r.Method == "Setstat" && strings.HasSuffix(r.Filepath, "/payload") {
+			close(entered)
+			<-release
+		}
+		if r.Method == "Link" {
+			t.Error("取消后仍提交")
+		}
+		return nil
+	}
+	s := memoryUploadSession(t, h)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	finished := make(chan error, 1)
+	go func() { _, err := s.UploadFile(ctx, "/", "new", false, source("content")); finished <- err }()
+	<-entered
+	cancel()
+	close(release)
+	if err := awaitFileResult(t, finished); err != fault.Error("SFTP_CANCELED") {
+		t.Fatal(err)
+	}
+	fs.command = nil
+	if err := s.withFileClient(t.Context(), func(_ context.Context, c *sftp.Client, _ func()) error {
+		entries, err := c.ReadDir("/")
+		if err == nil && len(entries) != 0 {
+			t.Error("取消时未清理", entries)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.terminal.Write([]byte("shell-after-permission-cancel")); err != nil {
+		t.Fatal(err)
+	}
+	waitBytes(t, s, []byte("shell-after-permission-cancel"))
+}
+
+func TestSFTPMkdirCollisionDoesNotAcquireOwnership(t *testing.T) {
+	h, fs := permissionMemoryHandlers()
+	var collision string
+	fs.command = func(r *sftp.Request) error {
+		if r.Method == "Mkdir" {
+			// 在服务端模拟名称已被其他创建者占用，客户端只能得到失败。
+			if err := fs.FileCmder.Filecmd(r); err != nil {
+				return err
+			}
+			collision = r.Filepath
+			return sftp.ErrSSHFxFailure
+		}
+		if r.Method == "Remove" || r.Method == "Rmdir" || r.Method == "Setstat" {
+			t.Error("操作了未取得所有权的目录", r.Method)
+		}
+		return nil
+	}
+	s := memoryUploadSession(t, h)
+	if _, err := s.UploadFile(t.Context(), "/", "new", false, source("content")); err == nil {
+		t.Fatal("名称碰撞未拒绝")
+	}
+	fs.command = nil
+	if collision == "" {
+		t.Fatal("未进入 Mkdir")
+	}
+	if err := s.withFileClient(t.Context(), func(_ context.Context, c *sftp.Client, _ func()) error {
+		info, err := c.Lstat(collision)
+		if err == nil && !info.IsDir() {
+			t.Error("碰撞目录被改变")
+		}
+		return err
+	}); err != nil {
+		t.Fatal("碰撞目录被清理", err)
+	}
+}
+
+func TestSFTPUnknownStagingObjectIsNotRemoved(t *testing.T) {
+	h, fs := permissionMemoryHandlers()
+	var unknown string
+	fs.command = func(r *sftp.Request) error {
+		if r.Method == "Setstat" {
+			unknown = path.Join(r.Filepath, "unknown")
+			request := sftp.NewRequest("Put", unknown)
+			request.Flags = 2 | 8 | 32
+			file, err := h.FilePut.Filewrite(request)
+			if err != nil {
+				return err
+			}
+			if closer, ok := file.(io.Closer); ok {
+				return closer.Close()
+			}
+		}
+		if r.Method == "Remove" {
+			t.Error("清理了未知对象", r.Filepath)
+		}
+		return nil
+	}
+	s := memoryUploadSession(t, h)
+	if _, err := s.UploadFile(t.Context(), "/", "new", false, source("content")); err == nil {
+		t.Fatal("没有拒绝非空暂存目录")
+	}
+	fs.command = nil
+	if err := s.withFileClient(t.Context(), func(_ context.Context, c *sftp.Client, _ func()) error {
+		_, err := c.Lstat(unknown)
+		return err
+	}); err != nil {
+		t.Fatal("删除了未知对象", err)
 	}
 }

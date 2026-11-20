@@ -14,15 +14,17 @@ import (
 // fileOperation 的登记、撤销与 Session 关闭共用 s.mu，不向正在 Wait 的工作组 Add。
 // done 只在网络调用、channel 关闭、SFTP 接收协程和请求流全部结束后关闭。
 type fileOperation struct {
-	ctx         context.Context
-	cancel      context.CancelFunc
-	done        chan struct{}
-	progress    chan struct{}
-	cleanup     chan struct{}
-	cleanupOnce sync.Once
-	mu          sync.Mutex
-	channel     ssh.Channel
-	abnormal    bool
+	ctx          context.Context
+	cancel       context.CancelFunc
+	done         chan struct{}
+	progress     chan struct{}
+	cleanup      chan struct{}
+	cleanupOnce  sync.Once
+	mu           sync.Mutex
+	channel      ssh.Channel
+	abnormal     bool
+	committed    bool
+	lastProgress time.Time
 }
 
 func (s *Session) beginFileOperation(ctx context.Context) (*fileOperation, error) {
@@ -44,10 +46,33 @@ func (s *Session) beginFileOperation(ctx context.Context) (*fileOperation, error
 }
 
 func (op *fileOperation) progressed() {
+	op.mu.Lock()
+	op.lastProgress = time.Now()
+	op.mu.Unlock()
 	select {
 	case op.progress <- struct{}{}:
 	default:
 	}
+}
+
+// confirmCommit 只在原子提交明确返回成功后调用；清理失败不能撤销这个事实。
+func (op *fileOperation) confirmCommit() {
+	op.mu.Lock()
+	op.committed = true
+	op.mu.Unlock()
+	op.cleanupOnce.Do(func() { close(op.cleanup) })
+}
+
+func (op *fileOperation) hasCommitted() bool {
+	op.mu.Lock()
+	defer op.mu.Unlock()
+	return op.committed
+}
+
+// fileOperationTimer 允许测试精确投递到期事件，不依赖休眠或 select 的随机选择。
+type fileOperationTimer interface {
+	Reset(time.Duration) bool
+	Stop() bool
 }
 
 // WaitFileOperation 是队列取消后的完成屏障，不查询上传进度，也不自动重试文件。
@@ -83,9 +108,6 @@ func (s *Session) withFileClient(ctx context.Context, work func(context.Context,
 		close(op.done)
 		s.mu.Unlock()
 	}()
-	openBudget := time.Duration(s.manager.cfg.Ssh.ConnectTimeout) * time.Second
-	cleanupBudget := time.Duration(s.manager.cfg.Ssh.OperationTimeout) * time.Second
-	idleBudget := time.Duration(s.manager.cfg.Server.RequestTimeout) * time.Second
 	result := make(chan error, 1)
 	opened := make(chan struct{})
 	workerDone := make(chan struct{})
@@ -129,8 +151,16 @@ func (s *Session) withFileClient(ctx context.Context, work func(context.Context,
 			return work(op.ctx, client, op.progressed)
 		}()
 	}()
-	timer := time.NewTimer(openBudget)
+	timer := time.NewTimer(time.Duration(s.manager.cfg.Ssh.ConnectTimeout) * time.Second)
 	defer timer.Stop()
+	return s.waitFileOperation(op, result, workerDone, opened, timer, timer.C)
+}
+
+// waitFileOperation 分别裁决文件结果和资源回收；收到结果后仍须收齐所有工作协程。
+func (s *Session) waitFileOperation(op *fileOperation, result <-chan error, workerDone <-chan struct{}, opened <-chan struct{}, timer fileOperationTimer, expired <-chan time.Time) error {
+	cleanupBudget := time.Duration(s.manager.cfg.Ssh.OperationTimeout) * time.Second
+	idleBudget := time.Duration(s.manager.cfg.Server.RequestTimeout) * time.Second
+	var err error
 	ctxDone, cleanupStarted := op.ctx.Done(), op.cleanup
 	phase := "opening"
 	var closeDone chan struct{}
@@ -150,10 +180,13 @@ func (s *Session) withFileClient(ctx context.Context, work func(context.Context,
 			if closeDone != nil {
 				select {
 				case <-closeDone:
-				case <-timer.C:
+				case <-expired:
 					force()
 					<-closeDone
 				}
+			}
+			if op.hasCommitted() {
+				return nil
 			}
 			if abnormal {
 				return fault.Error("SFTP_CANCEL_FAILED")
@@ -166,6 +199,7 @@ func (s *Session) withFileClient(ctx context.Context, work func(context.Context,
 			opened = nil
 			if phase == "opening" {
 				phase = "transfer"
+				op.progressed()
 				timer.Reset(idleBudget)
 			}
 		case <-op.progress:
@@ -184,8 +218,21 @@ func (s *Session) withFileClient(ctx context.Context, work func(context.Context,
 				phase = "cleanup"
 				timer.Reset(cleanupBudget)
 			}
-		case <-timer.C:
+		case <-expired:
+			if op.hasCommitted() && (phase == "opening" || phase == "transfer") {
+				phase = "cleanup"
+				timer.Reset(cleanupBudget)
+				continue
+			}
 			if phase == "transfer" {
+				// 即使 progress 和 timer 同时就绪，也按最后实际进展计算空闲时间。
+				op.mu.Lock()
+				remaining := idleBudget - time.Since(op.lastProgress)
+				op.mu.Unlock()
+				if remaining > 0 {
+					timer.Reset(remaining)
+					continue
+				}
 				op.cancel()
 				phase = "cleanup"
 				timer.Reset(cleanupBudget)
@@ -210,6 +257,9 @@ func (s *Session) withFileClient(ctx context.Context, work func(context.Context,
 			<-workerDone
 			if closeDone != nil {
 				<-closeDone
+			}
+			if op.hasCommitted() {
+				return nil
 			}
 			return fault.Error("SFTP_CANCEL_FAILED")
 		}

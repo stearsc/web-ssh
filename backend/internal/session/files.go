@@ -24,6 +24,7 @@ const MaxUploadSize int64 = 512 << 20
 type FileCheck struct {
 	Exists bool   `json:"exists"`
 	Path   string `json:"path"`
+	info   os.FileInfo
 }
 
 type FileUpload struct {
@@ -103,7 +104,7 @@ func checkFileTarget(c *sftp.Client, directory, filename string, progress func()
 	if !info.Mode().IsRegular() {
 		return FileCheck{}, fault.Error("SFTP_INVALID_PATH")
 	}
-	return FileCheck{Exists: true, Path: target}, nil
+	return FileCheck{Exists: true, Path: target, info: info}, nil
 }
 
 func fileError(err error) error {
@@ -125,6 +126,7 @@ func fileError(err error) error {
 		case 6, 7:
 			return fault.Error("SFTP_UNAVAILABLE")
 		case 14, 15:
+			// OpenSSH 的 ENOSPC/EDQUOT 实际返回通用状态 4；这里只识别明确的空间/配额状态。
 			return fault.Error("SFTP_NO_SPACE")
 		}
 	}
@@ -216,32 +218,79 @@ func (s *Session) UploadFile(ctx context.Context, directory, filename string, ov
 		if _, err = rand.Read(random); err != nil {
 			return fault.Error("INTERNAL_ERROR")
 		}
-		temporary := path.Join(directory, ".web-ssh-upload-"+hex.EncodeToString(random))
-		file, err := c.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL)
-		progress()
-		if err != nil {
+		staging := path.Join(directory, ".web-ssh-upload-"+hex.EncodeToString(random))
+		if err = c.Mkdir(staging); err != nil {
+			// 失败或名称碰撞时不取得目录所有权，也不尝试删除已有对象。
 			return fileError(err)
 		}
-		isClosed := false
+		progress()
+		temporary := path.Join(staging, "payload")
+		var file *sftp.File
+		isClosed, ownsPayload := false, false
+		s.mu.Lock()
+		op := s.fileOperation
+		s.mu.Unlock()
 		defer func() {
-			s.mu.Lock()
-			op := s.fileOperation
-			s.mu.Unlock()
 			op.cleanupOnce.Do(func() { close(op.cleanup) })
-			if !isClosed {
+			if file != nil && !isClosed {
 				if e := file.Close(); e != nil {
 					s.manager.log.Warn("上传临时文件关闭失败", "session_id", s.id)
 				}
 			}
-			cleanupErr := c.Remove(temporary)
+			cleanupErr := s.cleanUploadStaging(c, staging, ownsPayload)
 			if fileError(cleanupErr) == fault.Error("SFTP_UNAVAILABLE") && s.ctx.Err() == nil {
-				// 原 channel 已失效时，清理仍归当前 operation 所有，不重新登录或重试上传。
-				cleanupErr = s.removeTemporaryOnChannel(op, temporary)
+				// 清理仍归当前 operation 所有，沿用同一预算和唯一 Session 回收流程。
+				cleanupErr = s.removeTemporaryOnChannel(op, staging, ownsPayload)
 			}
-			if cleanupErr != nil && !os.IsNotExist(cleanupErr) {
-				s.manager.log.Warn("上传临时文件清理失败", "session_id", s.id, "temporary", temporary)
+			if cleanupErr != nil {
+				s.manager.log.Warn("上传暂存资源清理未完成", "session_id", s.id, "temporary", staging)
 			}
 		}()
+		// 收紧空目录后才创建文件；收紧之前没有上传内容可供其他 UID 提前打开。
+		if err = c.Chmod(staging, 0700); err != nil {
+			return fileError(err)
+		}
+		stageInfo, err := c.Lstat(staging)
+		progress()
+		if err != nil {
+			return fileError(err)
+		}
+		stageStat, err := uploadAttributes(stageInfo, true, 0700)
+		if err != nil {
+			return err
+		}
+		entries, err := c.ReadDir(staging)
+		progress()
+		if err != nil {
+			return fileError(err)
+		}
+		if len(entries) != 0 {
+			return fault.Error("SFTP_PERMISSION_DENIED")
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		file, err = c.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL)
+		progress()
+		if err != nil {
+			return fileError(err)
+		}
+		ownsPayload = true
+		if err = file.Chmod(0600); err != nil {
+			return fileError(err)
+		}
+		initialInfo, err := file.Stat()
+		progress()
+		if err != nil {
+			return fileError(err)
+		}
+		payloadStat, err := uploadAttributes(initialInfo, false, 0600)
+		if err != nil {
+			return err
+		}
+		if payloadStat.UID != stageStat.UID || payloadStat.GID != stageStat.GID {
+			return fault.Error("SFTP_PERMISSION_DENIED")
+		}
 		// 只限制文件内容；multipart 首部、目录字段及边界不计入 512 MiB。
 		limited := &io.LimitedReader{R: source.Reader, N: MaxUploadSize + 1}
 		buffer := make([]byte, 64<<10)
@@ -295,13 +344,59 @@ func (s *Session) UploadFile(ctx context.Context, directory, filename string, ov
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		// 提交前再次检查；这不替代运行环境的路径稳定前提。
-		target, err = checkFileTarget(c, directory, filename, progress)
+		// 提交前重新读取目标，并拒绝上传期间已经发现的属性变化。
+		current, err := checkFileTarget(c, directory, filename, progress)
 		if err != nil {
 			return err
 		}
-		if target.Exists && !overwrite {
+		if current.Exists && !overwrite {
 			return fault.Error("SFTP_FILE_EXISTS")
+		}
+		if !sameUploadTarget(target, current) {
+			return fault.Error("SFTP_FAILED")
+		}
+		finalMode := os.FileMode(0600)
+		if current.Exists {
+			original, ok := current.info.Sys().(*sftp.FileStat)
+			// 依赖丢弃属性存在标志，零值可能表示缺失；不把未知身份当成 root 匹配。
+			if !ok || original.UID == 0 || original.GID == 0 || original.UID != payloadStat.UID || original.GID != payloadStat.GID || original.Mode&07000 != 0 {
+				return fault.Error("SFTP_PERMISSION_DENIED")
+			}
+			finalMode = current.info.Mode().Perm()
+		}
+		if err = c.Chmod(temporary, finalMode); err != nil {
+			return fileError(err)
+		}
+		finalInfo, err := c.Lstat(temporary)
+		progress()
+		if err != nil {
+			return fileError(err)
+		}
+		finalStat, err := uploadAttributes(finalInfo, false, finalMode)
+		if err != nil {
+			return err
+		}
+		if finalStat.UID != payloadStat.UID || finalStat.GID != payloadStat.GID || finalInfo.Size() != size {
+			return fault.Error("SFTP_PERMISSION_DENIED")
+		}
+		stageFinal, err := c.Lstat(staging)
+		progress()
+		if err != nil {
+			return fileError(err)
+		}
+		stageFinalStat, err := uploadAttributes(stageFinal, true, 0700)
+		if err != nil {
+			return err
+		}
+		if stageFinalStat.UID != stageStat.UID || stageFinalStat.GID != stageStat.GID {
+			return fault.Error("SFTP_PERMISSION_DENIED")
+		}
+		checked, err := checkFileTarget(c, directory, filename, progress)
+		if err != nil {
+			return err
+		}
+		if !sameUploadTarget(current, checked) {
+			return fault.Error("SFTP_FAILED")
 		}
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -312,11 +407,12 @@ func (s *Session) UploadFile(ctx context.Context, directory, filename string, ov
 			// hardlink 扩展对已存在目标返回错误，避免不同服务端 Rename 覆盖语义不一致。
 			err = c.Link(temporary, target.Path)
 		}
-		progress()
 		if err != nil {
 			return fileError(err)
 		}
+		// 成功响应是唯一提交确认点；必须先记录，再进入可能阻塞的清理。
 		result = FileUpload{Path: target.Path, Size: size}
+		op.confirmCommit()
 		return nil
 	})
 	return result, err
@@ -324,7 +420,7 @@ func (s *Session) UploadFile(ctx context.Context, directory, filename string, ov
 
 // removeTemporaryOnChannel 同步运行于原工作协程，沿用原清理看门狗。
 // channel-open 或关闭阻塞仍由唯一 Session.Close/reap 兜底，不遗留独立后台任务。
-func (s *Session) removeTemporaryOnChannel(op *fileOperation, temporary string) error {
+func (s *Session) removeTemporaryOnChannel(op *fileOperation, staging string, ownsPayload bool) error {
 	ch, requests, err := s.terminal.OpenFileChannel()
 	if err != nil {
 		return err
@@ -354,5 +450,50 @@ func (s *Session) removeTemporaryOnChannel(op *fileOperation, temporary string) 
 	if err != nil {
 		return err
 	}
-	return client.Remove(temporary)
+	return s.cleanUploadStaging(client, staging, ownsPayload)
+}
+
+// uploadAttributes 同时检查协议中的文件类型和权限，避免缺失 mode 被误判为普通文件。
+func uploadAttributes(info os.FileInfo, directory bool, permissions os.FileMode) (*sftp.FileStat, error) {
+	stat, ok := info.Sys().(*sftp.FileStat)
+	kind := uint32(0100000)
+	if directory {
+		kind = 0040000
+	}
+	if !ok || stat.Mode&0170000 != kind || stat.Mode&07777 != uint32(permissions) {
+		return nil, fault.Error("SFTP_PERMISSION_DENIED")
+	}
+	return stat, nil
+}
+
+// sameUploadTarget 只能发现可见属性变化，不替代已经接受的远端路径稳定前提。
+func sameUploadTarget(before, after FileCheck) bool {
+	if before.Exists != after.Exists {
+		return false
+	}
+	if !before.Exists {
+		return true
+	}
+	a, aOK := before.info.Sys().(*sftp.FileStat)
+	b, bOK := after.info.Sys().(*sftp.FileStat)
+	return aOK && bOK && a.Mode&0170000 == 0100000 && b.Mode&0170000 == 0100000 &&
+		a.Mode == b.Mode && a.UID == b.UID && a.GID == b.GID && a.Size == b.Size && a.Mtime == b.Mtime
+}
+
+// cleanUploadStaging 只删除已取得所有权的固定 payload 和目录，不递归清理未知对象。
+func (s *Session) cleanUploadStaging(c *sftp.Client, staging string, ownsPayload bool) error {
+	var first error
+	if ownsPayload {
+		if err := c.Remove(path.Join(staging, "payload")); err != nil && !os.IsNotExist(err) {
+			s.manager.log.Warn("上传临时文件清理失败", "session_id", s.id, "temporary", staging)
+			first = err
+		}
+	}
+	if err := c.RemoveDirectory(staging); err != nil && !os.IsNotExist(err) {
+		s.manager.log.Warn("上传暂存目录清理失败", "session_id", s.id, "temporary", staging)
+		if first == nil {
+			first = err
+		}
+	}
+	return first
 }

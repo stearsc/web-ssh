@@ -270,3 +270,201 @@ func TestFileOperationSessionCloseWaitsForWorker(t *testing.T) {
 		t.Fatal("工作任务退出后 Session 未回收")
 	}
 }
+
+// 手动计时器只在测试明确投递事件时到期；Reset 回执用于确定监控已进入目标阶段。
+type controlledFileTimer struct {
+	expired chan time.Time
+	resets  chan time.Duration
+}
+
+func newControlledFileTimer() *controlledFileTimer {
+	return &controlledFileTimer{expired: make(chan time.Time, 4), resets: make(chan time.Duration, 32)}
+}
+func (t *controlledFileTimer) Reset(d time.Duration) bool { t.resets <- d; return true }
+func (t *controlledFileTimer) Stop() bool                 { return true }
+func (timer *controlledFileTimer) awaitReset(t *testing.T, expected time.Duration) {
+	t.Helper()
+	for {
+		select {
+		case d := <-timer.resets:
+			if d == expected {
+				return
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("监控未进入指定计时阶段", expected)
+		}
+	}
+}
+
+func finishControlledOperation(s *Session, op *fileOperation) {
+	op.cancel()
+	s.mu.Lock()
+	s.fileOperation = nil
+	close(op.done)
+	s.mu.Unlock()
+}
+
+func TestFileOperationConfirmedCommitResult(t *testing.T) {
+	for _, event := range []string{"timer", "context", "result-and-timer", "cleanup-error", "unconfirmed-error", "uncommitted-cancel"} {
+		t.Run(event, func(t *testing.T) {
+			m, login, id, _ := setup(t)
+			s := createSession(t, m, login, id)
+			op, err := s.beginFileOperation(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer finishControlledOperation(s, op)
+			releaseClose := make(chan struct{})
+			close(releaseClose)
+			op.channel = &blockedFileClose{entered: make(chan struct{}), release: releaseClose}
+			timer := newControlledFileTimer()
+			result, workerDone, opened := make(chan error, 1), make(chan struct{}), make(chan struct{})
+			if event != "unconfirmed-error" && event != "uncommitted-cancel" {
+				op.confirmCommit()
+			}
+			if event == "context" || event == "uncommitted-cancel" {
+				op.cancel()
+			}
+			if event == "result-and-timer" {
+				// 调用 select 前两个通道已经同时就绪；任意分支顺序都必须得到成功。
+				timer.expired <- time.Now()
+				result <- nil
+				close(workerDone)
+			}
+			finished := make(chan error, 1)
+			go func() { finished <- s.waitFileOperation(op, result, workerDone, opened, timer, timer.expired) }()
+			if event == "timer" {
+				timer.awaitReset(t, time.Duration(m.cfg.Ssh.OperationTimeout)*time.Second)
+				timer.expired <- time.Now()
+				<-op.ctx.Done()
+			}
+			if event != "result-and-timer" {
+				if event == "cleanup-error" || event == "unconfirmed-error" {
+					result <- fault.Error("SFTP_UNAVAILABLE")
+				} else {
+					result <- nil
+				}
+				// result 并不等于 workerDone；监控必须继续等待工作协程的完成屏障。
+				select {
+				case e := <-finished:
+					t.Fatal("工作协程结束前提前返回", e)
+				default:
+				}
+				close(workerDone)
+			}
+			err = awaitFileResult(t, finished)
+			want := error(nil)
+			if event == "unconfirmed-error" {
+				want = fault.Error("SFTP_UNAVAILABLE")
+			}
+			if event == "uncommitted-cancel" {
+				want = fault.Error("SFTP_CANCELED")
+			}
+			if err != want {
+				t.Fatal(err, want)
+			}
+			if s.View().Status != "DISCONNECTED" {
+				t.Fatal("正常回收关闭了共享 Shell", s.View())
+			}
+		})
+	}
+}
+
+type blockedFileClose struct {
+	ssh.Channel
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (ch *blockedFileClose) Close() error { close(ch.entered); <-ch.release; return nil }
+
+func TestFileOperationConfirmedCommitForcedCleanup(t *testing.T) {
+	m, login, id, _ := setup(t)
+	s := createSession(t, m, login, id)
+	other := createSession(t, m, login, id)
+	op, err := s.beginFileOperation(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	timer := newControlledFileTimer()
+	ch := &blockedFileClose{entered: make(chan struct{}), release: make(chan struct{})}
+	op.channel = ch
+	op.confirmCommit()
+	result, workerDone, opened := make(chan error, 1), make(chan struct{}), make(chan struct{})
+	finished := make(chan error, 1)
+	go func() {
+		finished <- s.waitFileOperation(op, result, workerDone, opened, timer, timer.expired)
+	}()
+	budget := time.Duration(m.cfg.Ssh.OperationTimeout) * time.Second
+	timer.awaitReset(t, budget)
+	timer.expired <- time.Now()
+	<-ch.entered
+	// 首次到期只关闭独立 channel；该 channel 确认阻塞后再触发既有 Session 兜底。
+	timer.awaitReset(t, budget)
+	timer.expired <- time.Now()
+	_ = s.terminal.WaitTransport()
+	select {
+	case <-s.Done():
+		t.Fatal("operation 未回收便结束 Session")
+	default:
+	}
+	close(ch.release)
+	result <- fault.Error("SFTP_UNAVAILABLE")
+	close(workerDone)
+	if err = awaitFileResult(t, finished); err != nil {
+		t.Fatal("已确认提交被清理失败覆盖", err)
+	}
+	finishControlledOperation(s, op)
+	select {
+	case <-s.Done():
+	case <-time.After(3 * time.Second):
+		t.Fatal("Session 未完成回收")
+	}
+	if _, err = other.terminal.Write([]byte("other-session-after-cleanup-fallback")); err != nil {
+		t.Fatal(err)
+	}
+	waitBytes(t, other, []byte("other-session-after-cleanup-fallback"))
+	if !op.abnormal {
+		t.Fatal("没有记录异常回收")
+	}
+	if err = s.WaitFileOperation(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFileOperationProgressWinsExpiredIdleEvent(t *testing.T) {
+	m, login, id, _ := setup(t)
+	s := createSession(t, m, login, id)
+	op, err := s.beginFileOperation(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer finishControlledOperation(s, op)
+	timer := newControlledFileTimer()
+	result, workerDone, opened := make(chan error, 1), make(chan struct{}), make(chan struct{})
+	finished := make(chan error, 1)
+	go func() { finished <- s.waitFileOperation(op, result, workerDone, opened, timer, timer.expired) }()
+	close(opened)
+	timer.awaitReset(t, time.Duration(m.cfg.Server.RequestTimeout)*time.Second)
+	op.progressed()
+	timer.expired <- time.Now()
+	// 屏障：只有 timer 分支计算的剩余预算严格小于完整预算，证明它实际处理了到期事件。
+	for {
+		select {
+		case d := <-timer.resets:
+			if d > 0 && d < time.Duration(m.cfg.Server.RequestTimeout)*time.Second {
+				if op.ctx.Err() != nil {
+					t.Fatal("有实际进展仍被空闲 timer 取消")
+				}
+				result <- nil
+				close(workerDone)
+				if err = awaitFileResult(t, finished); err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("未处理受控 timer")
+		}
+	}
+}
