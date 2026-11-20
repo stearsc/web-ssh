@@ -53,7 +53,7 @@ func main() {
 			logger.Error("请提供恢复集目录")
 			os.Exit(1)
 		}
-		var lock *os.File
+		var lock *maintenance.Lock
 		lock, err = maintenance.Acquire(c.Database.Path)
 		if err == nil {
 			if *operation == "backup" {
@@ -84,6 +84,7 @@ func main() {
 		} else {
 			logger.Error("离线维护失败；请检查进程停止状态、恢复集完整性、目标权限及主密钥，不得启动不完整恢复目标")
 		}
+		// serve 未完成清理时仍持有无终结器的维护锁，随进程真正退出一并回收。
 		os.Exit(1)
 	}
 }

@@ -46,7 +46,7 @@ func TestServeAndShutdown(t *testing.T) {
 			defer cancel()
 			done := make(chan error, 1)
 			go func() {
-				done <- serve(ctx, c, db, fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("Web SSH")}}, listener, slog.New(slog.NewTextHandler(io.Discard, nil)))
+				done <- serve(ctx, c, db, nil, fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("Web SSH")}}, listener, slog.New(slog.NewTextHandler(io.Discard, nil)))
 			}()
 			client := &http.Client{Timeout: time.Second}
 			defer client.CloseIdleConnections()
@@ -137,7 +137,7 @@ func TestShutdownCancelsSSHBeforeDatabaseClose(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	management := &httpapi.Management{Auth: admin, Servers: managed, Config: cfg, Logger: logger}
 	go func() {
-		done <- serve(ctx, cfg, db, fstest.MapFS{"index.html": {Data: []byte("Web SSH")}}, listener, logger, management)
+		done <- serve(ctx, cfg, db, nil, fstest.MapFS{"index.html": {Data: []byte("Web SSH")}}, listener, logger, management)
 	}()
 	request, err := http.NewRequest("POST", cfg.Server.PublicOrigin+"/api/servers/"+view.ID+"/test", strings.NewReader("{}"))
 	if err != nil {

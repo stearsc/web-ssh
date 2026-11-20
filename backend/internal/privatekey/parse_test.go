@@ -260,3 +260,56 @@ func TestRealBcryptCancellationAndDeadlineDoNotReleaseRunningSlot(t *testing.T) 
 		})
 	}
 }
+
+// 直接调用锁定依赖的 OpenSSH 解析入口，验证私钥字段检查先于 RSA Validate。
+// 其余字段故意不能组成有效 RSA，若跳过上限检查则会返回不同的验证错误。
+func TestLockedOpenSSHRSAFieldGuards(t *testing.T) {
+	bits := func(size uint) *big.Int { return new(big.Int).Lsh(big.NewInt(1), size-1) }
+	cases := []struct {
+		name       string
+		n, e, p, q *big.Int
+		want       string
+	}{
+		{"modulus_16385", bits(16385), big.NewInt(65537), big.NewInt(3), big.NewInt(5), "ssh: rsa modulus too large"},
+		{"p_8193", big.NewInt(15), big.NewInt(65537), bits(8193), big.NewInt(5), "ssh: rsa prime too large"},
+		{"q_8193", big.NewInt(15), big.NewInt(65537), big.NewInt(3), bits(8193), "ssh: rsa prime too large"},
+		{"exponent_25", big.NewInt(15), new(big.Int).Add(bits(25), big.NewInt(1)), big.NewInt(3), big.NewInt(5), "ssh: exponent too large"},
+		{"exponent_even", big.NewInt(15), big.NewInt(4), big.NewInt(3), big.NewInt(5), "ssh: incorrect exponent"},
+		{"exponent_below_3", big.NewInt(15), big.NewInt(1), big.NewInt(3), big.NewInt(5), "ssh: incorrect exponent"},
+		{"limits_reach_validate", bits(16384), big.NewInt(16777215), bits(8192), bits(8192), ""},
+	}
+	for _, sample := range cases {
+		t.Run(sample.name, func(t *testing.T) {
+			private := ssh.Marshal(struct {
+				Check1, Check2      uint32
+				Type                string
+				N, E, D, Iqmp, P, Q *big.Int
+				Comment             string
+				Pad                 []byte `ssh:"rest"`
+			}{7, 7, ssh.KeyAlgoRSA, sample.n, sample.e, big.NewInt(3), big.NewInt(1), sample.p, sample.q, "", nil})
+			for padding := byte(1); len(private)%8 != 0; padding++ {
+				private = append(private, padding)
+			}
+			public := ssh.Marshal(struct {
+				Type string
+				E, N *big.Int
+			}{ssh.KeyAlgoRSA, sample.e, sample.n})
+			payload := append([]byte("openssh-key-v1\x00"), ssh.Marshal(struct {
+				Cipher, KDF, Options string
+				Count                uint32
+				Public, Private      string
+			}{"none", "none", "", 1, string(public), string(private)})...)
+			_, err := ssh.ParseRawPrivateKey(pem.EncodeToMemory(&pem.Block{Type: "OPENSSH PRIVATE KEY", Bytes: payload}))
+			if err == nil {
+				t.Fatal("不完整 RSA 被接受")
+			}
+			if sample.want != "" {
+				if err.Error() != sample.want {
+					t.Fatalf("未在预期边界拒绝: %v", err)
+				}
+			} else if !strings.HasPrefix(err.Error(), "crypto/rsa:") {
+				t.Fatal("上限边界未进入 RSA Validate", err)
+			}
+		})
+	}
+}

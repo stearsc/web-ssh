@@ -38,12 +38,13 @@ type Store struct {
 	leases    map[string]int
 	uncertain map[string][]string
 	now       func() time.Time
-	// 单元故障注入只在测试安装，生产总是使用真实安全删除。
-	remove func(*os.File, Object) error
+	// 测试可在真实 IO 前同步故障；生产始终使用安全目录打开与删除。
+	remove             func(*os.File, Object) error
+	openSweepDirectory func(string) (*os.File, error)
 }
 
 func NewStore(db *sql.DB, path string, grace time.Duration) *Store {
-	return &Store{db: db, path: path, grace: grace, leases: make(map[string]int), uncertain: make(map[string][]string), now: time.Now, remove: removeObject}
+	return &Store{db: db, path: path, grace: grace, leases: make(map[string]int), uncertain: make(map[string][]string), now: time.Now, remove: removeObject, openSweepDirectory: openDirectory}
 }
 
 // Lease 只保护短期文件任务，不能进入长期 Session/probe。
@@ -278,7 +279,7 @@ func (s *Store) Sweep(ctx context.Context, logger *slog.Logger) (SweepResult, er
 	}
 	defer s.sweepMu.Unlock()
 	started := time.Now()
-	dir, err := openDirectory(s.path)
+	dir, err := s.openSweepDirectory(s.path)
 	if err != nil {
 		result.Paused = true
 		return result, err
@@ -335,8 +336,9 @@ func (s *Store) Sweep(ctx context.Context, logger *slog.Logger) (SweepResult, er
 			s.mu.Unlock()
 			continue
 		}
+		attemptTime := s.now().UnixMilli()
 		claimed := database.TransactionFor(s.db)(ctx, func(tx *sql.Tx) error {
-			_, err := tx.ExecContext(ctx, `UPDATE private_key_objects SET state='delete_claimed',delete_attempts=delete_attempts+1,last_delete_attempt_at=? WHERE id=?`, s.now().UnixMilli(), id)
+			_, err := tx.ExecContext(ctx, `UPDATE private_key_objects SET state='delete_claimed',delete_attempts=delete_attempts+1,last_delete_attempt_at=? WHERE id=?`, attemptTime, id)
 			return err
 		})
 		s.mu.Unlock()
@@ -346,28 +348,34 @@ func (s *Store) Sweep(ctx context.Context, logger *slog.Logger) (SweepResult, er
 		}
 		result.Attempted++
 		// 在同一轮每次删除前重新验证卷可读，不能把不可读目录当对象不存在。
-		check, checkErr := openDirectory(s.path)
-		if checkErr != nil {
-			result.Paused = true
-			return result, checkErr
-		}
-		oldStat, _ := dir.Stat()
-		newStat, _ := check.Stat()
-		check.Close()
-		if oldStat == nil || newStat == nil || !os.SameFile(oldStat, newStat) {
-			result.Paused = true
-			return result, fault.Error("PRIVATE_KEY_STORAGE_UNAVAILABLE")
-		}
-		deleteErr := s.remove(dir, object)
+		check, deleteErr := s.openSweepDirectory(s.path)
 		category := ""
-		state := "deleted"
+		state := "delete_claimed"
 		if deleteErr != nil {
-			state = "ready"
-			category = "filesystem_error"
-			if deleteErr.Error() == "object_changed" {
-				category = "object_changed"
+			category = "volume_unavailable"
+			result.Paused = true
+		} else {
+			oldStat, oldErr := dir.Stat()
+			newStat, newErr := check.Stat()
+			check.Close()
+			if oldErr != nil || newErr != nil || !os.SameFile(oldStat, newStat) {
+				deleteErr = fault.Error("PRIVATE_KEY_STORAGE_UNAVAILABLE")
+				category = "volume_changed"
+				result.Paused = true
+			} else {
+				deleteErr = s.remove(dir, object)
+				state = "deleted"
+				if deleteErr != nil {
+					state = "ready"
+					category = "filesystem_error"
+					if deleteErr.Error() == "object_changed" {
+						category = "object_changed"
+					}
+				}
 			}
 		}
+		// claim 后的所有结果都落库；卷不可确认时保持 claim，阻止新引用/lease。
+		// 尝试时间、次数已在 claim 提交中持久化，candidate_at 始终不变。
 		s.mu.Lock()
 		recorded := database.TransactionFor(s.db)(ctx, func(tx *sql.Tx) error {
 			_, err := tx.ExecContext(ctx, `UPDATE private_key_objects SET state=?,last_delete_error=? WHERE id=?`, state, nullable(category), id)
@@ -375,11 +383,14 @@ func (s *Store) Sweep(ctx context.Context, logger *slog.Logger) (SweepResult, er
 		})
 		s.mu.Unlock()
 		if logger != nil && deleteErr != nil {
-			logger.Warn("私钥对象回收失败", "object_id", id, "error_class", category, "attempts", object.Attempts+1, "attempt_time", s.now().UnixMilli())
+			logger.Warn("私钥对象回收失败", "object_id", id, "error_class", category, "attempts", object.Attempts+1, "attempt_time", attemptTime)
 		}
 		if recorded != database.Committed {
 			result.Paused = true
 			return result, fault.Error("SERVER_UNAVAILABLE")
+		}
+		if result.Paused {
+			return result, deleteErr
 		}
 		if deleteErr == nil {
 			result.Deleted++

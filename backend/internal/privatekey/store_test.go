@@ -340,3 +340,145 @@ func TestPromotionCrashRecoveryAndSharedLastReference(t *testing.T) {
 		}
 	}
 }
+
+func TestSweepPersistsPostClaimVolumeFailureAndRetries(t *testing.T) {
+	for _, category := range []string{"volume_unavailable", "volume_changed"} {
+		t.Run(category, func(t *testing.T) {
+			s, path := storeFixture(t)
+			s.grace = 24 * time.Hour
+			upload, raw := saveObject(t, s)
+			upload.Release()
+			original, err := s.object(t.Context(), upload.ID)
+			if err != nil || !original.Candidate.Valid {
+				t.Fatal("缺少原始候选时间", err)
+			}
+			candidate := original.Candidate.Int64
+			now := time.UnixMilli(candidate).Add(24*time.Hour - time.Millisecond)
+			s.now = func() time.Time { return now }
+			if result, err := s.Sweep(t.Context(), nil); err != nil || result.Attempted != 0 {
+				t.Fatal("绕过 24 小时宽限", result, err)
+			}
+			now = now.Add(time.Millisecond)
+			attemptTime := now.UnixMilli()
+			claimed, proceed := make(chan struct{}), make(chan struct{})
+			opens := 0
+			s.openSweepDirectory = func(path string) (*os.File, error) {
+				opens++
+				if opens == 2 {
+					close(claimed)
+					<-proceed
+				}
+				return openDirectory(path)
+			}
+			type outcome struct {
+				result SweepResult
+				err    error
+			}
+			done := make(chan outcome, 1)
+			go func() { result, err := s.Sweep(context.Background(), nil); done <- outcome{result, err} }()
+			<-claimed
+			// 此同步点位于已提交 claim 之后、真实目录重开之前。
+			assertRecord := func(state, errorClass string, attempts int, attemptedAt int64) {
+				t.Helper()
+				var gotState string
+				var gotClass sql.NullString
+				var gotAttempts int
+				var gotTime, gotCandidate int64
+				err := s.db.QueryRow(`SELECT state,last_delete_error,delete_attempts,last_delete_attempt_at,candidate_at FROM private_key_objects WHERE id=?`, upload.ID).Scan(&gotState, &gotClass, &gotAttempts, &gotTime, &gotCandidate)
+				if err != nil || gotState != state || gotClass.String != errorClass || gotClass.Valid != (errorClass != "") || gotAttempts != attempts || gotTime != attemptedAt || gotCandidate != candidate {
+					t.Fatalf("失败记录: state=%s class=%v attempts=%d time=%d candidate=%d err=%v", gotState, gotClass, gotAttempts, gotTime, gotCandidate, err)
+				}
+			}
+			assertRecord("delete_claimed", "", 1, attemptTime)
+			assertBlocked := func(store *Store) {
+				t.Helper()
+				if lease, err := store.Acquire(t.Context(), upload.ID); err != fault.Error("PRIVATE_KEY_UNAVAILABLE") {
+					if lease != nil {
+						lease.Release()
+					}
+					t.Fatal("有效 claim 准入了 lease", err)
+				}
+				called := false
+				result := store.Change(t.Context(), "new-server", []string{upload.ID}, database.TransactionFor(s.db), func(*sql.Tx) error { called = true; return nil })
+				if result != database.RolledBack || called {
+					t.Fatal("有效 claim 准入了新引用", result)
+				}
+			}
+			assertBlocked(s)
+			parked := filepath.Join(t.TempDir(), "original-volume")
+			replacement := filepath.Join(t.TempDir(), "replacement-volume")
+			if err := os.Rename(path, parked); err != nil {
+				close(proceed)
+				<-done
+				t.Fatal(err)
+			}
+			restore := func() {
+				t.Helper()
+				if _, err := os.Stat(parked); errors.Is(err, os.ErrNotExist) {
+					return
+				}
+				if _, err := os.Stat(path); err == nil {
+					if err = os.Rename(path, replacement); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := os.Rename(parked, path); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Cleanup(restore)
+			unknown := []byte("不属于该对象的替换卷文件")
+			if category == "volume_changed" {
+				if err := os.Mkdir(path, 0700); err != nil {
+					close(proceed)
+					<-done
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(path, upload.ID+".key"), unknown, 0600); err != nil {
+					close(proceed)
+					<-done
+					t.Fatal(err)
+				}
+			}
+			close(proceed)
+			failed := <-done
+			if failed.err != fault.Error("PRIVATE_KEY_STORAGE_UNAVAILABLE") || !failed.result.Paused || failed.result.Attempted != 1 || failed.result.Deleted != 0 {
+				t.Fatal("卷故障未安全暂停", failed)
+			}
+			assertRecord("delete_claimed", category, 1, attemptTime)
+			assertBlocked(s)
+			if got, err := os.ReadFile(filepath.Join(parked, upload.ID+".key")); err != nil || !bytes.Equal(got, raw) {
+				t.Fatal("旧卷数据被删除", err)
+			}
+			if category == "volume_changed" {
+				if got, err := os.ReadFile(filepath.Join(path, upload.ID+".key")); err != nil || !bytes.Equal(got, unknown) {
+					t.Fatal("替换卷文件被删除", err)
+				}
+			} else {
+				if result, err := s.Sweep(t.Context(), nil); err == nil || !result.Paused || result.Attempted != 0 {
+					t.Fatal("卷未恢复却尝试删除", result, err)
+				}
+				assertRecord("delete_claimed", category, 1, attemptTime)
+			}
+			// 新 Store 也按持久化 claim 拒绝准入；恢复原卷后在下一轮安全重试。
+			restarted := NewStore(s.db, path, 24*time.Hour)
+			now = now.Add(time.Minute)
+			restarted.now = func() time.Time { return now }
+			assertBlocked(restarted)
+			restore()
+			result, err := restarted.Sweep(t.Context(), nil)
+			if err != nil || result.Paused || result.Attempted != 1 || result.Deleted != 1 {
+				t.Fatal("原卷恢复后不能重试", result, err)
+			}
+			assertRecord("deleted", "", 2, now.UnixMilli())
+			if _, err := os.Stat(filepath.Join(path, upload.ID+".key")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatal("重试未删除原对象", err)
+			}
+			if category == "volume_changed" {
+				if got, err := os.ReadFile(filepath.Join(replacement, upload.ID+".key")); err != nil || !bytes.Equal(got, unknown) {
+					t.Fatal("恢复后替换卷数据变化", err)
+				}
+			}
+		})
+	}
+}

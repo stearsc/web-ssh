@@ -32,7 +32,13 @@ func run(ctx context.Context, c config.Config, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	defer lock.Close()
+	// 启动阶段由 run 持锁；进入 serve 后由它在全部资源关闭后释放。
+	canReleaseLock := true
+	defer func() {
+		if canReleaseLock {
+			lock.Close()
+		}
+	}()
 	key, err := config.LoadEncryptionKey()
 	if err != nil {
 		return err
@@ -48,7 +54,12 @@ func run(ctx context.Context, c config.Config, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	fail := func(err error) error { return errors.Join(err, db.Close()) }
+	fail := func(err error) error {
+		closeErr := db.Close()
+		// 数据库关闭失败时也保守持锁，由进程退出回收描述符。
+		canReleaseLock = closeErr == nil
+		return errors.Join(err, closeErr)
+	}
 	if err := database.Migrate(startup, db); err != nil {
 		return fail(err)
 	}
@@ -89,12 +100,13 @@ func run(ctx context.Context, c config.Config, logger *slog.Logger) error {
 	sockets := browser.New(c, logger)
 	admin.OnRevoke(func(id string) { managed.Revoke(id); sessions.Revoke(id); sockets.Revoke(id) })
 	cancel() // 启动完成即释放启动计时器，不让它伴随长期服务。
-	return serve(ctx, c, db, assets, listener, logger, &httpapi.Management{Auth: admin, Servers: managed, Sessions: sessions, Websocket: sockets, Config: c, Logger: logger})
+	canReleaseLock = false
+	return serve(ctx, c, db, lock, assets, listener, logger, &httpapi.Management{Auth: admin, Servers: managed, Sessions: sessions, Websocket: sockets, Config: c, Logger: logger})
 }
 
-// serve 拥有本阶段的 HTTP 和 DB 退出顺序。后续资源在此应用入口接入，
+// serve 拥有 HTTP、DB 和维护锁的退出顺序。后续资源在此应用入口接入，
 // 不能由 HTTP 请求拥有 SSH 生命周期，也不能为每个清理步骤重置总预算。
-func serve(ctx context.Context, c config.Config, db *sql.DB, assets fs.FS, listener net.Listener, logger *slog.Logger, management ...*httpapi.Management) error {
+func serve(ctx context.Context, c config.Config, db *sql.DB, lock *maintenance.Lock, assets fs.FS, listener net.Listener, logger *slog.Logger, management ...*httpapi.Management) error {
 	var ready atomic.Bool
 	ready.Store(true)
 	handler := httpapi.NewHandler(assets, ready.Load, logger)
@@ -225,11 +237,15 @@ func serve(ctx context.Context, c config.Config, db *sql.DB, assets fs.FS, liste
 		}
 	}
 	dbErr := db.Close()
+	var lockErr error
+	if dbErr == nil && lock != nil {
+		lockErr = lock.Close()
+	}
 
 	if errors.Is(serveErr, http.ErrServerClosed) {
 		serveErr = nil
 	}
-	err := errors.Join(serveErr, shutdownErr, dbErr)
+	err := errors.Join(serveErr, shutdownErr, dbErr, lockErr)
 	if err == nil {
 		logger.Info("HTTP 与 SQLite 已关闭")
 	}
