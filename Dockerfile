@@ -2,7 +2,7 @@
 FROM node:24.22.3-bookworm-slim AS frontend
 WORKDIR /src/frontend
 COPY frontend/package.json frontend/package-lock.json ./
-RUN npm ci --no-audit --no-fund
+RUN npm ci --registry=https://registry.npmmirror.com --no-audit --no-fund
 COPY frontend/ ./
 RUN npm run build
 
