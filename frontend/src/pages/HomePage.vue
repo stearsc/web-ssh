@@ -67,6 +67,36 @@ const manager = ref<{
 const signingOut = ref(false)
 const view = ref<'servers' | 'sessions'>('servers')
 const activeTab = ref('')
+// 只记录菜单 UI 身份，不承载任何 Session 或资源状态。
+const openMenuKey = ref<number | null>(null)
+function isCurrentPane(key: number): boolean {
+  return (
+    !pageDisposed &&
+    !logoutPending.value &&
+    identity.value !== null &&
+    view.value === 'servers' &&
+    records.value.some(
+      (record) => record.key === key && record.session.id === activeTab.value,
+    )
+  )
+}
+function menuAllowed(key: number): boolean {
+  return isCurrentPane(key) && openMenuKey.value === key
+}
+function toggleMenu(key: number): void {
+  if (isCurrentPane(key))
+    openMenuKey.value = openMenuKey.value === key ? null : key
+}
+function closeMenu(key: number): void {
+  if (openMenuKey.value === key) openMenuKey.value = null
+}
+watch(
+  [activeTab, view, logoutPending, identity],
+  () => {
+    openMenuKey.value = null
+  },
+  { flush: 'sync' },
+)
 const probeAction = ref<'test' | 'connect'>('test')
 const CLOSE_REFRESH_STATES: ReadonlySet<CloseState> = new Set([
   'requested',
@@ -372,6 +402,7 @@ watch(view, (current) => {
 })
 onMounted(load)
 onBeforeUnmount(() => {
+  openMenuKey.value = null
   pageDisposed = true
   query?.abort()
   operations.abort()
@@ -632,22 +663,40 @@ async function signOut(): Promise<void> {
       <button @click="load">刷新列表</button>
     </aside>
     <main class="main">
+      <!-- 挂载点始终存在；视图切换只隐藏标签行，不拆除存活 Pane 的目标。 -->
       <nav
-        v-if="view === 'servers' && records.length"
+        v-show="view === 'servers' && records.length"
         class="terminal-tabs"
         aria-label="终端标签"
       >
-        <button :class="{ selected: !activeTab }" @click="activeTab = ''">
-          服务器
-        </button>
-        <button
-          v-for="record in records"
-          :key="record.key"
-          :class="{ selected: activeTab === record.session.id }"
-          @click="activeTab = record.session.id"
-        >
-          {{ record.session.name }} · {{ record.session.id.slice(-4) }}
-        </button>
+        <div class="terminal-tab-list">
+          <button :class="{ selected: !activeTab }" @click="activeTab = ''">
+            服务器
+          </button>
+          <div
+            v-for="record in records"
+            :key="record.key"
+            class="terminal-tab"
+            :class="{ selected: activeTab === record.session.id }"
+          >
+            <button
+              class="terminal-tab-title"
+              :title="`${record.session.name} · ${record.session.username}@${record.session.host}:${record.session.port} · ${record.session.id}`"
+              @click="activeTab = record.session.id"
+            >
+              {{ record.session.name }} · {{ record.session.username }}@{{
+                record.session.host
+              }}{{
+                record.session.port === 22 ? '' : ':' + record.session.port
+              }}
+            </button>
+            <span
+              :id="`terminal-tab-close-${record.key}`"
+              class="terminal-tab-close-slot"
+            />
+          </div>
+        </div>
+        <div id="terminal-tools" class="terminal-tools" />
       </nav>
       <TerminalPane
         v-for="record in records"
@@ -657,6 +706,12 @@ async function signOut(): Promise<void> {
         :start-mode="record.startMode"
         :active="view === 'servers' && activeTab === record.session.id"
         :close-handle="closeCoordinator.handle(record.session.id)"
+        :pane-key="record.key"
+        :menu-open="openMenuKey === record.key"
+        :is-current-pane="() => isCurrentPane(record.key)"
+        :menu-allowed="() => menuAllowed(record.key)"
+        @toggle-menu="toggleMenu(record.key)"
+        @close-menu="closeMenu(record.key)"
         @ready="(handle) => registerPane(record.key, handle)"
         @failed="(handle) => registerPane(record.key, handle)"
         @closed="paneClosed(record.key)"

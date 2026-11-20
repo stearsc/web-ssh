@@ -103,8 +103,22 @@ const node = (type, text = '') => ({
   children: [],
   parent: null,
 })
+const teleportTargets = new Map()
 const renderer = createRenderer({
-  createElement: (type) => Object.assign(node(type), { clientWidth: 800 }),
+  querySelector: (selector) => teleportTargets.get(selector),
+  createElement: (type) =>
+    Object.assign(node(type), {
+      clientWidth: 800,
+      style: {},
+      focus() {},
+      getBoundingClientRect: () => ({ bottom: 45, right: 800 }),
+      showPopover() {
+        this.isPopoverOpen = true
+      },
+      hidePopover() {
+        this.isPopoverOpen = false
+      },
+    }),
   createText: (text) => node('#text', text),
   createComment: () => node('#comment'),
   setText: (el, text) => {
@@ -154,12 +168,14 @@ function texts(root, className) {
 function byType(root, type) {
   return findAll(root, (el) => el.type === type)
 }
-function button(root, label) {
+async function button(root, label) {
+  // 工具栏迁移后，查询操作入口前先通过真实触发器展开菜单。
+  await root.openMenu?.()
   return byType(root, 'button').find((el) => textContent(el) === label)
 }
 function click(el) {
   assert.ok(el)
-  el.props.onClick?.({ type: 'click' })
+  el.props.onClick?.({ type: 'click', stopPropagation() {} })
 }
 
 const session = {
@@ -190,10 +206,11 @@ function detail(overrides = {}) {
 
 class TerminalStub {
   static instances = []
-  constructor() {
+  constructor(options) {
     this.cols = 80
     this.rows = 24
-    this.options = {}
+    this.options = options
+    this.selection = ''
     this.disposed = 0
     this.loaded = 0
     this.opened = 0
@@ -228,11 +245,26 @@ class TerminalStub {
     this.subscriptions.push(item)
     return item
   }
-  onData() {
+  attachCustomKeyEventHandler(callback) {
+    this.keyHandler = callback
+  }
+  hasSelection() {
+    return this.selection !== ''
+  }
+  getSelection() {
+    return this.selection
+  }
+  onSelectionChange(callback) {
+    this.selectionChanged = callback
+    return this.subscription('selection')
+  }
+  onData(callback) {
+    this.data = callback
     if (this.onDataThrows) throw this.onDataThrows
     return this.subscription('data')
   }
-  onBinary() {
+  onBinary(callback) {
+    this.binary = callback
     if (this.onBinaryThrows) throw this.onBinaryThrows
     return this.subscription('binary')
   }
@@ -412,6 +444,8 @@ async function mountPane(t, options = {}) {
     active: options.active ?? true,
     session: options.session ?? session,
     startMode: options.startMode ?? 'attach',
+    paneKey: 1,
+    menuOpen: options.menuOpen ?? true,
   })
   let pane
   const Root = defineComponent({
@@ -420,6 +454,21 @@ async function mountPane(t, options = {}) {
         h(Pane, {
           ...props,
           closeHandle,
+          isCurrentPane: () =>
+            props.active &&
+            !logoutPending.value &&
+            (options.isCurrentPane?.() ?? true),
+          menuAllowed: () =>
+            props.active &&
+            props.menuOpen &&
+            !logoutPending.value &&
+            (options.isCurrentPane?.() ?? true),
+          onToggleMenu: () => {
+            props.menuOpen = !props.menuOpen
+          },
+          onCloseMenu: () => {
+            props.menuOpen = false
+          },
           ref: (value) => {
             pane = value
           },
@@ -435,6 +484,23 @@ async function mountPane(t, options = {}) {
     },
   })
   const root = node('root')
+  root.openMenu = async () => {
+    if (!props.active || props.menuOpen) return
+    const trigger = byType(root, 'button').find(
+      (el) => el.props['aria-label'] === '当前终端操作',
+    )
+    if (trigger) {
+      click(trigger)
+      await flush()
+    }
+  }
+  teleportTargets.clear()
+  for (const selector of ['#terminal-tools', '#terminal-tab-close-1']) {
+    const target = node('target')
+    root.children.push(target)
+    target.parent = root
+    teleportTargets.set(selector, target)
+  }
   const app = renderer.createApp(Root)
   app.mount(root)
   let mounted = true
@@ -570,6 +636,13 @@ test('实际 Pane：恢复截断提示与历史异常分开，前缀不完整不
   await flush()
   assert.deepEqual(texts(h.root, 'connection-state'), ['已连接'])
   assert.match(texts(h.root, 'notice').join(), /截断/)
+  assert.equal(h.terminalInstances.length, 2)
+  const rebuilt = h.terminalInstances[1]
+  assert.equal(typeof rebuilt.keyHandler, 'function')
+  rebuilt.selection = '重建后仍可复制'
+  rebuilt.selectionChanged()
+  await flush()
+  assert.equal((await button(h.root, '复制选中文本')).props.disabled, false)
   assert.match(texts(h.root, 'connection-diagnostic').join(), /1006/)
 })
 
@@ -842,7 +915,7 @@ async function mountRacePane(t, clientPhase) {
 
 async function enterTakeoverPhase(h, phase) {
   if (phase === 'stopping') {
-    const prepare = button(h.root, '停止恢复并准备接管')
+    const prepare = await button(h.root, '停止恢复并准备接管')
     assert.ok(prepare, textContent(h.root))
     click(prepare)
     await nextTick()
@@ -852,7 +925,7 @@ async function enterTakeoverPhase(h, phase) {
     return
   }
 
-  const prepare = button(h.root, '停止恢复并准备接管')
+  const prepare = await button(h.root, '停止恢复并准备接管')
   assert.ok(prepare, textContent(h.root))
   click(prepare)
   await h.releaseCredential()
@@ -870,7 +943,7 @@ async function enterTakeoverPhase(h, phase) {
     return
   }
 
-  click(button(h.root, '确认接管'))
+  click(await button(h.root, '确认接管'))
   await flush()
   assert.deepEqual(texts(h.root, 'connection-state'), [
     '正在申请连接凭证',
@@ -890,7 +963,7 @@ test('S6-T13 候选 Pane：ready 一次，仅 GET 详情，零 POST takeover、�
   assert.equal(takeoverPosts(h).length, 0)
   assert.equal(h.sockets.length, 0)
   assert.match(modalText(h), /接管 Session/)
-  assert.ok(button(h.root, '确认接管'))
+  assert.ok(await button(h.root, '确认接管'))
 })
 
 test('S6-T14 attach Pane：ready 一次，首请求仍为 attach', async (t) => {
@@ -941,7 +1014,7 @@ test('S6-T15 前置校验失败：failed 一次，零资源、零请求，关闭
 
 test('S6-T16 候选确认：POST 为 takeover 加详情代次，xterm 只构造一次', async (t) => {
   const h = await mountPane(t, { startMode: 'candidate' })
-  click(button(h.root, '确认接管'))
+  click(await button(h.root, '确认接管'))
   await flush()
   assert.equal(takeoverPosts(h).length, 1)
   assert.deepEqual(takeoverPosts(h)[0].body, {
@@ -966,12 +1039,12 @@ test('S6-T17 接管 BIND_CONFLICT：Pane 保留，展示原因，不再发 takeo
           )
         : undefined,
   })
-  click(button(h.root, '确认接管'))
+  click(await button(h.root, '确认接管'))
   await flush()
   assert.equal(takeoverPosts(h).length, 1)
   assert.equal(h.sockets.length, 0)
   assert.match(texts(h.root, 'notice').join(), /绑定代次冲突/)
-  assert.equal(button(h.root, '确认接管'), undefined)
+  assert.equal(await button(h.root, '确认接管'), undefined)
   await flush()
   assert.equal(takeoverPosts(h).length, 1)
 })
@@ -984,13 +1057,13 @@ test('S6-T18 D2：retry_wait 时停止恢复后再 GET，取消后无 Prepare/WS
   h.sockets[0].onclose({ code: 1006 })
   await flush()
   assert.deepEqual(texts(h.root, 'connection-state'), ['等待自动恢复 1/10'])
-  click(button(h.root, '停止恢复并准备接管'))
+  click(await button(h.root, '停止恢复并准备接管'))
   await flush()
   const gets = h.requests.filter((item) => item.method === 'GET')
   assert.equal(gets.length, 1)
   assert.equal(takeoverPosts(h).length, 0)
   assert.match(modalText(h), /接管 Session/)
-  click(button(h.root, '取消'))
+  click(await button(h.root, '取消'))
   await flush()
   assert.equal(takeoverPosts(h).length, 0)
   assert.equal(h.sockets.length, 1)
@@ -1000,8 +1073,8 @@ test('S6-T19 在线或回放的 Pane 不显示接管按钮', async (t) => {
   const h = await mountPane(t)
   bind(h.sockets[0], 1)
   await flush()
-  assert.equal(button(h.root, '准备接管'), undefined)
-  assert.equal(button(h.root, '停止恢复并准备接管'), undefined)
+  assert.equal(await button(h.root, '准备接管'), undefined)
+  assert.equal(await button(h.root, '停止恢复并准备接管'), undefined)
 })
 
 test('S6-T20 loading 阶段关闭标签：GET 被 abort，dispose 成功后才 closed', async (t) => {
@@ -1040,7 +1113,7 @@ test('S6-T22-A confirming 时身份失效清空候选', async (t) => {
   assert.match(modalText(h), /接管 Session/)
   clearIdentity()
   await flush()
-  assert.equal(button(h.root, '确认接管'), undefined)
+  assert.equal(await button(h.root, '确认接管'), undefined)
   assert.equal(takeoverPosts(h).length, 0)
 })
 
@@ -1063,15 +1136,11 @@ test('S6-T23 takeover 进行中：手动恢复与刷新状态禁用，提供取�
     startMode: 'candidate',
     fetch: () => pending.promise,
   })
-  assert.deepEqual(texts(h.root, 'connection-state'), [
-    '正在查询 Session 状态',
-  ])
-  assert.equal(button(h.root, '手动恢复').props.disabled, true)
-  assert.equal(button(h.root, '刷新 Session 状态').props.disabled, true)
-  assert.ok(button(h.root, '取消准备'))
-  pending.resolve(
-    Response.json({ code: 0, message: 'ok', data: detail() }),
-  )
+  assert.deepEqual(texts(h.root, 'connection-state'), ['正在查询 Session 状态'])
+  assert.equal((await button(h.root, '手动恢复')).props.disabled, true)
+  assert.equal((await button(h.root, '刷新 Session 状态')).props.disabled, true)
+  assert.ok(await button(h.root, '取消准备'))
+  pending.resolve(Response.json({ code: 0, message: 'ok', data: detail() }))
   await flush()
 })
 
@@ -1081,18 +1150,19 @@ test('S6-T24 closeRemote 与 takeover 互斥：关闭意图优先，零 takeover
     startMode: 'candidate',
     fetch: () => pending.promise,
   })
-  assert.equal(button(h.root, '关闭 SSH 会话').props.disabled, false)
-  click(button(h.root, '关闭 SSH 会话'))
+  assert.equal((await button(h.root, '关闭 SSH 会话')).props.disabled, false)
+  click(await button(h.root, '关闭 SSH 会话'))
   await flush()
-  assert.ok(button(h.root, '确认关闭'))
-  pending.resolve(
-    Response.json({ code: 0, message: 'ok', data: detail() }),
+  assert.ok(await button(h.root, '确认关闭'))
+  pending.resolve(Response.json({ code: 0, message: 'ok', data: detail() }))
+  await flush()
+  assert.equal(await button(h.root, '确认接管'), undefined)
+  click(await button(h.root, '确认关闭'))
+  await flush()
+  assert.equal(
+    h.requests.some((item) => item.method === 'DELETE'),
+    true,
   )
-  await flush()
-  assert.equal(button(h.root, '确认接管'), undefined)
-  click(button(h.root, '确认关闭'))
-  await flush()
-  assert.equal(h.requests.some((item) => item.method === 'DELETE'), true)
   assert.equal(takeoverPosts(h).length, 0)
   assert.ok(h.events.changed >= 1)
 })
@@ -1100,7 +1170,7 @@ test('S6-T24 closeRemote 与 takeover 互斥：关闭意图优先，零 takeover
 test('S6-T25 接管结束与 closeRemote 结束各 emit changed 一次', async (t) => {
   await t.test('接管结束', async (t) => {
     const h = await mountPane(t, { startMode: 'candidate' })
-    click(button(h.root, '确认接管'))
+    click(await button(h.root, '确认接管'))
     await flush()
     bind(h.sockets[0], 6)
     await flush()
@@ -1110,9 +1180,9 @@ test('S6-T25 接管结束与 closeRemote 结束各 emit changed 一次', async (
     const h = await mountPane(t)
     bind(h.sockets[0], 1)
     await flush()
-    click(button(h.root, '关闭 SSH 会话'))
+    click(await button(h.root, '关闭 SSH 会话'))
     await flush()
-    click(button(h.root, '确认关闭'))
+    click(await button(h.root, '确认关闭'))
     await flush()
     assert.equal(h.events.changed, 1)
   })
@@ -1171,15 +1241,12 @@ test('S6-T38 接管阶段 × 抢占动作：无复活、无确认前连接、无
           clearIdentity()
           await h.release()
           await flush()
-          assert.equal(button(h.root, '确认接管'), undefined)
-          assert.equal(
-            takeoverPosts(h).length,
-            allowedTakeoverPosts,
-          )
+          assert.equal(await button(h.root, '确认接管'), undefined)
+          assert.equal(takeoverPosts(h).length, allowedTakeoverPosts)
         } else {
-          click(button(h.root, '关闭 SSH 会话'))
+          click(await button(h.root, '关闭 SSH 会话'))
           await flush()
-          click(button(h.root, '确认关闭'))
+          click(await button(h.root, '确认关闭'))
           await h.release()
           await flush()
           assert.equal(
@@ -1201,7 +1268,7 @@ test('S6-T38 接管阶段 × 抢占动作：无复活、无确认前连接、无
           )
         assert.equal(newTakeoverPosts.length, 0)
         assert.equal(h.sockets.length <= 1, true)
-        assert.equal(button(h.root, '确认接管'), undefined)
+        assert.equal(await button(h.root, '确认接管'), undefined)
       })
     }
   }
@@ -1219,7 +1286,7 @@ test('S6-T38 客户端阶段 × stop/close：停止屏障和资源所有权一�
       const h = await mountRacePane(t, clientPhase)
       if (clientPhase === 'replaying') {
         // 回放中按设计不显示接管入口，只能验证直接 stop 屏障。
-        assert.equal(button(h.root, '停止恢复并准备接管'), undefined)
+        assert.equal(await button(h.root, '停止恢复并准备接管'), undefined)
         const stopping = h.pane.stop()
         await h.release()
         await stopping
@@ -1230,7 +1297,7 @@ test('S6-T38 客户端阶段 × stop/close：停止屏障和资源所有权一�
         await stopping
       }
       assert.equal(takeoverPosts(h).length, 0)
-      assert.equal(button(h.root, '确认接管'), undefined)
+      assert.equal(await button(h.root, '确认接管'), undefined)
       assert.deepEqual(texts(h.root, 'connection-state'), ['未连接'])
     })
 
@@ -1252,7 +1319,7 @@ test('S6-T38 connecting 的客户端子阶段 × 抢占动作：迟到回调被�
         const h = await mountRacePane(t, clientPhase)
         if (clientPhase === 'replaying') {
           // 回放态不显示 takeover 入口，由上面的直接 stop/close 用例覆盖。
-          assert.equal(button(h.root, '停止恢复并准备接管'), undefined)
+          assert.equal(await button(h.root, '停止恢复并准备接管'), undefined)
           return
         }
         await enterTakeoverPhase(h, 'connecting')
@@ -1272,14 +1339,14 @@ test('S6-T38 connecting 的客户端子阶段 × 抢占动作：迟到回调被�
           await h.release()
           await flush()
         } else {
-          click(button(h.root, '关闭 SSH 会话'))
+          click(await button(h.root, '关闭 SSH 会话'))
           await flush()
-          click(button(h.root, '确认关闭'))
+          click(await button(h.root, '确认关闭'))
           await h.release()
           await flush()
         }
         assert.equal(takeoverPosts(h).length, before)
-        assert.equal(button(h.root, '确认接管'), undefined)
+        assert.equal(await button(h.root, '确认接管'), undefined)
       })
     }
   }
@@ -1290,9 +1357,9 @@ test('S6-T46 终端工厂各步骤失败均回滚已创建资源', async (t) => 
   const cases = [
     ['loadAddon', { loadAddonThrows: new Error('load failed') }, 0],
     ['open', { openThrows: new Error('open failed') }, 0],
-    ['onData', { onDataThrows: new Error('data failed') }, 0],
-    ['onBinary', { onBinaryThrows: new Error('binary failed') }, 1],
-    ['onResize', { onResizeThrows: new Error('resize failed') }, 2],
+    ['onData', { onDataThrows: new Error('data failed') }, 1],
+    ['onBinary', { onBinaryThrows: new Error('binary failed') }, 2],
+    ['onResize', { onResizeThrows: new Error('resize failed') }, 3],
   ]
   for (const [name, patch, subscriptions] of cases) {
     await t.test(name, async (t) => {
@@ -1561,9 +1628,9 @@ test('S7-C23 确认关闭：同步 pending，localStop 先于 DELETE', async (t)
     order.push('stop')
     originalClose(code)
   }
-  click(button(h.root, '关闭 SSH 会话'))
+  click(await button(h.root, '关闭 SSH 会话'))
   await flush()
-  click(button(h.root, '确认关闭'))
+  click(await button(h.root, '确认关闭'))
   // 同步调用栈内：先 stop（takeover/recovery/client 失效），再发 DELETE。
   assert.deepEqual(order, ['stop', 'delete'])
   assert.equal(h.closeHandle.snapshot().state, 'pending')
@@ -1579,9 +1646,9 @@ test('S7-C01/C15 Pane 销毁不 abort 协调器 DELETE，状态保留', async (t
   })
   bind(h.sockets[0], 1)
   await flush()
-  click(button(h.root, '关闭 SSH 会话'))
+  click(await button(h.root, '关闭 SSH 会话'))
   await flush()
-  click(button(h.root, '确认关闭'))
+  click(await button(h.root, '确认关闭'))
   await flush()
   const deleteRequest = h.requests.find((item) => item.method === 'DELETE')
   assert.equal(h.closeHandle.snapshot().state, 'pending')
@@ -1627,9 +1694,9 @@ test('S7-C01/C15 Pane close 只退订并注销本地 stop，不清协调器任�
   })
   bind(h.sockets[0], 1)
   await flush()
-  click(button(h.root, '关闭 SSH 会话'))
+  click(await button(h.root, '关闭 SSH 会话'))
   await flush()
-  click(button(h.root, '确认关闭'))
+  click(await button(h.root, '确认关闭'))
   await flush()
   const deletion = h.requests.find((item) => item.method === 'DELETE')
   assert.equal(closeHandle.snapshot().state, 'pending')
@@ -1654,11 +1721,11 @@ test('S7-C02 pending 取消等待后关闭 Pane，unknown 保留且迟到 200 �
   })
   bind(h.sockets[0], 1)
   await flush()
-  click(button(h.root, '关闭 SSH 会话'))
+  click(await button(h.root, '关闭 SSH 会话'))
   await flush()
-  click(button(h.root, '确认关闭'))
+  click(await button(h.root, '确认关闭'))
   await flush()
-  click(button(h.root, '取消等待'))
+  click(await button(h.root, '取消等待'))
   await flush()
   assert.equal(h.closeHandle.snapshot().state, 'unknown')
   assert.match(texts(h.root, 'close-state').join(), /已停止等待/)
@@ -1691,11 +1758,11 @@ test('S7-C03/C04 非 idle 新 Pane：零 Prepare/WS，禁止手动恢复', async
   assert.equal(h.requests.length, 0)
   assert.equal(h.sockets.length, 0)
   assert.equal(takeoverPosts(h).length, 0)
-  assert.equal(button(h.root, '确认接管'), undefined)
-  assert.equal(button(h.root, '手动恢复').props.disabled, true)
+  assert.equal(await button(h.root, '确认接管'), undefined)
+  assert.equal((await button(h.root, '手动恢复')).props.disabled, true)
   assert.match(texts(h.root, 'close-state').join(), /关闭结果未知/)
-  assert.ok(button(h.root, '重试关闭'))
-  assert.ok(button(h.root, '刷新状态'))
+  assert.ok(await button(h.root, '重试关闭'))
+  assert.ok(await button(h.root, '刷新状态'))
 })
 
 test('S7-C29/C12 idle + CLOSING：保持 idle，零凭证/WS/takeover，不产生 ended', async (t) => {
@@ -1714,11 +1781,8 @@ test('S7-C29/C12 idle + CLOSING：保持 idle，零凭证/WS/takeover，不产�
   assert.equal(h.requests[0].path, `/api/sessions/${session.id}`)
   assert.equal(h.sockets.length, 0)
   assert.equal(takeoverPosts(h).length, 0)
-  assert.equal(
-    h.requests.filter((item) => item.method === 'POST').length,
-    0,
-  )
-  assert.equal(button(h.root, '确认接管'), undefined)
+  assert.equal(h.requests.filter((item) => item.method === 'POST').length, 0)
+  assert.equal(await button(h.root, '确认接管'), undefined)
   assert.equal(texts(h.root, 'close-state').length, 0)
   assert.notEqual(h.closeHandle.snapshot().state, 'ended')
 })
@@ -1738,7 +1802,7 @@ test('S7-C13 页面重新进入详情网络错误：保留候选 Pane，不自�
   assert.equal(h.requests[0].path, `/api/sessions/${session.id}`)
   assert.equal(takeoverPosts(h).length, 0)
   assert.equal(h.sockets.length, 0)
-  assert.equal(button(h.root, '确认接管'), undefined)
+  assert.equal(await button(h.root, '确认接管'), undefined)
   assert.match(texts(h.root, 'notice').join(), /无法连接服务/)
   assert.equal(h.closeHandle.snapshot().state, 'idle')
 
@@ -1755,7 +1819,7 @@ test('S7-C29 idle + CONNECTING：保持 idle，拒绝确认', async (t) => {
   assert.equal(h.closeHandle.snapshot().state, 'idle')
   assert.equal(h.sockets.length, 0)
   assert.equal(takeoverPosts(h).length, 0)
-  assert.equal(button(h.root, '确认接管'), undefined)
+  assert.equal(await button(h.root, '确认接管'), undefined)
 })
 
 test('S7-C21/C28 ended 只认服务端证据', async (t) => {
@@ -1833,9 +1897,9 @@ test('S7-C30 Pane DELETE 失败归 unknown，不显示 failed', async (t) => {
   })
   bind(h.sockets[0], 1)
   await flush()
-  click(button(h.root, '关闭 SSH 会话'))
+  click(await button(h.root, '关闭 SSH 会话'))
   await flush()
-  click(button(h.root, '确认关闭'))
+  click(await button(h.root, '确认关闭'))
   await flush()
   assert.equal(h.closeHandle.snapshot().state, 'unknown')
   assert.match(texts(h.root, 'close-state').join(), /关闭结果未知/)
@@ -1844,16 +1908,16 @@ test('S7-C30 Pane DELETE 失败归 unknown，不显示 failed', async (t) => {
     false,
   )
   assert.equal(h.events.closed, 0)
-  assert.ok(button(h.root, '重试关闭'))
+  assert.ok(await button(h.root, '重试关闭'))
 })
 
 test('S7-C19 recovery retry_wait 时确认关闭：停止重试，不自动 attach', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const h = await mountRacePane(t, 'retry_wait')
   const before = h.requests.length
-  click(button(h.root, '关闭 SSH 会话'))
+  click(await button(h.root, '关闭 SSH 会话'))
   await flush()
-  click(button(h.root, '确认关闭'))
+  click(await button(h.root, '确认关闭'))
   await h.release()
   await flush()
   assert.equal(
@@ -1904,11 +1968,9 @@ test('S7-5 takeover loading 时卸载：零新 WebSocket，迟到详情不发布
 test('S7-5 takeover loading 阶段卸载：真实 prepare 流程的迟到请求隔离', async (t) => {
   const h = await mountRacePane(t, 'connecting')
   await enterTakeoverPhase(h, 'loading')
-  assert.deepEqual(texts(h.root, 'connection-state'), [
-    '正在查询 Session 状态',
-  ])
-  assert.ok(button(h.root, '取消准备'))
-  assert.equal(button(h.root, '确认接管'), undefined)
+  assert.deepEqual(texts(h.root, 'connection-state'), ['正在查询 Session 状态'])
+  assert.ok(await button(h.root, '取消准备'))
+  assert.equal(await button(h.root, '确认接管'), undefined)
 
   const beforeRequests = h.requests.length
   const beforeSockets = h.sockets.length
@@ -1945,7 +2007,6 @@ test('S7-5 recovery retry_wait 时卸载：不自动恢复', async (t) => {
   assert.equal(h.closeHandle.snapshot().state, 'idle')
 })
 
-
 test('S7-6/C15 stop、重复 close 与卸载共享清理，旧 socket/write 回调不复活', async (t) => {
   const h = await mountPane(t, { Terminal: HeldWriteTerminal })
   const socket = h.sockets[0]
@@ -1970,28 +2031,30 @@ test('S7-6/C15 stop、重复 close 与卸载共享清理，旧 socket/write 回�
   await flush()
   assert.equal(closed.mock.callCount(), 1)
   assert.equal(terminal.disposed, 1)
-  assert.ok(terminal.subscriptions.every(s => s.disposed === 1))
-  assert.ok(h.observers.every(o => o.disconnected >= 1))
+  assert.ok(terminal.subscriptions.every((s) => s.disposed === 1))
+  assert.ok(h.observers.every((o) => o.disconnected >= 1))
   assert.equal(h.requests.length, requests)
   assert.equal(h.sockets.length, 1)
   assert.equal(h.events.changed, events.changed)
   // Vue suppresses events after unmount; resource cleanup still completes once.
   assert.equal(h.events.closed, 0)
   assert.equal(h.closeHandle.snapshot().state, 'idle')
-  assert.equal(h.requests.filter(r => r.method === 'DELETE').length, 0)
+  assert.equal(h.requests.filter((r) => r.method === 'DELETE').length, 0)
 })
 
 test('S7-6/C06 DELETE 完成与 Pane close 同步交错，不向已退订 Pane 发布', async (t) => {
   for (const outcome of ['accepted', 'lost']) {
     await t.test(outcome, async (t) => {
       const pending = deferredValue()
-      const h = await mountPane(t, { fetch: r => r.method === 'DELETE' ? pending.promise : undefined })
+      const h = await mountPane(t, {
+        fetch: (r) => (r.method === 'DELETE' ? pending.promise : undefined),
+      })
       bind(h.sockets[0], 1)
-      click(button(h.root, '关闭 SSH 会话'))
+      click(await button(h.root, '关闭 SSH 会话'))
       await flush()
-      click(button(h.root, '确认关闭'))
+      click(await button(h.root, '确认关闭'))
       assert.equal(h.closeHandle.snapshot().state, 'pending')
-      const signal = h.requests.find(r => r.method === 'DELETE').signal
+      const signal = h.requests.find((r) => r.method === 'DELETE').signal
       const closing = h.pane.close()
       const changed = h.events.changed
       if (outcome === 'accepted') pending.resolve(Response.json({ code: 0, message: 'ok', data: {} }))
@@ -2002,20 +2065,19 @@ test('S7-6/C06 DELETE 完成与 Pane close 同步交错，不向已退订 Pane �
       assert.equal(h.closeHandle.snapshot().state, outcome === 'accepted' ? 'requested' : 'unknown')
       assert.equal(h.events.changed, changed)
       assert.equal(h.events.closed, 1)
-      assert.equal(h.requests.filter(r => r.method === 'DELETE').length, 1)
+      assert.equal(h.requests.filter((r) => r.method === 'DELETE').length, 1)
       assert.equal(h.sockets.length, 1)
       assert.equal(h.terminalInstances[0].disposed, 1)
     })
   }
 })
 
-
 test('S7-6/C29 idle 候选详情准入：有效状态需确认，NOT_FOUND/非法详情拒绝且零凭证', async (t) => {
   for (const status of ['CONNECTED', 'DISCONNECTED', 'NOT_FOUND', 'INVALID']) {
     await t.test(status, async (t) => {
       const h = await mountPane(t, {
         startMode: 'candidate',
-        fetch: r => {
+        fetch: (r) => {
           if (r.method !== 'GET') return undefined
           if (status === 'NOT_FOUND')
             return Response.json({ code: 'SESSION_NOT_FOUND', message: '不存在', data: {} }, { status: 404 })
@@ -2034,7 +2096,7 @@ test('S7-6/C29 idle 候选详情准入：有效状态需确认，NOT_FOUND/非�
       assert.equal(h.requests[0].method, 'GET')
       assert.equal(h.sockets.length, 0)
       assert.equal(takeoverPosts(h).length, 0)
-      const confirm = button(h.root, '确认接管')
+      const confirm = await button(h.root, '确认接管')
       if (['CONNECTED', 'DISCONNECTED'].includes(status)) {
         assert.ok(confirm)
         assert.equal(confirm.props.disabled, false)
@@ -2044,7 +2106,6 @@ test('S7-6/C29 idle 候选详情准入：有效状态需确认，NOT_FOUND/非�
     })
   }
 })
-
 
 test('S7-6/C23 takeover、recovery、client 同步失效全部先于 DELETE', async (t) => {
   const order = []
@@ -2059,15 +2120,22 @@ test('S7-6/C23 takeover、recovery、client 同步失效全部先于 DELETE', as
       return original.apply(this, args)
     })
   }
-  const h = await mountPane(t, { fetch: r => {
-    if (r.method === 'DELETE') order.push('DELETE')
-  } })
+  const h = await mountPane(t, {
+    fetch: (r) => {
+      if (r.method === 'DELETE') order.push('DELETE')
+    },
+  })
   bind(h.sockets[0], 1)
-  click(button(h.root, '关闭 SSH 会话'))
+  click(await button(h.root, '关闭 SSH 会话'))
   await flush()
   order.length = 0
-  click(button(h.root, '确认关闭'))
-  assert.deepEqual(order, ['takeover.invalidate', 'recovery.stop', 'client.stop', 'DELETE'])
+  click(await button(h.root, '确认关闭'))
+  assert.deepEqual(order, [
+    'takeover.invalidate',
+    'recovery.stop',
+    'client.stop',
+    'DELETE',
+  ])
   assert.equal(h.closeHandle.snapshot().state, 'pending')
   await flush()
   assert.equal(h.closeHandle.snapshot().state, 'requested')
@@ -2099,10 +2167,189 @@ test('S7-6/C26 真实旧 Pane closed 后才能注册新 Pane，旧注销不移�
   await b.closeHandle.requestClose()
   await flush()
   assert.deepEqual(stopCalls, [0, 1])
-  assert.equal(b.requests.filter(r => r.method === 'DELETE').length, 1)
+  assert.equal(b.requests.filter((r) => r.method === 'DELETE').length, 1)
   assert.equal(b.sockets.length, 0)
   assert.equal(b.closeHandle.snapshot().state, 'requested')
   // Two mounts nest browser-global mocks; finish B before A restores its globals.
   await b.pane.close()
   b.unmount()
+})
+
+test('UI 菜单实时身份失效：旧 props 下动作拒绝，切换不重建终端，卸载无 Teleport 残留', async (t) => {
+  let current = true
+  const h = await mountPane(t, { isCurrentPane: () => current })
+  const oldClose = await button(h.root, '关闭 SSH 会话')
+  const term = h.terminalInstances[0]
+  const host = findAll(h.root, (el) => el.props.class === 'terminal-host')[0]
+  current = false // 页面状态同步变化，Pane 的 active props 尚未刷新。
+  click(oldClose)
+  await flush()
+  assert.equal(await button(h.root, '确认关闭'), undefined)
+  assert.equal(h.requests.filter((r) => r.method === 'DELETE').length, 0)
+  h.props.active = false
+  await flush()
+  assert.equal(
+    findAll(h.root, (el) => el.props.class === 'terminal-menu').length,
+    0,
+  )
+  assert.equal(h.props.menuOpen, false)
+  current = true
+  h.props.active = true
+  await flush()
+  assert.equal(h.props.menuOpen, false)
+  assert.equal(h.terminalInstances.length, 1)
+  assert.equal(h.terminalInstances[0], term)
+  assert.equal(
+    findAll(h.root, (el) => el.props.class === 'terminal-host')[0],
+    host,
+  )
+  h.unmount()
+  await flush()
+  for (const target of teleportTargets.values())
+    assert.equal(byType(target, 'button').length, 0)
+  assert.deepEqual(
+    h.window.added.slice().sort(),
+    h.window.removed.slice().sort(),
+  )
+})
+
+test('UI 复制不依赖输入门禁；失活后迟到反馈丢弃；无选区与重复键零复制', async (t) => {
+  const h = await mountPane(t)
+  let resolveCopy
+  const copied = []
+  navigator.clipboard = {
+    writeText(text) {
+      copied.push(text)
+      return new Promise((resolve) => {
+        resolveCopy = resolve
+      })
+    },
+  }
+  const term = h.terminalInstances[0] // 未 bind，输入门禁仍关闭。
+  term.selection = '中文\n\nANSI output'
+  term.selectionChanged()
+  await flush()
+  click(await button(h.root, '复制选中文本'))
+  assert.deepEqual(copied, [term.selection])
+  h.props.active = false
+  await flush()
+  resolveCopy()
+  await flush()
+  assert.equal(
+    texts(h.root, 'notice').some((value) => value.includes('已复制')),
+    false,
+  )
+  h.props.active = true
+  await flush()
+  const event = {
+    key: 'C',
+    type: 'keydown',
+    ctrlKey: true,
+    shiftKey: true,
+    repeat: false,
+    preventDefault() {
+      this.prevented = true
+    },
+    stopPropagation() {
+      this.stopped = true
+    },
+  }
+  term.selection = ''
+  assert.equal(term.keyHandler(event), false)
+  assert.equal(event.prevented, true)
+  assert.equal(event.stopped, true)
+  term.selection = 'selected'
+  assert.equal(term.keyHandler({ ...event, repeat: true }), false)
+  assert.equal(copied.length, 1)
+  assert.equal(
+    h.sockets
+      .flatMap((socket) => socket.sent)
+      .filter((value) => value instanceof Uint8Array).length,
+    0,
+  )
+})
+
+test('UI 菜单保留停止、查询、取消查询、人工恢复的业务条件和调用', async t => {
+  let pending = null
+  const h = await mountPane(t, { fetch: record => record.method === 'GET' && pending ? pending.promise : undefined })
+  bind(h.sockets[0], 1)
+  await flush()
+  assert.equal((await button(h.root, '刷新 Session 状态')).props.disabled, true)
+  click(await button(h.root, '停止恢复'))
+  await flush()
+  assert.equal(h.sockets[0].readyState, Socket.CLOSED)
+  pending = deferredValue()
+  click(await button(h.root, '刷新 Session 状态'))
+  await flush()
+  const query = h.requests.at(-1)
+  assert.equal(query.method, 'GET')
+  click(await button(h.root, '取消查询'))
+  assert.equal(query.signal.aborted, true)
+  pending.resolve(Response.json({code:0,message:'ok',data:detail()}))
+  pending = null
+  await flush()
+  click(await button(h.root, '刷新 Session 状态'))
+  await flush()
+  assert.equal((await button(h.root, '手动恢复')).props.disabled, false)
+  const snapshots = byType(h.root, 'details')
+  assert.equal(snapshots.length, 1)
+  assert.equal(snapshots[0].props.open, undefined)
+  click(await button(h.root, '手动恢复'))
+  await flush()
+  assert.equal(h.sockets.length, 2)
+  assert.equal(h.requests.at(-1).body.mode, 'attach')
+})
+
+test('UI 菜单保留重试关闭和刷新关闭状态，错误继续展示在终端附近', async t => {
+  let deletes = 0
+  const h = await mountPane(t, {fetch: record => {
+    if(record.method === 'DELETE' && ++deletes === 1) throw new TypeError('network down')
+  }})
+  bind(h.sockets[0], 1)
+  await flush()
+  click(await button(h.root, '关闭 SSH 会话'))
+  await flush()
+  click(await button(h.root, '确认关闭'))
+  await flush()
+  assert.equal(h.closeHandle.snapshot().state, 'unknown')
+  assert.match(texts(h.root, 'close-state').join(), /未知/)
+  const before = h.requests.filter(r=>r.method==='GET').length
+  click(await button(h.root, '刷新状态'))
+  await flush()
+  assert.equal(h.requests.filter(r=>r.method==='GET').length, before+1)
+  click(await button(h.root, '重试关闭'))
+  await flush()
+  assert.equal(deletes, 2)
+  assert.equal(h.closeHandle.snapshot().state, 'requested')
+})
+
+test('UI 常驻 × 在清理失败时不发 closed 或 DELETE，且不可重复关闭', async t => {
+  t.mock.method(console, 'error', () => {})
+  class FailingDispose extends TerminalStub {
+    dispose() { throw new Error('dispose failed') }
+  }
+  const h = await mountPane(t, {Terminal:FailingDispose})
+  const cross = byType(h.root,'button').find(el=>el.props['aria-label']==='关闭标签：test')
+  click(cross)
+  await flush()
+  assert.equal(h.events.closed, 0)
+  assert.equal(cross.props.disabled, true)
+  assert.match(texts(h.root,'notice').join(), /终端清理失败.*刷新页面/)
+  assert.equal(h.requests.filter(r=>r.method==='DELETE').length, 0)
+})
+
+test('UI 菜单取消准备沿用 takeover.cancel；菜单关闭标签沿用本地 close', async t => {
+  const pending = deferredValue()
+  const h = await mountPane(t, {startMode:'candidate',fetch:()=>pending.promise})
+  const query = h.requests[0]
+  click(await button(h.root, '取消准备'))
+  assert.equal(query.signal.aborted, true)
+  pending.resolve(Response.json({code:0,message:'ok',data:detail()}))
+  await flush()
+  assert.equal(await button(h.root, '确认接管'), undefined)
+  assert.equal(h.sockets.length, 0)
+  click(await button(h.root, '关闭标签'))
+  await flush()
+  assert.equal(h.events.closed, 1)
+  assert.equal(h.requests.filter(r=>r.method==='DELETE').length, 0)
 })

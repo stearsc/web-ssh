@@ -11,6 +11,7 @@ import {
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
+import { clipboardKeyHandler, copyText } from '../../terminal/clipboard'
 import { SessionRecovery } from '../../terminal/recovery'
 import {
   TerminalClient,
@@ -48,14 +49,96 @@ const props = defineProps<{
   active: boolean
   startMode: PaneStartMode
   closeHandle: CloseHandle
+  paneKey: number
+  menuOpen: boolean
+  isCurrentPane: () => boolean
+  menuAllowed: () => boolean
 }>()
 const emit = defineEmits<{
   ready: [handle: PaneHandle]
   failed: [handle: PaneHandle]
   closed: []
   changed: []
+  toggleMenu: []
+  closeMenu: []
 }>()
 const host = ref<HTMLElement>()
+const menu = ref<HTMLElement>()
+const menuButton = ref<HTMLButtonElement>()
+const hasSelection = ref(false)
+const clipboardNotice = ref('')
+let clipboardEpoch = 0
+function closeMenu(restoreFocus = false): void {
+  emit('closeMenu')
+  menu.value?.hidePopover()
+  if (restoreFocus && props.isCurrentPane()) menuButton.value?.focus()
+}
+function menuToggle(event: Event): void {
+  if (
+    event.target === menu.value &&
+    (event as ToggleEvent).newState === 'closed'
+  ) {
+    emit('closeMenu')
+  }
+}
+// 除展示 props 外，动作入口实时读取页面身份，隔离尚未重新渲染的旧菜单。
+function runMenu(action: () => unknown): void {
+  if (
+    !props.menuAllowed() ||
+    life.value === 'disposing' ||
+    life.value === 'closed'
+  )
+    return
+  closeMenu(true)
+  action()
+}
+async function copySelection(instance = terminal): Promise<void> {
+  if (
+    !instance ||
+    instance !== terminal ||
+    !props.isCurrentPane() ||
+    ['disposing', 'closed'].includes(life.value) ||
+    !instance.hasSelection()
+  )
+    return
+  const text = instance.getSelection()
+  const epoch = ++clipboardEpoch
+  try {
+    await copyText(text)
+    if (
+      epoch === clipboardEpoch &&
+      instance === terminal &&
+      props.isCurrentPane() &&
+      !['disposing', 'closed'].includes(life.value)
+    )
+      clipboardNotice.value = '已复制选中文本'
+  } catch (error) {
+    if (
+      epoch === clipboardEpoch &&
+      instance === terminal &&
+      props.isCurrentPane() &&
+      !['disposing', 'closed'].includes(life.value)
+    )
+      clipboardNotice.value = `复制失败：${message(error)}`
+  }
+}
+watch(
+  () => props.menuOpen,
+  async (open) => {
+    if (!open) {
+      menu.value?.hidePopover()
+      return
+    }
+    // xterm 在尺寸变化后可能不再发布相同坐标的选区变更；展开时读取公开快照。
+    hasSelection.value = terminal?.hasSelection() ?? false
+    await nextTick()
+    if (!props.menuAllowed() || !menu.value || !menuButton.value) return
+    const bounds = menuButton.value.getBoundingClientRect()
+    menu.value.style.top = `${bounds.bottom + 6}px`
+    menu.value.style.right = `${Math.max(8, window.innerWidth - bounds.right)}px`
+    menu.value.showPopover()
+  },
+)
 const notice = ref('')
 const connectionNotice = ref('')
 const lastConnectionDiagnostic = ref('')
@@ -169,6 +252,10 @@ const closeNotice = computed(() => {
   const local = snapshot.localStopFailed ? '；本地终端未确认停止' : ''
   return `${label}${detail}${server}${local}`
 })
+const toolbarStatus = computed(() => {
+  const state = closeSnapshot.value.state
+  return state === 'idle' ? connectionLabel.value : closeStateLabels[state]
+})
 // 网络事件仅影响展示，不终止 socket、不启动或重置恢复任务。
 function networkOffline(): void {
   networkOnline.value = false
@@ -250,6 +337,8 @@ function stop(): Promise<void> {
 }
 function close(): Promise<void> {
   if (closeTask) return closeTask
+  closeMenu()
+  clipboardEpoch++
   life.value = 'disposing' // live() 立即为假，所有回调、按钮、准入同步失效
   closing.value = false
   // Pane 销毁只退订并注销本地 stop；协调器任务与状态继续存在，不 abort。
@@ -298,6 +387,12 @@ function themeOptions() {
     background: style.getPropertyValue('--panel').trim(),
     foreground: style.getPropertyValue('--text').trim(),
     cursor: style.getPropertyValue('--text').trim(),
+    selectionBackground: style
+      .getPropertyValue('--terminal-selection')
+      .trim(),
+    selectionInactiveBackground: style
+      .getPropertyValue('--terminal-selection-inactive')
+      .trim(),
   }
 }
 function fitTerminal(): void {
@@ -353,6 +448,17 @@ function createTerminalPort() {
     addon = new FitAddon()
     term.loadAddon(addon)
     term.open(container)
+    const isMac = /Mac|iPhone|iPad|iPod/.test(navigator.platform)
+    term.attachCustomKeyEventHandler(
+      clipboardKeyHandler(isMac, () => {
+        void copySelection(term)
+      }),
+    )
+    subscriptions.push(
+      term.onSelectionChange(() => {
+        if (terminal === term) hasSelection.value = term.hasSelection()
+      }),
+    )
     subscriptions.push(
       term.onData((value) => {
         if (client?.canInput)
@@ -381,6 +487,7 @@ function createTerminalPort() {
   }
   // 提交：以下步骤不会同步抛错。
   terminal = term
+  hasSelection.value = term.hasSelection()
   fit = addon
   void layout()
   return {
@@ -391,6 +498,7 @@ function createTerminalPort() {
       term.dispose()
       if (terminal === term) {
         terminal = null
+        hasSelection.value = false
         fit = null
       }
     },
@@ -561,6 +669,9 @@ onMounted(() => {
 watch(
   () => props.active,
   async (value) => {
+    clipboardEpoch++
+    clipboardNotice.value = ''
+    if (!value) closeMenu()
     if (value) {
       await layout(true)
     }
@@ -577,104 +688,199 @@ watch(
   { flush: 'sync' },
 )
 onBeforeUnmount(() => {
+  closeMenu()
   void close().catch(showCloseFailure)
 })
 </script>
 <template>
   <section class="terminal-pane" :aria-label="session.name + ' 终端'">
-    <div class="terminal-actions">
-      <span class="mono"
-        >{{ session.username }}@{{ session.host }}:{{ session.port }}</span
-      >
-      <span class="connection-state">{{ connectionLabel }}</span>
-      <button v-if="takeoverView.canPrepare" @click="takeover?.prepare()">
-        {{ takeoverLabel }}
-      </button>
+    <Teleport :to="`#terminal-tab-close-${paneKey}`">
       <button
-        v-if="['stopping', 'loading'].includes(takeoverView.phase)"
-        @click="takeover?.cancel()"
-      >
-        取消准备
-      </button>
-      <button
-        :disabled="
-          life !== 'ready' ||
-          !detail.canRecover ||
-          closeView.active ||
-          ended ||
-          logoutPending ||
-          takeoverView.phase !== 'idle'
-        "
-        @click="recover"
-      >
-        手动恢复
-      </button>
-      <button
-        :disabled="
-          life !== 'ready' ||
-          logoutPending ||
-          detail.acting ||
-          takeoverView.phase !== 'idle' ||
-          closeView.active ||
-          !['idle', 'stopped'].includes(phase)
-        "
-        @click="inspect"
-      >
-        刷新 Session 状态
-      </button>
-      <button
-        v-if="detail.loading && life === 'ready'"
-        @click="recovery?.invalidate()"
-      >
-        取消查询
-      </button>
-      <button
-        v-if="
-          life === 'ready' &&
-          !['idle', 'stopped', 'disposed'].includes(phase)
-        "
-        @click="stop"
-      >
-        停止恢复
-      </button>
-      <button
+        type="button"
+        class="terminal-tab-close"
+        :aria-label="`关闭标签：${session.name}`"
+        title="关闭标签（保留远端 SSH 会话）"
         :disabled="life === 'disposing' || life === 'dispose_failed'"
-        @click="closeLocal"
+        @click.stop="closeLocal"
       >
-        关闭标签
+        ×
       </button>
+    </Teleport>
+    <Teleport v-if="active" to="#terminal-tools">
+      <span
+        class="connection-state"
+        :title="closeView.active ? closeNotice : connectionLabel"
+        >{{ toolbarStatus }}</span
+      >
       <button
-        class="danger"
-        :disabled="
-          life !== 'ready' ||
-          ended ||
-          closeView.active ||
-          logoutPending
-        "
-        @click="closing = true"
+        ref="menuButton"
+        type="button"
+        class="terminal-menu-trigger"
+        aria-label="当前终端操作"
+        :aria-expanded="menuOpen"
+        :aria-controls="`terminal-menu-${paneKey}`"
+        @click="emit('toggleMenu')"
       >
-        关闭 SSH 会话
+        ⋯
       </button>
-      <button v-if="closeView.pending" @click="cancelCloseWaiting">
-        取消等待
-      </button>
-      <button v-if="closeView.retryable" @click="retryClose">重试关闭</button>
-      <button v-if="closeView.retryable" @click="refreshClose">
-        刷新状态
-      </button>
-    </div>
+      <div
+        v-if="menuOpen"
+        :id="`terminal-menu-${paneKey}`"
+        ref="menu"
+        popover="auto"
+        class="terminal-menu"
+        aria-label="当前终端操作菜单"
+        @toggle="menuToggle"
+        @keydown.esc="closeMenu(true)"
+      >
+        <section class="terminal-menu-group" aria-label="复制">
+          <h3>复制</h3>
+          <button
+            :disabled="!hasSelection"
+            @click="runMenu(() => copySelection())"
+          >
+            复制选中文本
+          </button>
+        </section>
+        <section class="terminal-menu-group" aria-label="连接与恢复">
+          <h3>连接与恢复</h3>
+          <button
+            v-if="takeoverView.canPrepare"
+            @click="runMenu(() => takeover?.prepare())"
+          >
+            {{ takeoverLabel }}
+          </button>
+          <button
+            :disabled="
+              life !== 'ready' ||
+              !detail.canRecover ||
+              closeView.active ||
+              ended ||
+              logoutPending ||
+              takeoverView.phase !== 'idle'
+            "
+            @click="runMenu(() => recover())"
+          >
+            手动恢复
+          </button>
+          <button
+            v-if="
+              life === 'ready' &&
+              !['idle', 'stopped', 'disposed'].includes(phase)
+            "
+            @click="runMenu(() => stop())"
+          >
+            停止恢复
+          </button>
+        </section>
+        <section class="terminal-menu-group" aria-label="状态查询">
+          <h3>状态查询</h3>
+          <button
+            :disabled="
+              life !== 'ready' ||
+              logoutPending ||
+              detail.acting ||
+              takeoverView.phase !== 'idle' ||
+              closeView.active ||
+              !['idle', 'stopped'].includes(phase)
+            "
+            @click="runMenu(() => inspect())"
+          >
+            刷新 Session 状态
+          </button>
+        </section>
+        <section
+          class="terminal-menu-group"
+          v-if="
+            ['stopping', 'loading'].includes(takeoverView.phase) ||
+            (detail.loading && life === 'ready')
+          "
+          aria-label="当前任务"
+        >
+          <h3>当前任务</h3>
+          <button
+            v-if="['stopping', 'loading'].includes(takeoverView.phase)"
+            @click="runMenu(() => takeover?.cancel())"
+          >
+            取消准备
+          </button>
+          <button
+            v-if="detail.loading && life === 'ready'"
+            @click="runMenu(() => recovery?.invalidate())"
+          >
+            取消查询
+          </button>
+        </section>
+        <section class="terminal-menu-group" aria-label="标签与会话">
+          <h3>标签与会话</h3>
+          <button
+            :disabled="life === 'disposing' || life === 'dispose_failed'"
+            @click="runMenu(() => closeLocal())"
+          >
+            关闭标签
+          </button>
+          <button
+            class="danger"
+            :disabled="
+              life !== 'ready' ||
+              ended ||
+              closeView.active ||
+              logoutPending
+            "
+            @click="runMenu(() => (closing = true))"
+          >
+            关闭 SSH 会话
+          </button>
+        </section>
+        <section
+          class="terminal-menu-group"
+          v-if="closeView.pending || closeView.retryable"
+          aria-label="关闭处理中"
+        >
+          <h3>关闭处理中</h3>
+          <button
+            v-if="closeView.pending"
+            @click="runMenu(() => cancelCloseWaiting())"
+          >
+            取消等待
+          </button>
+          <button
+            v-if="closeView.retryable"
+            @click="runMenu(() => retryClose())"
+          >
+            重试关闭
+          </button>
+          <button
+            v-if="closeView.retryable"
+            @click="runMenu(() => refreshClose())"
+          >
+            刷新状态
+          </button>
+        </section>
+        <details v-if="detail.snapshot" class="terminal-menu-details">
+          <summary>会话详情</summary>
+          <p class="mono">
+            {{ session.username }}@{{ session.host }}:{{ session.port }}
+          </p>
+          <p>
+            会话状态：{{ detail.snapshot.status }} · 代次
+            {{ detail.snapshot.binding_generation }}
+            <span v-if="detail.snapshot.remaining_seconds !== null">
+              · 离线保留
+              {{ detail.snapshot.remaining_seconds }} 秒（查询时）</span
+            >
+            <span v-if="detail.snapshot.status === 'CONNECTED'">
+              · 当前存在绑定，普通恢复不会接管</span
+            >
+          </p>
+        </details>
+      </div>
+    </Teleport>
     <p v-if="closeView.active" class="notice close-state" role="status">
       {{ closeNotice }}
     </p>
-    <p v-if="detail.snapshot" class="notice" role="status">
-      会话状态：{{ detail.snapshot.status }} · 代次
-      {{ detail.snapshot.binding_generation }}
-      <span v-if="detail.snapshot.remaining_seconds !== null">
-        · 离线保留 {{ detail.snapshot.remaining_seconds }} 秒（查询时）</span
-      >
-      <span v-if="detail.snapshot.status === 'CONNECTED'">
-        · 当前存在绑定，普通恢复不会接管</span
-      >
+    <p v-if="clipboardNotice" class="notice clipboard-notice" role="status">
+      {{ clipboardNotice }}
     </p>
     <p v-if="detail.error" class="notice" role="alert">{{ detail.error }}</p>
     <p v-if="takeoverView.error" class="notice" role="alert">
