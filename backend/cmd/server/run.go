@@ -166,6 +166,14 @@ func serve(ctx context.Context, c config.Config, db *sql.DB, lock *maintenance.L
 			active.Add(1)
 			admission.Unlock()
 			defer func() { workers.Done(); active.Add(-1) }()
+			if httpapi.IsFileUploadRequest(r) {
+				if err := httpapi.PrepareFileUploadHTTP(w, r, budget); err != nil {
+					httpapi.WriteError(w, fault.Error("SFTP_UNAVAILABLE"), logger)
+					return
+				}
+				handler.ServeHTTP(w, r)
+				return
+			}
 			// HTTP 截止时间不应在后续阶段传给 Session 或升级后的 WebSocket。
 			request, cancel := context.WithTimeout(r.Context(), budget)
 			defer cancel()

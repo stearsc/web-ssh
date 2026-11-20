@@ -2353,3 +2353,58 @@ test('UI 菜单取消准备沿用 takeover.cancel；菜单关闭标签沿用本�
   assert.equal(h.events.closed, 1)
   assert.equal(h.requests.filter(r=>r.method==='DELETE').length, 0)
 })
+
+test('字体实时更新现有实例，隐藏时延后 fit，激活后同步尺寸，新实例继承设置', async (t) => {
+  const { setTerminalFont } = await import('../src/terminal/font.ts')
+  setTerminalFont(14, 'system')
+  t.after(() => setTerminalFont(14, 'system'))
+  const h = await mountPane(t)
+  const term = h.terminalInstances[0]
+  const host = findAll(
+    h.root,
+    (el) => el.props.class === 'terminal-host',
+  )[0]
+  const socket = h.sockets[0]
+  bind(socket, 1)
+  await flush()
+  h.fitInstances[0].proposeDimensions = () => ({ cols: 91, rows: 27 })
+  setTerminalFont(18, 'menlo')
+  await flush()
+  assert.equal(term.options.fontSize, 18)
+  assert.equal(term.options.fontFamily, 'Menlo, monospace')
+  for (const key of ['+', '-', '0']) {
+    assert.equal(term.keyHandler({key, ctrlKey:false, metaKey:true, shiftKey:false, altKey:false, preventDefault(){throw new Error('不应拦截页面缩放')}}), true)
+  }
+  assert.equal(term.cols, 91)
+  assert.equal(term.rows, 27)
+  assert.equal(h.sockets[0], socket)
+  assert.equal(h.terminalInstances.length, 1)
+  assert.equal(
+    findAll(h.root, (el) => el.props.class === 'terminal-host')[0],
+    host,
+  )
+  assert.ok(
+    socket.sent.some(
+      (v) => typeof v === 'string' && JSON.parse(v).type === 'resize',
+    ),
+  )
+  h.props.active = false
+  await flush()
+  h.fitInstances[0].proposeDimensions = () => ({ cols: 72, rows: 20 })
+  setTerminalFont(20, 'monaco')
+  await flush()
+  assert.equal(term.options.fontSize, 20)
+  assert.equal(term.cols, 91)
+  h.props.active = true
+  await flush()
+  assert.equal(term.cols, 72)
+  assert.equal(h.terminalInstances.length, 1)
+  h.unmount()
+  await flush()
+  const next = await mountPane(t)
+  assert.equal(next.terminalInstances[0].options.fontSize, 20)
+  assert.equal(
+    next.terminalInstances[0].options.fontFamily,
+    'Monaco, monospace',
+  )
+})

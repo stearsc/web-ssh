@@ -859,6 +859,12 @@ test('S7-2 SessionManager：endedIds 变化后关闭按钮无需刷新即时禁�
 })
 
 
+async function logoutConfirmation(h) {
+  click(button(h.root, '退出登录') ?? button(h.root, '重试退出登录'))
+  await flush()
+  return button(h.root, '确认退出')
+}
+
 async function mountHomePage(t, options = {}) {
   const originals = ['fetch', 'matchMedia', 'WebSocket'].map((key) => [
     key,
@@ -1091,7 +1097,7 @@ test('S6-T30 closed 后重新打开使用新 key，旧 key 迟到事件被忽略
   await flush()
   assert.equal(byClass(h.root, 'terminal-pane-stub').length, 1)
 
-  click(button(h.root, '退出登录'))
+  click(await logoutConfirmation(h))
   await flush()
   assert.equal(first.handle.stopCalls, 0)
   assert.equal(second.handle.stopCalls, 1)
@@ -1114,7 +1120,7 @@ test('S6-T31 failed 保留记录和已登记句柄', async (t) => {
   await flush()
   assert.equal(h.instances.length, 1)
 
-  click(button(h.root, '退出登录'))
+  click(await logoutConfirmation(h))
   await flush()
   assert.equal(failed.handle.stopCalls, 1)
   assert.equal(failed.handle.closeCalls, 1)
@@ -1200,7 +1206,7 @@ test('S6-T35 signOut 正常路径：先 stop，logout 与 stop 完成后再 clos
   globalThis.__homePaneStop = () => stop.promise
   globalThis.__homePaneClose = () => close.promise
 
-  click(button(h.root, '退出登录'))
+  click(await logoutConfirmation(h))
   assert.equal(pane.handle.stopCalls, 1)
   assert.equal(
     h.requests.some((item) => item.path === '/api/auth/logout'),
@@ -1240,7 +1246,7 @@ test('S7-4/C14 signOut 顺序：invalidate、stop、dispose、logout，dispose �
   click(button(h.root, '会话管理'))
   await flush()
 
-  click(button(h.root, '退出登录'))
+  click(await logoutConfirmation(h))
   assert.deepEqual(globalThis.__managerEvents.slice(0, 4), [
     'invalidate',
     'stop',
@@ -1279,7 +1285,7 @@ test('S7-4 stop/close 同步 throw 与 reject 相互隔离，仍完成登出', a
     return Promise.reject(new Error('close async failed'))
   }
 
-  click(button(h.root, '退出登录'))
+  click(await logoutConfirmation(h))
   await flush()
   assert.equal(panes.get(a.id).handle.stopCalls, 1)
   assert.equal(panes.get(b.id).handle.stopCalls, 1)
@@ -1310,7 +1316,7 @@ test('S7-4 router.replace reject 不改变登出成功结果，仍写清理反�
     Promise.reject(new Error('stop failed'))
   globalThis.__routerReplaceReject = true
 
-  click(button(h.root, '退出登录'))
+  click(await logoutConfirmation(h))
   await flush()
   assert.equal(logoutPending.value, false)
   assert.deepEqual(h.routerReplaces, ['/login'])
@@ -1360,7 +1366,7 @@ test('S7-4/A1 init_failed Pane 参与 signOut，stop 失败不阻断其他 Pane'
   const before = h.requests.length
   const webSockets = globalThis.__webSocketCreates
 
-  click(button(h.root, '退出登录'))
+  click(await logoutConfirmation(h))
   assert.equal(logoutPending.value, true)
   assert.equal(normal.handle.stopCalls, 1)
   assert.equal(failed.handle.stopCalls, 1)
@@ -1424,7 +1430,7 @@ test('S7-4/A2 dispose_failed Pane 仍参与 stop，close 失败不影响其他 P
 
   const before = h.requests.length
   globalThis.__managerEvents.length = 0
-  click(button(h.root, '退出登录'))
+  click(await logoutConfirmation(h))
   assert.equal(logoutPending.value, true)
   assert.equal(normal.handle.stopCalls, 1)
   assert.equal(failed.handle.stopCalls, 1)
@@ -1616,7 +1622,7 @@ test('S6-T50 logout 成功时分别统计 stop/close 失败并在跳转后反馈
     authNotice.value = '登录已过期，请重新登录'
   }
 
-  click(button(h.root, '退出登录'))
+  click(await logoutConfirmation(h))
   await flush()
   assert.deepEqual(h.routerReplaces, ['/login'])
   assert.equal(
@@ -1656,7 +1662,7 @@ test('S6-T50 logout 失败时停留在本页、不 close 并反馈 stop 失败�
   const pane = h.instances[0]
   globalThis.__homePaneStop = () => Promise.reject(new Error('stop failed'))
 
-  click(button(h.root, '退出登录'))
+  click(await logoutConfirmation(h))
   await flush()
   assert.equal(pane.handle.stopCalls, 1)
   assert.equal(pane.handle.closeCalls, 0)
@@ -1794,7 +1800,7 @@ test('S7-C14 登出与 DELETE pending 并发：停止、失效、dispose、logou
   const stopCalls = pane.handle.stopCalls
   globalThis.__managerEvents.length = 0
 
-  click(button(h.root, '退出登录'))
+  click(await logoutConfirmation(h))
   assert.deepEqual(globalThis.__managerEvents.slice(0, 3), [
     'invalidate',
     'stop',
@@ -1848,7 +1854,7 @@ test('S7-5 登出后迟到关闭结果不覆盖退出反馈', async (t) => {
   click(button(h.root, '确认关闭'))
   await flush()
 
-  click(button(h.root, '退出登录'))
+  click(await logoutConfirmation(h))
   await flush()
   assert.match(texts(h.root, 'notice').join(), /退出未完成，请重试/)
 
@@ -2181,7 +2187,7 @@ test('S7-2 HomePage：确认框打开期间登出，不在登出期间发 DELETE
   await flush()
   assert.equal(texts(h.root, 'modal-title').length, 1)
 
-  click(button(h.root, '退出登录'))
+  click(await logoutConfirmation(h))
   await flush()
 
   assert.equal(texts(h.root, 'modal-title').length, 0)
@@ -2417,7 +2423,7 @@ test('S7-3/B signOut 在 logout 请求前同步 invalidate', async (t) => {
   click(button(h.root, '会话管理'))
   await flush()
 
-  click(button(h.root, '退出登录'))
+  click(await logoutConfirmation(h))
   // signOut 同步段：invalidate 必须先于 logout 请求。
   assert.deepEqual(globalThis.__managerEvents, ['invalidate', 'logout'])
   await flush()
@@ -2661,4 +2667,46 @@ test('S7-3/J idle 打开保持 S6 候选流程，确认前零凭证/WS', async (
   )
   assert.equal(credentialOrTakeoverRequests(h).length, 0)
   assert.equal(globalThis.__webSocketCreates, 0)
+})
+
+test('退出确认：打开和取消零副作用，重复确认只执行一次，失败重试也须确认', async (t) => {
+  const h = await mountHomePage(t, {
+    fetch: (record) =>
+      record.path === '/api/auth/logout'
+        ? failure('SERVER_UNAVAILABLE', '登出失败')
+        : undefined,
+  })
+  click(button(h.root, '会话管理'))
+  await flush()
+  globalThis.__managerOpen(view('a'))
+  await flush()
+  const pane = h.instances[0]
+  const before = h.requests.length
+  click(button(h.root, '退出登录'))
+  await flush()
+  assert.equal(pane.handle.stopCalls, 0)
+  assert.equal(logoutPending.value, false)
+  assert.equal(h.requests.length, before)
+  click(button(h.root, '取消'))
+  await flush()
+  assert.equal(button(h.root, '确认退出'), undefined)
+  assert.equal(pane.handle.stopCalls, 0)
+  const confirm = await logoutConfirmation(h)
+  click(confirm)
+  click(confirm)
+  await flush()
+  assert.equal(
+    h.requests.filter((r) => r.path === '/api/auth/logout').length,
+    1,
+  )
+  assert.equal(pane.handle.stopCalls, 1)
+  click(button(h.root, '重试退出登录'))
+  await flush()
+  assert.ok(button(h.root, '确认退出'))
+  assert.equal(
+    h.requests.filter((r) => r.path === '/api/auth/logout').length,
+    1,
+  )
+  click(button(h.root, '取消'))
+  await flush()
 })

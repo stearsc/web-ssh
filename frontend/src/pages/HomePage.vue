@@ -65,6 +65,7 @@ const manager = ref<{
   invalidate(): void
 } | null>(null)
 const signingOut = ref(false)
+const signOutConfirm = ref(false)
 const view = ref<'servers' | 'sessions'>('servers')
 const activeTab = ref('')
 // 只记录菜单 UI 身份，不承载任何 Session 或资源状态。
@@ -517,6 +518,11 @@ function openSessionManager(): void {
   sidebar.value = false
   view.value = 'sessions'
 }
+function confirmSignOut(): void {
+  if (signingOut.value) return
+  signOutConfirm.value = false
+  void signOut()
+}
 async function signOut(): Promise<void> {
   if (signingOut.value) return
   signingOut.value = true
@@ -593,7 +599,10 @@ async function signOut(): Promise<void> {
           @click="edit(null)"
         >
           添加服务器</button
-        ><ThemeButton /><button :disabled="signingOut" @click="signOut">
+        ><ThemeButton /><button
+          :disabled="signingOut"
+          @click="signOutConfirm = true"
+        >
           {{ logoutPending ? '重试退出登录' : '退出登录' }}
         </button>
       </div>
@@ -784,6 +793,29 @@ async function signOut(): Promise<void> {
       </div>
       <p v-if="notice" class="notice" role="status">{{ notice }}</p>
     </main>
+    <Modal
+      v-if="signOutConfirm"
+      title="确认退出登录？"
+      @close="signOutConfirm = false"
+    >
+      <div class="dialog-body">
+        <p>
+          退出后，当前页面的所有终端连接都将停止，尚未完成的操作可能中断。
+        </p>
+      </div>
+      <div class="dialog-footer">
+        <button :disabled="signingOut" @click="signOutConfirm = false">
+          取消
+        </button>
+        <button
+          class="danger"
+          :disabled="signingOut"
+          @click="confirmSignOut"
+        >
+          确认退出
+        </button>
+      </div>
+    </Modal>
     <ServerForm
       v-if="editing"
       :key="editTarget?.id ?? 'new-server'"

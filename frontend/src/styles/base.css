@@ -753,3 +753,25 @@ textarea {
   background: var(--panel);
   pointer-events: none;
 }
+
+.terminal-font-size {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 7px;
+  font-size: 12px;
+}
+.terminal-font-size button {
+  width: auto;
+  text-align: center;
+}
+.terminal-font label {
+  display: block;
+  margin: 6px 7px;
+  font-size: 12px;
+}
+.terminal-font select {
+  width: calc(100% - 14px);
+  margin: 0 7px 6px;
+  font-size: 12px;
+}

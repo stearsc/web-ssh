@@ -12,6 +12,14 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { clipboardKeyHandler, copyText } from '../../terminal/clipboard'
+import {
+  FONT_FAMILIES,
+  FONT_MIN,
+  FONT_MAX,
+  terminalFont,
+  setTerminalFont,
+  terminalFontFamily,
+} from '../../terminal/font'
 import { SessionRecovery } from '../../terminal/recovery'
 import {
   TerminalClient,
@@ -29,6 +37,8 @@ import {
   type CloseState,
 } from '../../session/close'
 import Modal from '../layout/Modal.vue'
+import FileUploadModal from './FileUploadModal.vue'
+import { UploadQueue } from '../../files/upload'
 
 type PaneStartMode = 'attach' | 'candidate'
 type PaneLife =
@@ -67,6 +77,33 @@ const menu = ref<HTMLElement>()
 const menuButton = ref<HTMLButtonElement>()
 const hasSelection = ref(false)
 const clipboardNotice = ref('')
+const uploadQueue = shallowRef<UploadQueue | null>(null)
+const uploadVisible = ref(false)
+const uploadRevision = ref(0)
+function openFileUpload(): void {
+  if (!live() || !closeAllows() || ended.value) return
+  if (!uploadQueue.value?.pending)
+    uploadQueue.value = new UploadQueue(
+      props.session.id,
+      () => uploadRevision.value++,
+    )
+  uploadVisible.value = true
+}
+function hideFileUpload(): void {
+  uploadVisible.value = false
+  uploadQueue.value = null
+}
+let paneStopTask: Promise<void> | null = null
+function stopPane(): Promise<void> {
+  if (paneStopTask) return paneStopTask
+  if (!uploadQueue.value?.pending) return stop()
+  const uploads = uploadQueue.value.cancelAll()
+  paneStopTask = Promise.all([stop(), uploads])
+    .then(() => {})
+    .finally(() => { paneStopTask = null })
+  return paneStopTask
+}
+
 let clipboardEpoch = 0
 function closeMenu(restoreFocus = false): void {
   emit('closeMenu')
@@ -139,6 +176,20 @@ watch(
     menu.value.showPopover()
   },
 )
+// 所有 Pane 共用浏览器字体设置；隐藏 Pane 的尺寸由原有激活流程重新测量。
+watch(
+  () => [terminalFont.size, terminalFont.family],
+  async () => {
+    if (!terminal || life.value !== 'ready') return
+    terminal.options.fontSize = terminalFont.size
+    terminal.options.fontFamily = terminalFontFamily()
+    await layout()
+  },
+)
+function changeFont(size: number, family: string): void {
+  if (!props.menuAllowed() || life.value !== 'ready') return
+  setTerminalFont(size, family)
+}
 const notice = ref('')
 const connectionNotice = ref('')
 const lastConnectionDiagnostic = ref('')
@@ -310,6 +361,7 @@ function stoppedState(state: RecoveryState): void {
   if (state.phase === 'stopped') {
     if (state.code === 'closed') {
       ended.value = true
+      void uploadQueue.value?.stopSession()
       if (recovery.value) recovery.value.ended = true
       // 服务端 closed 控制消息是关闭不可逆证据，与本地 stop/WS 断开严格区分。
       props.closeHandle.markEnded()
@@ -353,7 +405,11 @@ function close(): Promise<void> {
   resize?.disconnect()
   theme?.disconnect()
   // 初始化失败现场已启动 client.dispose() 时，这里拿到的是同一个缓存 Promise。
-  const cleanup = (client?.dispose() ?? Promise.resolve()).then(() => {
+  const uploads = uploadQueue.value?.cancelAll() ?? Promise.resolve()
+  const cleanup = Promise.all([
+    client?.dispose() ?? Promise.resolve(),
+    uploads,
+  ]).then(() => {
     // 工厂回滚失败意味着可能有 xterm 残留，不能视为清理成功。
     if (terminalCleanupError !== null) throw terminalCleanupError
   })
@@ -369,8 +425,8 @@ function close(): Promise<void> {
   )
   return closeTask
 }
-const handle: PaneHandle = { stop, close }
-defineExpose({ stop, close })
+const handle: PaneHandle = { stop: stopPane, close }
+defineExpose({ stop: stopPane, close })
 function showCloseFailure(error: unknown): void {
   notice.value = `终端清理失败，请刷新页面后再打开该 Session：${message(error)}`
 }
@@ -438,8 +494,8 @@ function createTerminalPort() {
     rows: localRows,
     convertEol: false,
     cursorBlink: true,
-    fontSize: 14,
-    fontFamily: 'Consolas, "Liberation Mono", monospace',
+    fontSize: terminalFont.size,
+    fontFamily: terminalFontFamily(),
     theme: themeOptions(),
   })
   const subscriptions: DisposableLike[] = []
@@ -562,9 +618,10 @@ function failInitialization(error: unknown): void {
 onMounted(() => {
   if (life.value !== 'mounting') return
   // 先注册本地 stop，再同步读取关闭状态；非 idle 时禁止自动 prepare/connect。
-  unregisterStop = props.closeHandle.registerLocalStop(stop)
+  unregisterStop = props.closeHandle.registerLocalStop(stopPane)
   unsubscribeClose = props.closeHandle.subscribe((snapshot) => {
     closeSnapshot.value = snapshot
+    if (snapshot.state !== 'idle') void uploadQueue.value?.stopSession()
     revision.value++
   })
   // 第一段：只做可能失败的校验和纯计算，不创建任何资源，不发请求。
@@ -681,7 +738,7 @@ watch(
   [logoutPending, identity],
   () => {
     if (!live())
-      void stop().catch((error) => {
+      void stopPane().catch((error) => {
         notice.value = message(error)
       })
   },
@@ -741,6 +798,64 @@ onBeforeUnmount(() => {
           >
             复制选中文本
           </button>
+        </section>
+        <section
+          class="terminal-menu-group terminal-font"
+          aria-label="终端字体"
+        >
+          <h3>终端字体</h3>
+          <div class="terminal-font-size">
+            <span>字体大小</span>
+            <button
+              type="button"
+              aria-label="缩小终端字体"
+              :disabled="terminalFont.size <= FONT_MIN"
+              @click="
+                changeFont(terminalFont.size - 1, terminalFont.family)
+              "
+            >
+              A−
+            </button>
+            <button
+              type="button"
+              aria-label="增大终端字体"
+              :disabled="terminalFont.size >= FONT_MAX"
+              @click="
+                changeFont(terminalFont.size + 1, terminalFont.family)
+              "
+            >
+              A+
+            </button>
+            <output aria-label="当前终端字号"
+              >{{ terminalFont.size }} px</output
+            >
+          </div>
+          <label :for="`terminal-font-${paneKey}`">字体</label>
+          <select
+            :id="`terminal-font-${paneKey}`"
+            :value="terminalFont.family"
+            @change="
+              changeFont(
+                terminalFont.size,
+                ($event.target as HTMLSelectElement).value,
+              )
+            "
+          >
+            <option
+              v-for="font in FONT_FAMILIES"
+              :key="font.id"
+              :value="font.id"
+            >
+              {{ font.label }}
+            </option>
+          </select>
+        </section>
+        <section class="terminal-menu-group" aria-label="文件传输">
+          <h3>文件传输</h3>
+          <button
+            :disabled="life !== 'ready' || ended || closeView.active || logoutPending"
+            @click="runMenu(openFileUpload)"
+          >上传文件</button>
         </section>
         <section class="terminal-menu-group" aria-label="连接与恢复">
           <h3>连接与恢复</h3>
@@ -889,6 +1004,13 @@ onBeforeUnmount(() => {
     <p v-if="takeoverView.message" class="notice" role="status">
       {{ takeoverView.message }}
     </p>
+    <FileUploadModal
+      v-if="uploadVisible && uploadQueue"
+      :queue="uploadQueue"
+      :revision="uploadRevision"
+      :label="`${session.name} · ${session.username}@${session.host}:${session.port}`"
+      @close="hideFileUpload"
+    />
     <div ref="host" class="terminal-host" />
     <p v-if="connectionNotice" class="notice" role="status">
       {{ connectionNotice }}

@@ -38,6 +38,7 @@ type View struct {
 }
 type Manager struct {
 	shutdownDeadline atomic.Int64
+	fileFailures     map[string]time.Time
 	// 测试同步点只用于确定快照完成后的凭证失效时序，生产为 nil。
 	beforeCredentialCommit func()
 	mu                     sync.Mutex
@@ -57,6 +58,7 @@ type Manager struct {
 	now                    func() time.Time
 }
 type Session struct {
+	fileOperation *fileOperation
 	// 测试同步点位于准入之后、远端调用之前，生产不安装。
 	operationAdmitted                                func()
 	metadataCtx                                      context.Context
@@ -298,6 +300,13 @@ func (m *Manager) scan() {
 }
 func (m *Manager) Sweep() {
 	now := m.now()
+	m.mu.Lock()
+	for id, until := range m.fileFailures {
+		if !now.Before(until) {
+			delete(m.fileFailures, id)
+		}
+	}
+	m.mu.Unlock()
 	m.credentialsMu.Lock()
 	for hash, c := range m.credentials {
 		if !now.Before(c.expires) {
@@ -380,6 +389,9 @@ func (s *Session) closeLocked(reason string) {
 	s.manager.invalidate(s.id)
 	s.markDirty()
 	s.cancel()
+	if s.fileOperation != nil {
+		s.fileOperation.cancel()
+	}
 	// 回收任务不在工作组内，触发 Close 的读取/监测协程不会等待自身。
 	go s.reap(old)
 }
@@ -388,11 +400,15 @@ func (s *Session) reap(old *Binding) {
 	// 创建任务的取消回调先解除网络阻塞；已发布的终端可立即关闭。
 	s.mu.Lock()
 	term := s.terminal
+	op := s.fileOperation
 	s.mu.Unlock()
 	if term != nil {
 		term.Close()
 	}
 	s.wg.Wait()
+	if op != nil {
+		<-op.done
+	}
 	s.mu.Lock()
 	term = s.terminal
 	s.mu.Unlock()

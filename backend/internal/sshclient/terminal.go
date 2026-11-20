@@ -87,6 +87,12 @@ func (t *Terminal) Keepalive() error {
 func (t *Terminal) Wait() error          { return t.shell.Wait() }
 func (t *Terminal) WaitTransport() error { return t.transport.client.Wait() }
 
+// OpenFileChannel 复用现有连接。调用者必须登记 operation，负责 channel 及请求流的完整回收。
+// 底层 OpenChannel 无 context；无法独立取消时，由 Session 现有关闭流程解除阻塞。
+func (t *Terminal) OpenFileChannel() (ssh.Channel, <-chan *ssh.Request, error) {
+	return t.transport.client.OpenChannel("session", nil)
+}
+
 // 先关闭底层 socket，避免 SSH Channel 请求阻塞关闭；重复关闭只执行一次。
 func (t *Terminal) Close() {
 	t.once.Do(func() {

@@ -24,6 +24,7 @@ type attachInput struct {
 }
 
 func (m *Management) sessionRoutes(mux *http.ServeMux) {
+	m.fileRoutes(mux)
 	mux.HandleFunc("GET /api/sessions", m.protected(func(w http.ResponseWriter, r *http.Request, _ *auth.Session) error {
 		query, err := url.ParseQuery(r.URL.RawQuery)
 		if err != nil {

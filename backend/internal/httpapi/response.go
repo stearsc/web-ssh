@@ -68,6 +68,42 @@ func WriteError(w http.ResponseWriter, err error, logger *slog.Logger) {
 	case MessageTooLarge:
 		status = 413
 		message = "请求内容超过大小限制"
+	case "SFTP_INVALID_PATH", "SFTP_DIRECTORY_UNAVAILABLE":
+		status = 400
+		message = "远程路径无效、目录不存在，或路径包含符号链接及不允许的对象"
+	case "SFTP_FILE_EXISTS", "SFTP_BUSY", "SFTP_ATOMIC_UNAVAILABLE":
+		status = 409
+		message = "远程文件已存在"
+		if code == "SFTP_BUSY" {
+			message = "该 Session 的上一个文件操作尚未完成"
+		}
+		if code == "SFTP_ATOMIC_UNAVAILABLE" {
+			message = "SFTP 服务端不支持所需的安全原子提交扩展，未修改原文件"
+		}
+	case "SFTP_TOO_LARGE":
+		status = 413
+		message = "单文件不能超过 512 MB（512 MiB）"
+	case "SFTP_PERMISSION_DENIED":
+		status = 403
+		message = "远程文件或目录权限不足"
+	case "SFTP_SESSION_CLOSED", "SFTP_UNAVAILABLE", "SFTP_CANCEL_FAILED":
+		status = 503
+		message = "SSH 会话关闭中或 SFTP 不可用"
+		if code == "SFTP_CANCEL_FAILED" {
+			message = "SFTP 操作无法正常取消，已关闭 SSH 连接以释放资源。"
+		}
+	case "SFTP_CANCELED":
+		status = 400
+		message = "文件操作已取消或超过无进展预算"
+	case "SFTP_NO_SPACE", "SFTP_READ_FAILED", "SFTP_FAILED":
+		status = 500
+		message = "SFTP 文件操作失败，未完成上传"
+		if code == "SFTP_NO_SPACE" {
+			message = "远程磁盘空间或配额不足"
+		}
+		if code == "SFTP_READ_FAILED" {
+			message = "读取上传内容失败"
+		}
 	case "PRIVATE_KEY_INVALID":
 		status = 400
 		message = "私钥格式或口令无效，或密钥超出安全限制"

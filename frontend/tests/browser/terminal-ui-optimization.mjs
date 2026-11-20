@@ -176,7 +176,7 @@ async function fixture(t, items = [view()], expectedConsoleErrors = []) {
       const record = {
         method,
         path,
-        body: req.postDataJSON(),
+        body: req.headers()['content-type']?.startsWith('multipart/form-data') ? { multipart: true, bytes: req.postDataBuffer()?.length } : req.postDataJSON(),
         index: requests.length,
       }
       requests.push(record)
@@ -843,7 +843,200 @@ test('UI-B04 真实终端软换行、历史滚动、粘贴、IME 事件与清理
   await f.page
     .getByRole('button', { name: '退出登录', exact: true })
     .click()
+  await f.page.getByRole('button', { name: '确认退出', exact: true }).click()
   await f.page.waitForURL('**/login')
   assert.equal(await f.page.locator('#terminal-tools').count(), 0)
   assert.equal(await f.page.locator('.terminal-tab-close').count(), 0)
+})
+
+test('S6-A 退出确认零副作用；字体跨标签即时更新、边界、历史与持久化', async (t) => {
+  const f = await fixture(t, [view(), view(B)])
+  await connect(f, A)
+  f.wsPeers[0].send(Buffer.from('font history 中文\r\n'))
+  await f.page.waitForFunction(() =>
+    document
+      .querySelector('.terminal-pane')
+      .__vueParentComponent.setupState.terminal.buffer.active.getLine(0)
+      .translateToString()
+      .includes('font history'),
+  )
+  await f.manager()
+  await connect(f, B)
+  await f.page.evaluate(() => {
+    window.__fontRefs = [
+      ...document.querySelectorAll('.terminal-pane'),
+    ].map((el) => ({
+      el,
+      term: el.__vueParentComponent.setupState.terminal,
+      client: el.__vueParentComponent.setupState.client,
+      host: el.querySelector('.terminal-host'),
+    }))
+  })
+  const socketCount = (await f.snap()).ws.length
+  await menu(f)
+  await f.page
+    .getByRole('button', { name: '增大终端字体', exact: true })
+    .click()
+  await f.page.getByLabel('字体', { exact: true }).selectOption('menlo')
+  await f.page.waitForFunction(() =>
+    window.__fontRefs.every(
+      (r) =>
+        r.term.options.fontSize === 15 &&
+        r.term.options.fontFamily === 'Menlo, monospace',
+    ),
+  )
+  assert.equal(
+    await f.page.evaluate(() =>
+      window.__fontRefs.every(
+        (r) =>
+          r.term === r.el.__vueParentComponent.setupState.terminal &&
+          r.client === r.el.__vueParentComponent.setupState.client &&
+          r.host === r.el.querySelector('.terminal-host'),
+      ),
+    ),
+    true,
+  )
+  assert.equal((await f.snap()).ws.length, socketCount)
+  for (let i = 15; i < 24; i++)
+    await f.page
+      .getByRole('button', { name: '增大终端字体', exact: true })
+      .click()
+  assert.equal(
+    await f.page
+      .getByRole('button', { name: '增大终端字体', exact: true })
+      .isDisabled(),
+    true,
+  )
+  for (let i = 24; i > 10; i--)
+    await f.page
+      .getByRole('button', { name: '缩小终端字体', exact: true })
+      .click()
+  assert.equal(
+    await f.page
+      .getByRole('button', { name: '缩小终端字体', exact: true })
+      .isDisabled(),
+    true,
+  )
+  await f.page.keyboard.press('Escape')
+  await f.page.locator('.terminal-tab-title').first().click()
+  assert.equal(
+    await f.page.evaluate(() =>
+      document
+        .querySelector('.terminal-pane')
+        .__vueParentComponent.setupState.terminal.buffer.active.getLine(0)
+        .translateToString()
+        .includes('font history'),
+    ),
+    true,
+  )
+  await f.page
+    .getByRole('button', { name: '退出登录', exact: true })
+    .click()
+  await f.page
+    .getByRole('button', { name: '确认退出', exact: true })
+    .waitFor()
+  assert.equal(f.count('POST', '/api/auth/logout'), 0)
+  assert.equal(
+    (await f.snap()).ws.every((ws) => ws.closeCalls === 0),
+    true,
+  )
+  await f.page.getByRole('button', { name: '取消', exact: true }).click()
+  assert.equal(
+    (await f.snap()).ws.every((ws) => ws.closeCalls === 0),
+    true,
+  )
+  await f.page.reload()
+  await f.manager()
+  await connect(f, A)
+  assert.equal(
+    await f.page.evaluate(
+      () =>
+        document.querySelector('.terminal-pane').__vueParentComponent
+          .setupState.terminal.options.fontSize,
+    ),
+    10,
+  )
+  assert.equal(
+    await f.page.evaluate(
+      () =>
+        document.querySelector('.terminal-pane').__vueParentComponent
+          .setupState.terminal.options.fontFamily,
+    ),
+    'Menlo, monospace',
+  )
+  await f.page
+    .getByRole('button', { name: '退出登录', exact: true })
+    .click()
+  await f.page
+    .getByRole('button', { name: '确认退出', exact: true })
+    .click()
+  await f.page.waitForURL('**/login')
+  assert.equal(f.count('POST', '/api/auth/logout'), 1)
+})
+
+
+test('UI 上传队列逐文件确认、失败继续、固定 Session、关闭确认不重建终端', async (t) => {
+  const f = await fixture(t, [view(A, 'DISCONNECTED'), view(B, 'DISCONNECTED')])
+  await connect(f, A)
+  await f.manager()
+  await connect(f, B)
+  await f.page.locator('.terminal-tab-title').first().click()
+  await f.page.evaluate(() => { window.__uploadRefs = [...document.querySelectorAll('.terminal-pane')].map(el => ({ el, terminal: el.__vueParentComponent.setupState.terminal, host: el.querySelector('.terminal-host') })) })
+  const endpoint = `/api/sessions/${A}/files`
+  f.enqueue('POST', endpoint + '/check', ok({ exists: false, path: '/remote/bad' }))
+  f.enqueue('POST', endpoint + '/check', ok({ exists: true, path: '/remote/skip' }))
+  f.enqueue('POST', endpoint + '/check', ok({ exists: true, path: '/remote/replace' }))
+  f.enqueue('POST', endpoint, err('SFTP_FAILED', 500))
+  f.enqueue('POST', endpoint, ok({ path: '/remote/replace', size: 7 }))
+  await menu(f)
+  await f.page.getByRole('button', { name: '上传文件', exact: true }).click()
+  await f.page.getByLabel('远程服务器目录（绝对路径）').fill('/remote')
+  await f.page.getByLabel('选择本地文件').setInputFiles(['bad', 'skip', 'replace'].map(name => ({ name, mimeType: 'text/plain', buffer: Buffer.from('content') })))
+  await f.page.getByRole('button', { name: '开始上传', exact: true }).click()
+  await f.page.getByRole('button', { name: '跳过此文件', exact: true }).waitFor()
+  assert.match(await f.page.locator('.file-upload').innerText(), /失败 1/)
+  await f.page.getByRole('button', { name: '跳过此文件', exact: true }).click()
+  await f.page.getByRole('button', { name: '确认覆盖', exact: true }).click()
+  await f.page.waitForFunction(() => document.querySelector('.file-upload')?.innerText.includes('已完成 1'))
+  assert.equal(f.count('POST', endpoint), 2)
+  assert.equal(f.requests.some(r => r.path === `/api/sessions/${B}/files`), false)
+  await f.page.getByRole('button', { name: '关闭弹窗', exact: true }).click()
+  assert.equal(await f.page.evaluate(() => window.__uploadRefs.every(r => r.terminal === r.el.__vueParentComponent.setupState.terminal && r.host === r.el.querySelector('.terminal-host'))), true)
+  await menu(f)
+  await f.page.getByRole('button', { name: '上传文件', exact: true }).click()
+  await f.page.getByLabel('选择本地文件').setInputFiles({ name: 'pending', mimeType: 'text/plain', buffer: Buffer.from('x') })
+  await f.page.getByRole('button', { name: '关闭弹窗', exact: true }).click()
+  await f.page.getByRole('button', { name: '取消上传并关闭', exact: true }).click()
+  await f.page.locator('.file-upload').waitFor({ state: 'detached' })
+  assert.equal(f.count('DELETE', `/api/sessions/${A}`), 0)
+})
+
+test('UI 上传中关闭标签等待取消屏障、零 DELETE、不影响其他标签', async (t) => {
+  const f = await fixture(t, [view(A, 'DISCONNECTED'), view(B, 'DISCONNECTED')])
+  await connect(f, A)
+  await f.manager()
+  await connect(f, B)
+  await f.page.locator('.terminal-tab-title').first().click()
+  const endpoint = `/api/sessions/${A}/files`
+  const uploadGate = gate(), cleanupGate = gate(), enteredUpload = gate()
+  f.enqueue('POST', endpoint + '/check', ok({ exists: false, path: '/remote/first' }))
+  f.enqueue('POST', endpoint + '/check', cleanupGate.promise)
+  f.enqueue('POST', endpoint, () => { enteredUpload.resolve(); return uploadGate.promise })
+  await menu(f)
+  await f.page.getByRole('button', { name: '上传文件', exact: true }).click()
+  await f.page.getByLabel('远程服务器目录（绝对路径）').fill('/remote')
+  await f.page.getByLabel('选择本地文件').setInputFiles(['first', 'pending'].map(name => ({ name, mimeType: 'text/plain', buffer: Buffer.from('content') })))
+  await f.page.getByRole('button', { name: '开始上传', exact: true }).click()
+  await enteredUpload.promise
+  await f.page.waitForFunction(() => document.querySelector('.file-upload')?.innerText.includes('上传中'))
+  // 通过已注册的 Pane 入口关闭，验证本地关闭必须等上传屏障；Modal 阻止鼠标穿透是浏览器预期行为。
+  await f.page.evaluate(() => { void document.querySelector('.terminal-pane').__vueParentComponent.setupState.close() })
+  await f.page.waitForFunction(() => document.querySelector('.file-upload')?.innerText.includes('已取消 2'))
+  assert.equal((await f.snap()).panes.length, 2)
+  cleanupGate.resolve(ok({ exists: false, path: '/remote/first' }))
+  uploadGate.resolve(ok({ path: '/remote/first', size: 7 }))
+  await f.page.waitForFunction(() => document.querySelectorAll('.terminal-pane').length === 1)
+  assert.equal(f.count('POST', endpoint), 1)
+  assert.equal(f.count('DELETE', `/api/sessions/${A}`), 0)
+  assert.equal((await f.snap()).xterms, 1)
 })

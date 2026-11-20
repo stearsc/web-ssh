@@ -27,6 +27,8 @@ type TerminalSSH struct {
 	wg              sync.WaitGroup
 }
 type TerminalOptions struct {
+	// FileChannel 处理 Shell 之后的独立 channel，用于真实 SFTP 和阻塞协议验证。
+	FileChannel            func(ssh.NewChannel, <-chan struct{})
 	AuthorizedKey          ssh.PublicKey
 	AuthGate               <-chan struct{}
 	RejectPTY, RejectShell bool
@@ -128,9 +130,17 @@ func (s *TerminalSSH) serve(c net.Conn) {
 			r.Reply(false, nil)
 		}
 	}()
+	connectionDone := make(chan struct{})
+	channelCount := 0
 	for incoming := range channels {
 		if incoming.ChannelType() != "session" {
 			incoming.Reject(ssh.UnknownChannelType, "unsupported")
+			continue
+		}
+		channelCount++
+		if channelCount > 1 && s.Options.FileChannel != nil {
+			workers.Add(1)
+			go func() { defer workers.Done(); s.Options.FileChannel(incoming, connectionDone) }()
 			continue
 		}
 		ch, reqs, err := incoming.Accept()
@@ -192,5 +202,6 @@ func (s *TerminalSSH) serve(c net.Conn) {
 			}
 		}()
 	}
+	close(connectionDone)
 	workers.Wait()
 }
