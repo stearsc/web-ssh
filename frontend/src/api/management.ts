@@ -7,6 +7,8 @@ export interface HostKeyView {
   fingerprint: string
 }
 export interface ServerView {
+  auth_type: 'password' | 'private_key'
+  credential_configured: boolean
   id: string
   name: string
   host: string
@@ -19,6 +21,8 @@ export interface ServerView {
   updated_at: string
 }
 export interface ServerInput {
+  auth_type?: 'password' | 'private_key'
+  passphrase?: string
   name: string
   host: string
   port: number
@@ -68,8 +72,8 @@ export async function request<T>(
     cache: 'no-store',
     signal,
     headers:
-      data === undefined ? undefined : { 'Content-Type': 'application/json' },
-    body: data === undefined ? undefined : JSON.stringify(data),
+      data === undefined || data instanceof FormData ? undefined : { 'Content-Type': 'application/json' },
+    body: data === undefined ? undefined : data instanceof FormData ? data : JSON.stringify(data),
   })
   const body: unknown = await response.json()
   if (

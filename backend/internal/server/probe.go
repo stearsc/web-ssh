@@ -11,6 +11,7 @@ import (
 
 	"github.com/stearsc/web-ssh/backend/internal/auth"
 	"github.com/stearsc/web-ssh/backend/internal/fault"
+	"github.com/stearsc/web-ssh/backend/internal/privatekey"
 	"github.com/stearsc/web-ssh/backend/internal/sshclient"
 )
 
@@ -82,10 +83,20 @@ func (s *Service) Test(ctx context.Context, login *auth.Session, id string, time
 		return TestResult{}, nil, err
 	}
 	snapshot := st.record
+	var fileLease *privatekey.Lease
+	if snapshot.AuthType == "private_key" {
+		fileLease, err = s.keys.Acquire(ctx, snapshot.PrivateKeyObjectID)
+		if err != nil {
+			release()
+			st.mu.Unlock()
+			return TestResult{}, nil, err
+		}
+	}
+	defer fileLease.Release()
 	version := st.version
 	release()
 	st.mu.Unlock()
-	observed, err := sshclient.Test(ctx, sshclient.Snapshot{Host: snapshot.Host, Port: snapshot.Port, Username: snapshot.Username, PasswordEncrypted: snapshot.PasswordEncrypted, PublicKey: snapshot.PublicKey}, s.cipher, timeout)
+	observed, err := sshclient.Test(ctx, s.authSnapshot(snapshot), s.cipher, timeout)
 	if err != nil {
 		return TestResult{}, nil, err
 	}
@@ -125,6 +136,8 @@ func (s *Service) publish(ctx context.Context, login *auth.Session, st *State, s
 	}
 	// 探测凭证不保留认证密文，仅记录目标与原信任。
 	snapshot.PasswordEncrypted = nil
+	snapshot.PassphraseEncrypted = nil
+	snapshot.PrivateKeyObjectID = ""
 	p := &probe{loginID: login.ID, serverID: snapshot.ID, version: version, snapshot: snapshot, observed: observed, expires: expires}
 	s.probesMu.Lock()
 	s.cleanProbes()

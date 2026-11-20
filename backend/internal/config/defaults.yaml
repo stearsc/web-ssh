@@ -38,6 +38,8 @@ session:
   operation_wait_timeout: 5
 
 ssh:
+  # 私钥孤儿安全宽限期，单位秒；从持久化候选登记时刻计算
+  private_key_gc_grace_period: 86400
   # TCP、握手、认证、PTY 和 Shell 建立的共同总预算，单位秒
   connect_timeout: 15
   # 已建立连接的单次输入/resize 操作上限，单位秒

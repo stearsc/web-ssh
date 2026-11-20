@@ -1,5 +1,7 @@
 # Web SSH 架构设计与实施计划
 
+> 6-K 实施更新（2026-11-20）：实现级同步边界、对象状态和离线命令已在 [6-K.0](stage-6-k-design-contract.md) 定稿并编码；验证与未验事项见 [交付报告](测试报告/stage-6-k-report.md)，运维见 [部署与恢复](stage-6-k-operations.md)。本更新不改变第五阶段冻结状态机或 WebSocket 协议。
+
 - 修订日期：2026-11-20。
 - 状态：四文档统一实现规范，已补充第六阶段 SSH 私钥认证、私钥文件生命周期、Passphrase 密文、回收与受控停机备份契约；本文修订不代表业务实现、运行验证或部署已完成。
 - 产品、HTTP API、数据表、配置与产品验收：[核心需求](web-ssh-design-development-plan.md)。

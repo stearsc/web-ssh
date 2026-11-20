@@ -18,7 +18,9 @@ import (
 	"github.com/stearsc/web-ssh/backend/internal/config"
 	secret "github.com/stearsc/web-ssh/backend/internal/crypto"
 	"github.com/stearsc/web-ssh/backend/internal/database"
+	"github.com/stearsc/web-ssh/backend/internal/fault"
 	"github.com/stearsc/web-ssh/backend/internal/httpapi"
+	"github.com/stearsc/web-ssh/backend/internal/maintenance"
 	servers "github.com/stearsc/web-ssh/backend/internal/server"
 	"github.com/stearsc/web-ssh/backend/internal/session"
 	browser "github.com/stearsc/web-ssh/backend/internal/websocket"
@@ -26,6 +28,11 @@ import (
 )
 
 func run(ctx context.Context, c config.Config, logger *slog.Logger) error {
+	lock, err := maintenance.Acquire(c.Database.Path)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
 	key, err := config.LoadEncryptionKey()
 	if err != nil {
 		return err
@@ -55,6 +62,17 @@ func run(ctx context.Context, c config.Config, logger *slog.Logger) error {
 	}
 	if err := database.EndPreviousSessions(startup, db, time.Now()); err != nil {
 		return fail(err)
+	}
+	if !managed.KeyVerificationAvailable() {
+		logger.Warn("主密钥格式正确，无法验证历史匹配性")
+	}
+	if err := managed.ReconcilePrivateKeys(startup); err != nil {
+		var business fault.Error
+		if errors.As(err, &business) && business == "PRIVATE_KEY_STORAGE_UNAVAILABLE" {
+			logger.Warn("私钥卷不可用，暂停私钥写入和回收")
+		} else {
+			return fail(errors.New("私钥对象数据库对账失败"))
+		}
 	}
 	assets, err := web.Assets()
 	if err != nil {
@@ -96,11 +114,19 @@ func serve(ctx context.Context, c config.Config, db *sql.DB, assets fs.FS, liste
 		go func() {
 			defer func() { workers.Done(); active.Add(-1) }()
 			ticker := time.NewTicker(time.Second)
+			gcTicker := time.NewTicker(10 * time.Minute)
+			defer gcTicker.Stop()
 			defer ticker.Stop()
 			for {
 				select {
 				case <-workCtx.Done():
 					return
+				case <-gcTicker.C:
+					cleanup, stop := context.WithTimeout(workCtx, budget)
+					if err := management[0].Servers.SweepPrivateKeys(cleanup, logger); err != nil && workCtx.Err() == nil {
+						logger.Warn("私钥回收已暂停")
+					}
+					stop()
 				case <-ticker.C:
 					cleanup, cancel := context.WithTimeout(workCtx, budget)
 					if err := management[0].Auth.Cleanup(cleanup); err != nil && workCtx.Err() == nil {

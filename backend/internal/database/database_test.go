@@ -38,7 +38,7 @@ func execTest(t *testing.T, db *sql.DB, query string, args ...any) {
 	}
 }
 
-const serverInsert = `INSERT INTO servers (id,name,host,port,username,password_encrypted,created_at,updated_at) VALUES ('server','name','localhost',22,'user',x'01',1,1)`
+const serverInsert = `INSERT INTO servers (id,name,host,port,username,auth_type,password_encrypted,created_at,updated_at) VALUES ('server','name','localhost',22,'user','password',x'01',1,1)`
 const sessionInsert = `INSERT INTO sessions(id,server_id,name,host,port,username,status,created_at) VALUES ('session',?,'name','localhost',22,'user','CONNECTED',1)`
 
 func verifyPragmas(t *testing.T, db *sql.DB, busy int64) {
@@ -73,14 +73,14 @@ func TestMigrationReopenForeignKeysAndBackup(t *testing.T) {
 		t.Fatal(err)
 	}
 	var count int
-	if err := db.QueryRow("SELECT count(*) FROM schema_migrations").Scan(&count); err != nil || count != 1 {
+	if err := db.QueryRow("SELECT count(*) FROM schema_migrations").Scan(&count); err != nil || count != 2 {
 		t.Fatal(count, err)
 	}
 	var names string
 	if err := db.QueryRow("SELECT group_concat(name, ',') FROM (SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name)").Scan(&names); err != nil {
 		t.Fatal(err)
 	}
-	if names != "admin_credentials,schema_migrations,servers,sessions,web_auth_sessions" {
+	if names != "admin_credentials,private_key_objects,schema_migrations,servers,sessions,web_auth_sessions" {
 		t.Fatal(names)
 	}
 	verifyPragmas(t, db, 120)
@@ -162,12 +162,16 @@ func TestMigrationFailureRollback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	source := fstest.MapFS{"001_initial.sql": &fstest.MapFile{Data: initial}, "002_failure.sql": &fstest.MapFile{Data: []byte("CREATE TABLE should_rollback(id INTEGER); INVALID SQL;")}}
+	keyMigration, err := migrations.Files.ReadFile("002_private_key_auth.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := fstest.MapFS{"002_private_key_auth.sql": &fstest.MapFile{Data: keyMigration}, "001_initial.sql": &fstest.MapFile{Data: initial}, "003_failure.sql": &fstest.MapFile{Data: []byte("CREATE TABLE should_rollback(id INTEGER); INVALID SQL;")}}
 	if err := migrate(context.Background(), db, source); err == nil {
 		t.Fatal("迁移失败未报告")
 	}
 	var count int
-	for q, want := range map[string]int{"SELECT count(*) FROM servers": 1, "SELECT count(*) FROM schema_migrations": 1, "SELECT count(*) FROM sqlite_schema WHERE name='should_rollback'": 0} {
+	for q, want := range map[string]int{"SELECT count(*) FROM servers": 1, "SELECT count(*) FROM schema_migrations": 2, "SELECT count(*) FROM sqlite_schema WHERE name='should_rollback'": 0} {
 		if err := db.QueryRow(q).Scan(&count); err != nil || count != want {
 			t.Fatal(q, count, err)
 		}

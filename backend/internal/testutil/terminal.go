@@ -1,6 +1,7 @@
 package testutil
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"net"
@@ -13,18 +14,21 @@ import (
 
 // TerminalSSH 是真实 TCP/SSH 测试对端，默认 Shell 仅回显字节，不冒充系统 PTY。
 type TerminalSSH struct {
-	Listener net.Listener
-	Key      ssh.Signer
-	Shells   atomic.Int64
-	Options  TerminalOptions
-	Ready    chan ssh.Channel
-	Requests chan string
-	stop     chan struct{}
-	mu       sync.Mutex
-	conns    map[net.Conn]bool
-	wg       sync.WaitGroup
+	Listener        net.Listener
+	Key             ssh.Signer
+	Shells          atomic.Int64
+	PublicAuthCalls atomic.Int64
+	Options         TerminalOptions
+	Ready           chan ssh.Channel
+	Requests        chan string
+	stop            chan struct{}
+	mu              sync.Mutex
+	conns           map[net.Conn]bool
+	wg              sync.WaitGroup
 }
 type TerminalOptions struct {
+	AuthorizedKey          ssh.PublicKey
+	AuthGate               <-chan struct{}
 	RejectPTY, RejectShell bool
 	BlockRequest           string
 	Gate                   <-chan struct{}
@@ -85,6 +89,22 @@ func (s *TerminalSSH) serve(c net.Conn) {
 		}
 		return nil, nil
 	}}
+	if s.Options.AuthorizedKey != nil {
+		cfg.PublicKeyCallback = func(meta ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
+			s.PublicAuthCalls.Add(1)
+			if s.Options.AuthGate != nil {
+				select {
+				case <-s.Options.AuthGate:
+				case <-s.stop:
+					return nil, errors.New("测试对端停止")
+				}
+			}
+			if meta.User() != "tester" || !bytes.Equal(key.Marshal(), s.Options.AuthorizedKey.Marshal()) {
+				return nil, errors.New("认证失败")
+			}
+			return nil, nil
+		}
+	}
 	s.mu.Lock()
 	cfg.AddHostKey(s.Key)
 	s.mu.Unlock()

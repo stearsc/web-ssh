@@ -81,6 +81,23 @@ func migrate(ctx context.Context, db *sql.DB, source fs.FS) error {
 			if _, err := tx.ExecContext(ctx, string(data)); err != nil {
 				return fmt.Errorf("迁移 %s 失败: %w", m.name, err)
 			}
+			// 父子表重建后必须在提交前检查外键，不能靠后续启动掩盖半迁移。
+			check, err := tx.QueryContext(ctx, "PRAGMA foreign_key_check")
+			if err != nil {
+				return err
+			}
+			hasViolation := check.Next()
+			checkErr := check.Err()
+			closeErr := check.Close()
+			if hasViolation {
+				return fmt.Errorf("迁移后的外键校验失败")
+			}
+			if checkErr != nil {
+				return checkErr
+			}
+			if closeErr != nil {
+				return closeErr
+			}
 			if _, err := tx.ExecContext(ctx, "INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)", m.version, time.Now().UTC().UnixMilli()); err != nil {
 				return err
 			}

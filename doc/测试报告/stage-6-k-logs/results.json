@@ -1,0 +1,25 @@
+{
+  "results": [
+    {
+      "name": "Chrome 登录与原生 multipart 加密私钥创建",
+      "passed": true
+    },
+    {
+      "name": "已保存凭据测试、主机信任确认、真实 SSH 公钥认证",
+      "passed": true
+    },
+    {
+      "name": "普通资料编辑保留凭据、错误替换保护旧配置",
+      "passed": true
+    },
+    {
+      "name": "真实 Session/WS/SSH 终端连接",
+      "passed": true
+    },
+    {
+      "name": "Chrome 窄屏认证表单与认证方式双向切换",
+      "passed": true
+    }
+  ],
+  "fixtureExit": 0
+}

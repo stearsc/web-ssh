@@ -19,6 +19,7 @@ import (
 	secret "github.com/stearsc/web-ssh/backend/internal/crypto"
 	"github.com/stearsc/web-ssh/backend/internal/database"
 	"github.com/stearsc/web-ssh/backend/internal/fault"
+	"github.com/stearsc/web-ssh/backend/internal/privatekey"
 )
 
 type State struct {
@@ -29,6 +30,8 @@ type State struct {
 	deleted, unavailable bool
 }
 type Service struct {
+	keys           *privatekey.Store
+	keyVerified    bool
 	mu             sync.Mutex
 	states         map[string]*State
 	db             *sql.DB
@@ -45,8 +48,12 @@ type Service struct {
 	active func(string) bool
 }
 
-func New(ctx context.Context, db *sql.DB, cipher *secret.Cipher, cfg config.Config) (*Service, error) {
+func New(ctx context.Context, db *sql.DB, cipher *secret.Cipher, cfg config.Config, options ...Option) (*Service, error) {
 	s := &Service{states: make(map[string]*State), db: db, cipher: cipher, transact: database.TransactionFor(db), now: time.Now, timeout: time.Duration(cfg.Server.RequestTimeout) * time.Second, probes: make(map[[32]byte]*probe), connectTimeout: time.Duration(cfg.Ssh.ConnectTimeout) * time.Second, probeTTL: time.Duration(cfg.Ssh.HostKeyProbeTtl) * time.Second, probeLimit: cfg.Ssh.HostKeyProbeLimit, active: func(string) bool { return false }}
+	s.keys = privatekey.NewStore(db, privatekey.Directory, time.Duration(cfg.Ssh.PrivateKeyGCGracePeriod)*time.Second)
+	for _, option := range options {
+		option(s)
+	}
 	rows, err := db.QueryContext(ctx, "SELECT "+columns+" FROM servers")
 	if err != nil {
 		return nil, err
@@ -60,12 +67,26 @@ func New(ctx context.Context, db *sql.DB, cipher *secret.Cipher, cfg config.Conf
 		if err := s.check(r); err != nil {
 			return nil, err
 		}
+		if len(r.PasswordEncrypted) > 0 || len(r.PassphraseEncrypted) > 0 {
+			s.keyVerified = true
+		}
 		s.states[r.ID] = &State{record: r, version: 1}
 	}
 	return s, rows.Err()
 }
 func (s *Service) check(r Record) error {
-	plain, err := s.cipher.Decrypt(r.PasswordEncrypted)
+	var plain []byte
+	var err error
+	switch r.AuthType {
+	case "password":
+		plain, err = s.cipher.Decrypt(r.PasswordEncrypted)
+	case "private_key":
+		if len(r.PassphraseEncrypted) > 0 {
+			plain, err = s.cipher.DecryptPassphrase(r.ID, r.PassphraseEncrypted)
+		}
+	default:
+		return errors.New("服务器认证类型无效")
+	}
 	if err != nil {
 		return err
 	}
@@ -98,6 +119,9 @@ func (s *Service) reload(ctx context.Context, st *State) error {
 	defer cancel()
 	r, err := scan(s.db.QueryRowContext(ctx, "SELECT "+columns+" FROM servers WHERE id=?", st.record.ID))
 	if errors.Is(err, sql.ErrNoRows) {
+		if err := s.keys.Resolve(ctx, st.record.ID); err != nil {
+			return fault.Error("SERVER_UNAVAILABLE")
+		}
 		st.deleted = true
 		st.unavailable = false
 		s.mu.Lock()
@@ -106,6 +130,9 @@ func (s *Service) reload(ctx context.Context, st *State) error {
 		return fault.Error("SERVER_NOT_FOUND")
 	}
 	if err != nil || s.check(r) != nil {
+		return fault.Error("SERVER_UNAVAILABLE")
+	}
+	if err := s.keys.Resolve(ctx, st.record.ID); err != nil {
 		return fault.Error("SERVER_UNAVAILABLE")
 	}
 	st.record = r
@@ -144,19 +171,20 @@ func (s *Service) Create(ctx context.Context, login *auth.Session, input Input) 
 	if _, err := rand.Read(id); err != nil {
 		return View{}, fault.Error("INTERNAL_ERROR")
 	}
-	encrypted, err := s.cipher.Encrypt([]byte(in.Password))
-	if err != nil {
-		return View{}, fault.Error("INTERNAL_ERROR")
-	}
 	now := s.now().UnixMilli()
-	r := Record{ID: hex.EncodeToString(id), Name: in.Name, Host: in.Host, Port: *in.Port, Username: in.Username, PasswordEncrypted: encrypted, GroupName: in.GroupName, Remark: in.Remark, CreatedAt: now, UpdatedAt: now}
+	r := Record{ID: hex.EncodeToString(id), Name: in.Name, Host: in.Host, Port: *in.Port, Username: in.Username, GroupName: in.GroupName, Remark: in.Remark, CreatedAt: now, UpdatedAt: now, AuthType: "password"}
+	upload, err := s.credentials(ctx, in, &r, true)
+	if err != nil {
+		return View{}, err
+	}
+	defer upload.Release()
 	st.record = r
 	// 提交前登记 State，提交结果确定前一直持有服务器锁。索引锁不跨数据库操作。
 	// 列表即使读到了已提交的 ID，也一定能找到 State，并等待创建完成。
 	s.mu.Lock()
 	s.states[r.ID] = st
 	s.mu.Unlock()
-	result := s.transact(ctx, func(tx *sql.Tx) error { return save(ctx, tx, r, true) })
+	result := s.keys.Change(ctx, r.ID, []string{r.PrivateKeyObjectID}, s.transact, func(tx *sql.Tx) error { return save(ctx, tx, r, true) })
 	if result == database.RolledBack {
 		// 已取得指针的并发请求也必须看到删除标记，不能读取回滚的对象。
 		st.deleted = true
@@ -291,33 +319,24 @@ func (s *Service) Update(ctx context.Context, login *auth.Session, id string, in
 	r.GroupName = in.GroupName
 	r.Remark = in.Remark
 	r.UpdatedAt = s.now().UnixMilli()
-	passwordChanged := false
-	if in.Password != "" {
-		plain, err := s.cipher.Decrypt(old.PasswordEncrypted)
-		if err != nil {
-			return View{}, fault.Error("SERVER_UNAVAILABLE")
-		}
-		passwordChanged = !bytes.Equal(plain, []byte(in.Password))
-		clear(plain)
-		if passwordChanged {
-			r.PasswordEncrypted, err = s.cipher.Encrypt([]byte(in.Password))
-			if err != nil {
-				return View{}, fault.Error("INTERNAL_ERROR")
-			}
-		}
+	upload, err := s.credentials(ctx, in, &r, false)
+	if err != nil {
+		return View{}, err
 	}
+	defer upload.Release()
+	credentialsChanged := r.AuthType != old.AuthType || r.PrivateKeyObjectID != old.PrivateKeyObjectID || !bytes.Equal(r.PasswordEncrypted, old.PasswordEncrypted) || !bytes.Equal(r.PassphraseEncrypted, old.PassphraseEncrypted)
 	targetChanged := r.Host != old.Host || r.Port != old.Port
 	if targetChanged {
 		r.PublicKey = nil
 		r.Algorithm = ""
 		r.Fingerprint = ""
 	}
-	result := s.transact(ctx, func(tx *sql.Tx) error { return save(ctx, tx, r, false) })
+	result := s.keys.Change(ctx, r.ID, []string{old.PrivateKeyObjectID, r.PrivateKeyObjectID}, s.transact, func(tx *sql.Tx) error { return save(ctx, tx, r, false) })
 	if err := s.outcome(ctx, st, result); err != nil {
 		return View{}, err
 	}
 	st.record = r
-	if targetChanged || passwordChanged || r.Username != old.Username {
+	if targetChanged || credentialsChanged || r.Username != old.Username {
 		s.changed(st)
 	}
 	return r.view(), nil
@@ -340,7 +359,7 @@ func (s *Service) Delete(ctx context.Context, login *auth.Session, id string) er
 	if st.occupied > 0 || s.active(id) {
 		return fault.Error("SERVER_HAS_ACTIVE_SESSIONS")
 	}
-	result := s.transact(ctx, func(tx *sql.Tx) error {
+	result := s.keys.Change(ctx, id, []string{st.record.PrivateKeyObjectID}, s.transact, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, "DELETE FROM servers WHERE id=?", id)
 		return err
 	})

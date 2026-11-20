@@ -8,6 +8,7 @@ import (
 
 	"github.com/stearsc/web-ssh/backend/internal/auth"
 	"github.com/stearsc/web-ssh/backend/internal/fault"
+	"github.com/stearsc/web-ssh/backend/internal/privatekey"
 	"github.com/stearsc/web-ssh/backend/internal/sshclient"
 )
 
@@ -27,11 +28,16 @@ func (l *Lease) Release() {
 
 // Creation 只在创建任务中持有，不能存入长期 Session。
 type Creation struct {
-	service *Service
-	state   *State
-	record  Record
-	version uint64
-	lease   *Lease
+	mu         sync.Mutex
+	started    bool
+	canceled   bool
+	stopCancel func() bool
+	fileLease  *privatekey.Lease
+	service    *Service
+	state      *State
+	record     Record
+	version    uint64
+	lease      *Lease
 }
 
 // Reserve 与编辑/删除共用服务器锁。initialize 仅允许短元数据写入和内存发布，不做网络操作。
@@ -64,20 +70,39 @@ func (s *Service) Reserve(ctx context.Context, login *auth.Session, id string, l
 	if st.occupied >= limit {
 		return nil, nil, nil, fault.Error("SESSION_LIMIT")
 	}
+	var fileLease *privatekey.Lease
+	if st.record.AuthType == "private_key" {
+		fileLease, err = s.keys.Acquire(ctx, st.record.PrivateKeyObjectID)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+	}
 	st.occupied++
 	r := st.record
 	target := Target{r.ID, r.Name, r.Host, r.Username, r.Port}
 	if err := initialize(target); err != nil {
+		fileLease.Release()
 		st.occupied--
 		return nil, nil, nil, err
 	}
 	lease := &Lease{state: st}
-	return &Creation{s, st, r, st.version, lease}, lease, nil, nil
+	creation := &Creation{service: s, state: st, record: r, version: st.version, lease: lease, fileLease: fileLease}
+	creation.stopCancel = context.AfterFunc(ctx, creation.Cancel)
+	return creation, lease, nil, nil
 }
 func (c *Creation) Open(ctx context.Context, login *auth.Session, timeout time.Duration, cols, rows int, output io.Writer) (*sshclient.Terminal, *Confirmation, error) {
+	c.mu.Lock()
+	if c.started || c.canceled {
+		c.mu.Unlock()
+		return nil, nil, fault.Error("SERVER_SHUTTING_DOWN")
+	}
+	c.started = true
 	r := c.record
-	defer func() { c.record = Record{} }()
-	term, observed, err := sshclient.Open(ctx, sshclient.Snapshot{Host: r.Host, Port: r.Port, Username: r.Username, PasswordEncrypted: r.PasswordEncrypted, PublicKey: r.PublicKey}, c.service.cipher, timeout, cols, rows, output)
+	c.record = Record{}
+	c.mu.Unlock()
+	c.stopCancel()
+	defer c.fileLease.Release()
+	term, observed, err := sshclient.Open(ctx, c.service.authSnapshot(r), c.service.cipher, timeout, cols, rows, output)
 	if observed != nil {
 		// 握手拒绝后底层资源已退出，先归还名额再按旧版本发布探测结果。
 		c.lease.Release()
@@ -85,4 +110,16 @@ func (c *Creation) Open(ctx context.Context, login *auth.Session, timeout time.D
 		return nil, confirmation, err
 	}
 	return term, nil, err
+}
+
+// Cancel 只释放尚未开始的短文件任务；已运行 Open 必须等实际读取/解析完成再释放。
+func (c *Creation) Cancel() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.started || c.canceled {
+		return
+	}
+	c.canceled = true
+	c.record = Record{}
+	c.fileLease.Release()
 }

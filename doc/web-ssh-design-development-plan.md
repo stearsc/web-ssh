@@ -13,7 +13,7 @@
 **部署：** Docker 单容器  
 **UI 参考：** OpenCode 官方网站 Web UI（https://opencode.ai），正式布局以已确认的 [v2 原型](web-ssh-prototype-v2.html) 为准。
 
-更新日期：2026-11-20。本轮定向补充第六阶段新增的 SSH 私钥认证及 K02～K06 已确认契约：密码与私钥认证互斥；私钥原始字节存入独立持久化目录；Passphrase 独立加密入库；上传、解析、回收、备份和故障边界按本文件定义。本文是目标设计契约，不代表相关代码、迁移、配置或部署已经实现/验收。第五阶段 Session、Binding、关闭及 WebSocket 协议保持冻结。
+更新日期：2026-11-20。本轮定向补充第六阶段新增的 SSH 私钥认证及 K02～K06 已确认契约：密码与私钥认证互斥；私钥原始字节存入独立持久化目录；Passphrase 独立加密入库；上传、解析、回收、备份和故障边界按本文件定义。本文定义目标契约；6-K 本地实现及验证状态见 [交付报告](测试报告/stage-6-k-report.md)，部署/真机未验项不能由文档替代。第五阶段 Session、Binding、关闭及 WebSocket 协议保持冻结。
 
 | 权威文档 | 唯一负责的内容 |
 |---|---|
@@ -745,7 +745,7 @@ client_settings:
 | `group_name` | 可省略，默认空字符串 | 可省略，省略清为空 | 去除首尾空白后最多 128 UTF-8 字节 |
 | `remark` | 可省略，默认空字符串 | 可省略，省略清为空 | 最多 1024 UTF-8 字节 |
 
-**multipart 固定资源预算**：整个请求体最大 131,072 字节（128 KiB）；`metadata` JSON part 最大 49,152 字节（48 KiB）；所有 part headers 合计最大 8,192 字节，每个 part 最多 8 个 header 项；part 名称唯一且只允许契约定义的两项。服务端必须流式累计实际读取字节，不信任 `Content-Length`；使用原始 part 读取，拒绝 `Content-Transfer-Encoding`，不得触发默认 multipart 临时目录溢写。超过任一限制拒绝，不截断、不转换内容。
+**multipart 固定资源预算**：整个请求体最大 131,072 字节（128 KiB）；`metadata` JSON part 最大 49,152 字节（48 KiB）；所有 part headers 合计最大 8,192 字节，每个 part 最多 8 个 header 项；part 名称唯一且只允许契约定义的两项。服务端必须通过有界 Reader 累计实际读取字节，在受限内存中完成原始 headers 预算检查后使用 NextRawPart，不信任 `Content-Length`；使用原始 part 读取，拒绝 `Content-Transfer-Encoding`，不得触发默认 multipart 临时目录溢写。超过任一限制拒绝，不截断、不转换内容。
 
 **全局资源准入**：私钥上传接收全进程最多同时 2 个，满额立即拒绝，不排无界等待队列；私钥解析/KDF 全进程共享最多 1 个执行名额，上传校验、Test 和 Creation 共用，满额立即拒绝。取消请求或 HTTP 超时不能提前释放解析名额；只有实际解析/KDF 完成后才释放。复用 `server.request_timeout`，不增加单独上传超时；HTTP 请求截止不能强制中断同步解析/KDF。
 
@@ -884,7 +884,15 @@ HTTP 接管准备与 WebSocket 提交是两个请求；不得把 API 成功当�
 | `SERVER_SHUTTING_DOWN` | 503 | 应用停止接入，不能发布新资源 |
 | `INTERNAL_ERROR` | 500 | 未分类系统错误，日志记录上下文但响应不泄露内部数据 |
 
-私钥认证新增的本地故障必须与 `SSH_AUTH_FAILED` 区分：上传接收名额满、解析/KDF 名额满均应立即拒绝（HTTP 429），不能排无界队列；单个私钥对象缺失/损坏属于关联服务器凭据不可用；私钥卷/目录不可用属于存储能力故障，暂停私钥写入与回收。以上新增场景的最终错误码名称和具体 HTTP 映射由 6-K.0 设计定稿后注册到本表；不得提前把本地文件故障映射成远端认证失败，也不得把单个凭据故障塞进 DB `State.unavailable`。
+| 私钥 HTTP 错误 | HTTP | 含义 |
+|---|---|---|
+| `PRIVATE_KEY_UPLOAD_BUSY` | 429 | 全局上传接收名额已满 |
+| `PRIVATE_KEY_PARSE_BUSY` | 429 | 全局解析/KDF 名额已满 |
+| `PRIVATE_KEY_INVALID` | 400 | 上传格式、大小/RSA 或口令校验失败 |
+| `PRIVATE_KEY_UNAVAILABLE` | 503 | 已存单个凭据无法安全读取或解析 |
+| `PRIVATE_KEY_STORAGE_UNAVAILABLE` | 503 | 专用卷或安全写入不可用 |
+
+私钥认证新增的本地故障必须与 `SSH_AUTH_FAILED` 区分：上传接收名额满、解析/KDF 名额满均应立即拒绝（HTTP 429），不能排无界队列；单个私钥对象缺失/损坏属于关联服务器凭据不可用；私钥卷/目录不可用属于存储能力故障，暂停私钥写入与回收。6-K.0 已定稿，新增错误登记如下；不得提前把本地文件故障映射成远端认证失败，也不得把单个凭据故障塞进 DB `State.unavailable`。
 
 <a id="close-reasons"></a>
 ## 11.7 SSH Session 关闭原因
@@ -942,7 +950,7 @@ HTTP 接管准备与 WebSocket 提交是两个请求；不得把 API 成功当�
 
 新增版本迁移，不修改已应用的 `001_initial.sql`。旧记录迁移为 `auth_type=password`，保留 `password_encrypted` 原字节。迁移必须显式处理旧 `password_encrypted BLOB NOT NULL` 的放宽/表重建；保留服务器 ID、Host Key 信任、索引、时间、sessions 外键及 `ON DELETE CASCADE`，验证迁移不误删 Session 元数据。禁止使用假密码或空密文满足 NOT NULL。
 
-数据库另需私钥对象元数据，用不透明随机对象 ID 定位专用目录中的原始文件，并持久化回收候选时间/状态、完整性摘要及安全删除所需状态；具体表名、字段、约束和索引由 6-K.0 的最终数据契约明确。私钥内容和客户端文件路径不入库；文件字节只在 `/var/lib/web-ssh/ssh-keys/`。
+数据库另需私钥对象元数据，用不透明随机对象 ID 定位专用目录中的原始文件，并持久化回收候选时间/状态、完整性摘要及安全删除所需状态；实际表为 `private_key_objects`，含 id、sha256、byte_size、created_at、file_device/file_inode、state、candidate_at、delete_attempts、last_delete_attempt_at、last_delete_error；状态为 promoting/ready/delete_claimed/deleted，扫描索引为 idx_private_key_gc。精确约束和事务见 [6-K.0](stage-6-k-design-contract.md) 与新增 002 migration。私钥内容和客户端文件路径不入库；文件字节只在 `/var/lib/web-ssh/ssh-keys/`。
 
 必须通过 CHECK/事务保证认证互斥：`password` 模式有非空密码密文且私钥引用/Passphrase 均为空；`private_key` 模式有私钥对象引用、密码密文为空，Passphrase 可空。Host Key 五个信任字段仍同时为空或同时非空，非空时绑定当前 Host/Port。建立原有 `idx_servers_group_name_name(group_name, name)`；名称不设唯一约束。
 

@@ -157,10 +157,11 @@ func (m *Management) Handler(fallback http.Handler, ready func() bool) http.Hand
 		return nil
 	}))
 	mux.HandleFunc("POST /api/servers", m.protected(func(w http.ResponseWriter, r *http.Request, login *auth.Session) error {
-		in := servers.Input{}
-		if err := m.decode(w, r, &in, false); err != nil {
+		in, release, err := m.serverInput(w, r)
+		if err != nil {
 			return err
 		}
+		defer release()
 		view, err := m.Servers.Create(r.Context(), login, in)
 		if err != nil {
 			return err
@@ -178,10 +179,11 @@ func (m *Management) Handler(fallback http.Handler, ready func() bool) http.Hand
 		return nil
 	}))
 	mux.HandleFunc("PUT /api/servers/{id}", m.protected(func(w http.ResponseWriter, r *http.Request, login *auth.Session) error {
-		in := servers.Input{}
-		if err := m.decode(w, r, &in, false); err != nil {
+		in, release, err := m.serverInput(w, r)
+		if err != nil {
 			return err
 		}
+		defer release()
 		view, err := m.Servers.Update(r.Context(), login, r.PathValue("id"), in)
 		if err != nil {
 			return err

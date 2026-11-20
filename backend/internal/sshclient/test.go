@@ -16,6 +16,8 @@ import (
 
 // Snapshot 仅由短期任务持有，任务返回后释放，不进入长期 Session。
 type Snapshot struct {
+	AuthType                     string
+	PrivateKeySigner             func(context.Context) (ssh.Signer, error)
 	Host                         string
 	Port                         int
 	Username                     string
@@ -73,6 +75,7 @@ func dial(ctx context.Context, snapshot Snapshot, cipher *secret.Cipher, timeout
 	}
 	verifier := &hostVerifier{key: append([]byte(nil), snapshot.PublicKey...), diagnostic: d}
 	authStarted := false
+	var localAuthError error
 	cfg := &ssh.ClientConfig{User: snapshot.Username, HostKeyCallback: verifier.check, Auth: []ssh.AuthMethod{ssh.PasswordCallback(func() (string, error) {
 		d.update(func(r *DiagnosticRecord) { r.PasswordCallbackEntered = true; r.LastCheckpoint = "password_callback" })
 		if !verifier.isTrusted() {
@@ -91,6 +94,28 @@ func dial(ctx context.Context, snapshot Snapshot, cipher *secret.Cipher, timeout
 		d.update(func(r *DiagnosticRecord) { r.PasswordProvided = true; r.LastCheckpoint = "password_provided" })
 		return string(plain), nil
 	})}}
+	if snapshot.AuthType == "private_key" {
+		clear(cfg.Auth)
+		cfg.Auth = []ssh.AuthMethod{ssh.PublicKeysCallback(func() ([]ssh.Signer, error) {
+			if !verifier.isTrusted() {
+				return nil, errors.New("Host Key 尚未校验")
+			}
+			if snapshot.PrivateKeySigner == nil {
+				localAuthError = fault.Error("PRIVATE_KEY_UNAVAILABLE")
+				return nil, localAuthError
+			}
+			signer, signErr := snapshot.PrivateKeySigner(ctx)
+			if signErr != nil {
+				localAuthError = signErr
+				return nil, signErr
+			}
+			authStarted = true
+			d.checkpoint("public_key_provided")
+			return []ssh.Signer{signer}, nil
+		})}
+	} else if snapshot.AuthType != "" && snapshot.AuthType != "password" {
+		return nil, nil, fault.Error("INVALID_REQUEST")
+	}
 	if d != nil {
 		cfg.AuthCallback = d.observeAuth
 	}
@@ -107,6 +132,9 @@ func dial(ctx context.Context, snapshot Snapshot, cipher *secret.Cipher, timeout
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, nil, fault.Error("SSH_CONNECT_TIMEOUT")
+		}
+		if localAuthError != nil {
+			return nil, nil, localAuthError
 		}
 		var networkError net.Error
 		if errors.As(err, &networkError) && networkError.Timeout() {

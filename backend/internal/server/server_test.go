@@ -96,7 +96,7 @@ func TestCRUDValidationAndPassword(t *testing.T) {
 		t.Fatal(err, list)
 	}
 	data, _ := json.Marshal(v)
-	for _, sensitive := range []string{"password", "public_key", "config_version", "ssh-secret"} {
+	for _, sensitive := range []string{`"password":`, `"password_encrypted":`, `"passphrase":`, `"passphrase_encrypted":`, "public_key", "config_version", "ssh-secret"} {
 		if bytes.Contains(data, []byte(sensitive)) {
 			t.Fatal("DTO 泄露", sensitive)
 		}

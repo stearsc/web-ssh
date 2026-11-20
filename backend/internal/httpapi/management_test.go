@@ -5,14 +5,18 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"github.com/stearsc/web-ssh/backend/internal/privatekey"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 
@@ -40,7 +44,14 @@ func api(t *testing.T) (http.Handler, *Management, *bytes.Buffer) {
 		t.Fatal(err)
 	}
 	cipher, _ := secret.New(bytes.Repeat([]byte{7}, 32))
-	s, err := servers.New(context.Background(), db, cipher, cfg)
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	s, err := servers.New(context.Background(), db, cipher, cfg, servers.WithPrivateKeyStore(privatekey.NewStore(db, dir, time.Hour)))
 	if err != nil {
 		t.Fatal(err)
 	}

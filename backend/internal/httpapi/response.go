@@ -68,6 +68,15 @@ func WriteError(w http.ResponseWriter, err error, logger *slog.Logger) {
 	case MessageTooLarge:
 		status = 413
 		message = "请求内容超过大小限制"
+	case "PRIVATE_KEY_INVALID":
+		status = 400
+		message = "私钥格式或口令无效，或密钥超出安全限制"
+	case "PRIVATE_KEY_UNAVAILABLE":
+		status = 503
+		message = "保存的私钥不可用，请重新上传修复"
+	case "PRIVATE_KEY_STORAGE_UNAVAILABLE":
+		status = 503
+		message = "私钥存储暂不可用，请稍后重试"
 	case ServerUnavailable:
 		status = 503
 		message = "服务尚未就绪"
@@ -83,7 +92,7 @@ func WriteError(w http.ResponseWriter, err error, logger *slog.Logger) {
 	case "PERMISSION_DENIED":
 		status = 403
 		message = "请求来源或操作权限不符"
-	case "LOGIN_RATE_LIMIT", "LOGIN_SESSION_LIMIT", "HOST_KEY_PROBE_LIMIT", "SESSION_LIMIT", "CREDENTIAL_LIMIT", "CONNECTION_LIMIT_REACHED":
+	case "PRIVATE_KEY_UPLOAD_BUSY", "PRIVATE_KEY_PARSE_BUSY", "LOGIN_RATE_LIMIT", "LOGIN_SESSION_LIMIT", "HOST_KEY_PROBE_LIMIT", "SESSION_LIMIT", "CREDENTIAL_LIMIT", "CONNECTION_LIMIT_REACHED":
 		status = 429
 		message = "请求或有效凭证数量已达上限，请稍后重试"
 	case "SESSION_NOT_FOUND":
@@ -118,7 +127,7 @@ func WriteError(w http.ResponseWriter, err error, logger *slog.Logger) {
 		message = "无法建立 SSH 连接"
 	case "SSH_AUTH_FAILED":
 		status = 502
-		message = "SSH 用户名或密码认证失败"
+		message = "SSH 用户认证失败，请检查用户名及认证凭据"
 	default:
 		code = InternalError
 		logger.Error("请求处理失败")

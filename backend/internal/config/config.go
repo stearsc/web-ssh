@@ -125,7 +125,7 @@ func (c Config) Validate() error {
 	// 数值先检查容量和 duration 溢出，再在使用时转换，避免先乘法再检查。
 	maxInt := int64(^uint(0) >> 1)
 	seconds := map[string]bool{}
-	for _, key := range strings.Fields(`http.credential_timeout server.read_header_timeout server.request_timeout server.shutdown_timeout auth.login_rate_window session.binding_credential_ttl session.operation_wait_timeout ssh.connect_timeout ssh.operation_timeout ssh.keepalive_interval ssh.keepalive_timeout ssh.host_key_probe_ttl websocket.bind_timeout websocket.message_read_timeout websocket.write_timeout websocket.close_timeout websocket.ping_interval websocket.pong_timeout terminal.write_drain_timeout terminal.reconnect_delay terminal.reconnect_stable_time`) {
+	for _, key := range strings.Fields(`http.credential_timeout server.read_header_timeout server.request_timeout server.shutdown_timeout auth.login_rate_window session.binding_credential_ttl session.operation_wait_timeout ssh.private_key_gc_grace_period ssh.connect_timeout ssh.operation_timeout ssh.keepalive_interval ssh.keepalive_timeout ssh.host_key_probe_ttl websocket.bind_timeout websocket.message_read_timeout websocket.write_timeout websocket.close_timeout websocket.ping_interval websocket.pong_timeout terminal.write_drain_timeout terminal.reconnect_delay terminal.reconnect_stable_time`) {
 		seconds[key] = true
 	}
 	v := reflect.ValueOf(c)

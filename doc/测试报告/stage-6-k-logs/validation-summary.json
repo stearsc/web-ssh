@@ -1,0 +1,20 @@
+{
+  "go_full": "failed: existing websocket slow writer assertion; same failure reproduced on original HEAD",
+  "go_remaining": "passed with exact slow-writer subtest excluded",
+  "race_full_initial": "failed: existing writer plus 1s test handshake deadlines under race",
+  "race_remaining_final": "passed with exact slow-writer subtest excluded; new test handshake deadlines 10s",
+  "uncertain_commit_race_supplement": "passed",
+  "frontend_tests": {
+    "passed": 314,
+    "failed": 0
+  },
+  "frontend_build_typecheck": "passed; chunk 504.67kB advisory",
+  "go_vet": "passed",
+  "go_native_build": "passed",
+  "chrome": "157.0.8103.79; five real backend flows passed",
+  "android_chrome_device": "not executed",
+  "ios_safari_device": "not executed",
+  "docker_runtime": "not executed",
+  "go_linux_amd64_build": "passed",
+  "restore_final_target_verification_race": "passed"
+}

@@ -48,13 +48,14 @@ type Session struct {
 }
 
 type Ssh struct {
-	ConnectTimeout       int64 `yaml:"connect_timeout"`
-	OperationTimeout     int64 `yaml:"operation_timeout"`
-	KeepaliveInterval    int64 `yaml:"keepalive_interval"`
-	KeepaliveTimeout     int64 `yaml:"keepalive_timeout"`
-	KeepaliveMaxFailures int64 `yaml:"keepalive_max_failures"`
-	HostKeyProbeTtl      int64 `yaml:"host_key_probe_ttl"`
-	HostKeyProbeLimit    int64 `yaml:"host_key_probe_limit"`
+	PrivateKeyGCGracePeriod int64 `yaml:"private_key_gc_grace_period"`
+	ConnectTimeout          int64 `yaml:"connect_timeout"`
+	OperationTimeout        int64 `yaml:"operation_timeout"`
+	KeepaliveInterval       int64 `yaml:"keepalive_interval"`
+	KeepaliveTimeout        int64 `yaml:"keepalive_timeout"`
+	KeepaliveMaxFailures    int64 `yaml:"keepalive_max_failures"`
+	HostKeyProbeTtl         int64 `yaml:"host_key_probe_ttl"`
+	HostKeyProbeLimit       int64 `yaml:"host_key_probe_limit"`
 }
 
 type Websocket struct {

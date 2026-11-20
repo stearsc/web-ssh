@@ -731,6 +731,8 @@ async function signOut(): Promise<void> {
     </main>
     <ServerForm
       v-if="editing"
+      :key="editTarget?.id ?? 'new-server'"
+      :disabled="logoutPending"
       :server="editTarget"
       @close="editing = false"
       @saved="saved"
