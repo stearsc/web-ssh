@@ -13,7 +13,7 @@
 **部署：** Docker 单容器  
 **UI 参考：** OpenCode 官方网站 Web UI（https://opencode.ai），正式布局以已确认的 [v2 原型](web-ssh-prototype-v2.html) 为准。
 
-更新日期：2026-11-15。本轮经确认将浏览器 HTTP 凭证申请期限与 WebSocket 首条绑定期限拆分；仅修订设计，新增配置及客户端下发字段尚待后续编码。其余产品与接口规范保持不变，文档修订不代表业务功能已经实现或通过验收。
+更新日期：2026-11-20。本轮定向补充第六阶段新增的 SSH 私钥认证及 K02～K06 已确认契约：密码与私钥认证互斥；私钥原始字节存入独立持久化目录；Passphrase 独立加密入库；上传、解析、回收、备份和故障边界按本文件定义。本文是目标设计契约，不代表相关代码、迁移、配置或部署已经实现/验收。第五阶段 Session、Binding、关闭及 WebSocket 协议保持冻结。
 
 | 权威文档 | 唯一负责的内容 |
 |---|---|
@@ -182,7 +182,7 @@ Go 服务通过 SSH 协议连接目标服务器。
 | Web 登录 | 独立 Web 管理密码 |
 | 服务器管理 | 增删改查服务器 |
 | 服务器分组 | 支持简单分组 |
-| SSH 连接 | 密码认证 |
+| SSH 连接 | 密码认证或上传私钥认证（二者互斥） |
 | SSH Host Key | 首次记录，后续校验 |
 | SSH PTY | 支持交互式终端 |
 | 多标签终端 | 同时打开多个 SSH 会话 |
@@ -203,7 +203,7 @@ Go 服务通过 SSH 协议连接目标服务器。
 - VNC
 - 端口转发
 - 批量执行命令
-- SSH 密钥管理界面
+- 通用 SSH 密钥资产管理平台、密钥生成/导入库、公钥分发、SSH Agent 和证书管理
 - 多用户角色和权限体系
 - 网关重启后的 SSH Session 恢复
 - tmux / screen 集成
@@ -238,13 +238,23 @@ Go 服务通过 SSH 协议连接目标服务器。
 - `server.trusted_proxies` 仅允许声明的代理 CIDR 提供客户端地址，用于日志。来源校验不依赖该地址，也不因代理受信任而允许任意 Origin。
 - 本机 HTTP 开发必须显式设置环回监听地址、HTTP 环回 `public_origin` 和 `auth.cookie_secure: false`。除此之外禁止关闭 Secure；正式环境由 HTTPS/WSS 入口访问。
 
-## 5.3 SSH 密码保存
+## 5.3 SSH 认证凭据保存
 
-SSH 密码使用 AES-256-GCM 加密。`APP_ENCRYPTION_KEY` 为标准 Base64 编码的 32 字节密钥；也可设置 `APP_ENCRYPTION_KEY_FILE`，文件内容为同样的 Base64 文本。两者必须且只能设置一个，缺失、格式错误或读取失败时停止启动，不能自动生成替代密钥。
+服务器 SSH 用户认证仅支持两种互斥模式：`password` 与 `private_key`，每台服务器同一时刻只能使用一种；不顺序尝试、自动降级或在远端认证失败后切换另一种方式。
 
-密文采用固定格式：版本字节 `1` + 12 字节随机 nonce + AES-GCM 密文与 16 字节认证标签；每次加密重新生成 nonce。密钥不进入 SQLite；数据库和密钥分别备份。服务启动时验证已有密码密文可解密，错误密钥必须阻止启动，不能覆盖旧数据。
+**密码模式**保持既有行为：SSH 密码使用 AES-256-GCM 加密，格式为版本字节 `1` + 12 字节随机 nonce + 密文/16 字节认证标签。`APP_ENCRYPTION_KEY` 为标准 Base64 编码的 32 字节密钥；也可设置 `APP_ENCRYPTION_KEY_FILE`，两者必须且只能设置一个。新增认证不改变既有密码密文，不做全量重加密。新增密码服务器要求非空 SSH 密码；编辑时省略 `password` 或传空字符串表示保留原密文，非空字符串替换并重新加密，密码不裁剪空白。
 
-新增服务器必须填写非空 SSH 密码。编辑时省略 `password` 或传空字符串表示保留原密文；非空字符串替换并重新加密，密码不做空白裁剪。查询 DTO 从类型上排除明文、密文、nonce 和密钥。认证材料仅由建连任务短期持有，不能进入长期 Session 快照、API 或日志，详见[架构所有权](web-ssh-architecture-implementation-plan.md#ownership)。
+**私钥模式**通过服务器新增/编辑表单上传单个私钥文件，不允许手工粘贴或客户端指定存储路径。首批支持 OpenSSH、PEM PKCS#1 RSA、PEM SEC1 EC，以及固定 `golang.org/x/crypto v0.59.0` 实际可解析并成功构造 SSH Signer 的 PEM PKCS#8 类型；不承诺 DSA、库不支持的加密 PKCS#8 或未验证格式。必须完成私钥解析和 Signer 构造；仅能解析容器不代表可作为 SSH 签名密钥。文件最大 65,536 字节。上传内容先在有界内存中验证格式和 Passphrase，成功后才保存；落盘、读取和备份均保持上传原始字节，不应用层加密/解密、不重编码、不规范化换行、不裁剪、不转换格式。
+
+私钥对象存放于专用目录 `/var/lib/web-ssh/ssh-keys/`，与 SQLite 数据目录分离，由后端生成不可预测对象标识和存储名。目录不进入静态资源或普通下载路由；不得把原始文件、文件名路径、私钥内容或物理路径返回给前端。目标目录建议权限 0700，文件 0600，运行 UID/GID 为 10001:10001；部署 bind mount 必须由宿主预先配置正确属主和权限，不能 chmod 777、切换 root 或在启动时递归 chown。
+
+**Passphrase** 是私钥原生加密口令，与文件字节分开存储。用户输入允许为空：空值表示尝试按无口令私钥解析；若文件实际加密则解析失败，不能借用旧口令。Passphrase 使用现有 APP 主密钥体系和 AES-256-GCM 加密保存到独立数据库字段，不明文入库，不回传查询 DTO、不写日志或异常。新增 Passphrase 密文使用独立版本格式和随机 nonce；AAD 包含格式版本、固定用途标识及服务器 ID，采用无歧义编码。继续使用同一 APP 主密钥；旧 SSH 密码维持 v1，不全量重加密；Passphrase 不允许降级按密码 v1 解密。AAD 能阻止跨用途/跨服务器直接搬用密文，但 GCM 认证失败不能单独区分主密钥错误、密文损坏或上下文不匹配。
+
+**口令更新语义**：创建密钥配置、密码切换为密钥及替换私钥时，用户必须为新文件重新提供匹配 Passphrase；不自动重用旧保存口令。普通服务器资料编辑不改变既有凭据；不提供单独更新已保存 Passphrase 的操作。替换文件时空 Passphrase 表示新文件应能无口令解析。新文件和新口令验证、文件保存及数据库配置提交全部成功后，才清理旧凭据；失败保留旧配置和旧凭据。密码切换为密钥、密钥切换为密码、密钥替换的旧文件/旧密文清理必须遵循引用、短期租约、事务不确定状态及回收保护规则，详见[架构私钥存储](web-ssh-architecture-implementation-plan.md#private-key-storage)。
+
+服务器编辑或认证方式/认证材料/Username 实际变化使旧 Host Key probe 失效；仅改变认证不清除同一 Host/Port 的 Host Key 信任。已建立 SSH Session 继续使用创建时的连接，不因服务器认证变更重连，不改变其 Binding 代次。认证材料仅由上传校验、Test 或 Creation 短期任务持有，不进入长期 Session、Terminal、probe、API 或日志。
+
+数据库启动校验：现有 SSH 密码密文及新增 Passphrase 密文均需解密校验；任意一条已保存 Passphrase 无法解密，应用启动失败，沿用现有 SSH 密码策略。若所有密钥均无 Passphrase 且数据库无其他加密记录，只能确认主密钥格式正确，必须标记为“无法验证历史匹配性”，不能声称匹配验证通过；首版不增加数据库主密钥 sentinel。单个私钥文件缺失/损坏不阻止全站启动，只使关联服务器凭据不可用，保留引用并允许重新上传修复；不自动生成空文件、覆盖引用或回退密码。
 
 ## 5.4 SSH Host Key 产品规则
 
@@ -253,7 +263,7 @@ Host Key 信任同时绑定目标 Host、Port 和完整公钥。前端只展示�
 1. 首次连接没有当前目标信任时，临时探测实际 Host Key，在 SSH 用户认证前停止并关闭连接；返回一次性 `probe_id` 及展示信息。
 2. 用户明确确认后调用[确认 API](#api-servers)，后端保存探测到的公钥；再重新测试或创建 Session，并再次校验公钥后才认证。
 3. 同一 Host/Port 公钥变化时，展示原、新指纹；拒绝自动覆盖。Host 或 Port 变化时清除原信任，即使新目标公钥相同也须重新确认。
-4. 仅修改 Username 或 SSH 密码不清除已有 Host Key 信任，但使旧 probe 失效。其他连接参数变化同样使旧 probe 失效。
+4. 仅修改 Username、SSH 密码、认证方式、私钥对象/内容或 Passphrase 不清除已有 Host Key 信任，但使旧 probe 失效。其他连接参数变化同样使旧 probe 失效。
 5. 用户取消确认不修改信任。已建立 Session 使用原连接，服务器编辑或信任更新不引起自动重连。
 6. 测试连接复用同一校验规则，通过后只验证认证，不申请 Channel/PTY、不启动 Shell、不产生可接管 Session。
 
@@ -379,6 +389,8 @@ ssh:
   # Host Key 探测凭证：有效期秒数及全局记录上限
   host_key_probe_ttl: 300
   host_key_probe_limit: 256
+  # 私钥孤儿文件回收安全宽限期，单位秒；从登记回收候选时刻计算
+  private_key_gc_grace_period: 86400
 
 websocket:
   # 全部已升级连接，包括未绑定及正在关闭的连接
@@ -441,6 +453,7 @@ logging:
 | `ssh.connect_timeout`、`ssh.operation_timeout` | 秒；后者超时需通过关闭 SSH 底层连接解除不可取消的在途操作，关闭原因 `ssh_error` |
 | `ssh.keepalive_interval`、`ssh.keepalive_timeout`、`ssh.keepalive_max_failures` | 秒、秒、连续超时窗口数；不是并行探测次数 |
 | `ssh.host_key_probe_ttl`、`ssh.host_key_probe_limit` | 秒、全进程待确认记录数；到期清理和容量检查/插入原子完成 |
+| `ssh.private_key_gc_grace_period` | 秒，正整数，默认 86,400（24 小时）；从持久化登记回收候选的时间计算，重启不得重置或绕过；届满后仍须通过全部引用、租约、事务和备份保护检查 |
 | `websocket.max_connections`、`websocket.control_queue_limit` | 个、条；连接直至 Reader/Writer/关闭任务回收后才释放容量 |
 | `websocket.max_control_message_size` | 字节，至少 1024；应用 JSON 控制消息上限 |
 | `websocket.max_input_message_size`、`websocket.output_chunk_size` | 字节；输出块不得大于 `session.output_buffer_size` 或 `terminal.write_queue_bytes` |
@@ -457,7 +470,7 @@ logging:
 
 默认自动恢复等待跨度覆盖常见的心跳失联判定，避免旧通道尚未被服务端判离线时过早用尽尝试。持续输出、调度或网络故障仍可能超过预算，次数耗尽后显示状态并由用户主动重试，不承诺无限等待一定恢复。
 
-`server.request_timeout` 继续作为服务端 HTTP 请求预算，仅覆盖 HTTP 阶段。已经创建的 Session、已升级 WebSocket 不能继承该请求截止时间；WebSocket 使用本章独立超时。
+`server.request_timeout` 继续作为服务端 HTTP 请求预算，仅覆盖 HTTP 阶段。已经创建的 Session、已升级 WebSocket 不能继承该请求截止时间；WebSocket 使用本章独立超时。服务器保存接口的 multipart 私钥上传另有固定 128 KiB 总请求体上限和 48 KiB metadata part 上限，不提高全局 JSON 请求体限制；详细限制见 §11.3。私钥上传接收并发、解析/KDF 并发为进程级固定预算，不新增 YAML 配置。
 
 经确认，`http.credential_timeout` 与 `websocket.bind_timeout` 各自从本章默认配置加载，职责独立，即使默认值相同也不得互相取值或回退。前者在浏览器发起绑定凭证 POST 前建立 AbortController 定时器，请求及响应读取完成或失败后清除；到期只表示浏览器停止等待并尝试取消请求，不能证明服务端已停止处理或未签发凭证。它不是服务端请求处理、Session 操作锁等待或 WS 首条 bind 的期限。后者仍从 Upgrade 成功后计时；`session.operation_wait_timeout`、WS 写入、Ping/Pong 和关闭预算均不变，不增加它们与新字段的大小关系或求和约束。
 
@@ -477,9 +490,9 @@ Session 详情 GET 不设置浏览器本地自动超时，也不复用上述两�
 
 ## 8.1 管理信息
 
-服务器包含名称、Host、Port（默认 22）、Username、只写 SSH 密码、简单分组、备注、当前 Host Key 信任展示及创建/更新时间。准确字段和校验见 [Server DTO](#api-servers)，持久化字段见 [§12](#database)。
+服务器包含名称、Host、Port（默认 22）、Username、认证方式（密码/上传私钥，互斥）、简单分组、备注、当前 Host Key 信任展示及创建/更新时间。密码和 Passphrase 均为只写秘密；私钥文件只允许通过表单上传。查询 DTO 仅返回认证方式及必要的“凭据是否已配置”状态，不回传密码、Passphrase、私钥字节、密文或容器物理路径。准确字段和校验见 [服务器 API](#api-servers)，持久化字段见 [§12](#database)。
 
-第一版仅密码认证，不实现密钥管理。Host Key 的完整可信公钥只由后端保存；前端只看到可信目标、算法和 SHA256 指纹。
+不实现通用密钥资产管理平台，不提供密钥生成、下载、复制、共享 UI、公钥分发、SSH Agent 或证书管理。Host Key 的完整可信公钥只由后端保存；前端只看到可信目标、算法和 SHA256 指纹。
 
 ## 8.2 界面与操作
 
@@ -644,7 +657,7 @@ https://opencode.ai
 <a id="api-common"></a>
 ## 11.1 公共约定
 
-所有 API 使用 JSON；成功返回 HTTP 200（创建资源为 201），`code` 为数字 `0`；失败使用本章命名字符串错误码。结构固定：
+API 成功/失败响应统一使用 JSON；成功返回 HTTP 200（创建资源为 201），`code` 为数字 `0`；失败使用本章命名字符串错误码。除服务器保存接口允许 `application/json` 或受限 `multipart/form-data` 请求外，其他 API 请求仍按各自 JSON/空请求契约解析。响应结构固定：
 
 ```json
 {"code":0,"message":"success","data":{}}
@@ -655,7 +668,7 @@ https://opencode.ai
 ```
 
 - `message` 为面向用户的说明，客户端逻辑按 `code` 处理，不解析文案。除明确列出的错误数据外，失败 `data` 为 `{}`。不返回内部堆栈或秘密。
-- 请求 DTO 严格校验必填、类型、未知字段与尺寸。请求体不得超出 `server.max_request_body_size`；拒绝尾随 JSON 内容。无业务字段的 POST/DELETE 使用空对象 `{}` 或无请求体。
+- 请求 DTO 严格校验必填、类型、未知字段与尺寸。普通 JSON 请求体不得超出 `server.max_request_body_size`；拒绝尾随 JSON 内容。服务器私钥保存 multipart 使用独立固定预算，见 §11.3。无业务字段的 POST/DELETE 使用空对象 `{}` 或无请求体。
 - ID 均为 32 位小写十六进制字符串；时间响应使用 UTC RFC3339、固定毫秒精度，如 `2026-11-14T01:02:03.000Z`。可空字段明确返回 `null`，不随机省略。所有有效期在服务端 `now >= expires_at` 时失效，不延长原凭证期限。
 - `binding_generation`、输出偏移均为 `0..9007199254740991` 的整数，禁止浮点、负数及回绕。客户端与服务端都检查运算溢出。
 - 管理 API 与 WS 按 [§5](#authentication) 验证登录；登录、退出登录及健康检查遵守各自明确例外，退出登录不能被普通“必须有效登录”中间件拦截。状态改变接口验证 Origin。所有响应设置 `Cache-Control: no-store`。
@@ -711,28 +724,45 @@ client_settings:
 
 ### 服务器写入字段
 
+服务器保存接口按 Content-Type 分流，路径仍为现有 `POST /api/servers` 与 `PUT /api/servers/{id}`：
+
+- `application/json` 保留既有密码新增/编辑及不涉及文件的普通资料修改契约。
+- `multipart/form-data` 用于新建私钥认证、密码切换为私钥或替换私钥；包含且仅包含一个 `metadata` JSON part 和一个 `private_key` 文件 part。没有独立上传接口、上传令牌或临时上传资产。
+- `metadata` 使用下表字段及私钥认证操作字段；Passphrase 是只写字段。multipart 不接受重复、未知或多余 part；不接受客户端路径、多文件、嵌套 multipart 或 Content-Transfer-Encoding。
+- 普通编辑不更换凭据时继续使用 JSON；不需要为修改备注/分组重新上传文件。密钥配置如需新文件必须 multipart 提交，不能用 JSON 假装替换。
+- JSON 创建省略 `auth_type` 时按 `password` 处理；JSON 编辑省略 `auth_type` 时保留当前模式。密钥模式请求中出现 `password` 字段属于歧义请求，拒绝，不隐式切换或静默忽略。
+
 | 字段 | POST 创建 | PUT 编辑 | 约束 |
 |---|---|---|---|
 | `name` | 必填 | 必填 | 去除首尾空白后 1～128 UTF-8 字节 |
 | `host` | 必填 | 必填 | IP 或 ASCII DNS 名称，最多 253 字节；不能包含 scheme、路径或端口 |
 | `port` | 可省略，默认 22 | 必填 | 整数 1～65535 |
 | `username` | 必填 | 必填 | 非空字符串，最多 128 UTF-8 字节，不含 NUL |
-| `password` | 必填 | 可省略或空字符串保留原值 | 非空替换值最多 4096 UTF-8 字节，不裁剪空白 |
+| `auth_type` | JSON 省略默认 `password`；multipart 必须明确 | JSON 省略保留现有；multipart 必须明确 | `password` 或 `private_key`，二者互斥 |
+| `password` | password 模式必填 | 省略/空字符串保留原值 | 非空替换值最多 4096 UTF-8 字节，不裁剪；private_key 模式禁止出现该字段 |
+| `private_key` part | private_key 模式必需 | 新增/替换时必需 | 单文件 part，最大 65,536 字节；原始字节保存 |
+| `passphrase` | private_key 模式可选 | 上传/替换时可选 | 最大 4,096 UTF-8 字节；不裁剪、不截断；空值按无口令尝试解析，不复用旧值 |
 | `group_name` | 可省略，默认空字符串 | 可省略，省略清为空 | 去除首尾空白后最多 128 UTF-8 字节 |
 | `remark` | 可省略，默认空字符串 | 可省略，省略清为空 | 最多 1024 UTF-8 字节 |
 
-Host 在保存前统一去除首尾空白、DNS 转小写、IP 按标准地址格式规范化；IPv6 不含方括号，连接地址使用安全的 Host/Port 组合方法。信任目标使用保存后的 Host/Port；只比较规范化值，不按 DNS 解析结果合并不同目标。禁止传入任何 Host Key、公钥、指纹、密码密文或 `config_version` 字段。
+**multipart 固定资源预算**：整个请求体最大 131,072 字节（128 KiB）；`metadata` JSON part 最大 49,152 字节（48 KiB）；所有 part headers 合计最大 8,192 字节，每个 part 最多 8 个 header 项；part 名称唯一且只允许契约定义的两项。服务端必须流式累计实际读取字节，不信任 `Content-Length`；使用原始 part 读取，拒绝 `Content-Transfer-Encoding`，不得触发默认 multipart 临时目录溢写。超过任一限制拒绝，不截断、不转换内容。
+
+**全局资源准入**：私钥上传接收全进程最多同时 2 个，满额立即拒绝，不排无界等待队列；私钥解析/KDF 全进程共享最多 1 个执行名额，上传校验、Test 和 Creation 共用，满额立即拒绝。取消请求或 HTTP 超时不能提前释放解析名额；只有实际解析/KDF 完成后才释放。复用 `server.request_timeout`，不增加单独上传超时；HTTP 请求截止不能强制中断同步解析/KDF。
+
+**解析限制**：OpenSSH bcrypt rounds 保留固定依赖已有 2,048 轮上限，不未经测量擅自降低；OpenSSH、PEM PKCS#1 RSA、PEM PKCS#8 RSA 统一限制 RSA 模数最大 16,384 bit。PEM RSA 完整解析前执行必要的低成本结构预检。不得声称 context、HTTP 超时或客户端取消能强制终止同步 KDF/解析；资源名额必须保持到真实计算结束。
+
+Host 在保存前统一去除首尾空白、DNS 转小写、IP 按标准地址格式规范化；IPv6 不含方括号，连接地址使用安全的 Host/Port 组合方法。信任目标使用保存后的 Host/Port；只比较规范化值，不按 DNS 解析结果合并不同目标。禁止传入任何 Host Key、公钥、指纹、密码密文、Passphrase 密文、私钥存储名或 `config_version` 字段。
 
 `HostKeyView` 字段：`host: string`、`port: integer`、`algorithm: string`、`fingerprint: string`（OpenSSH `SHA256:` 格式）。此对象不含完整公钥。
 
-`ServerView` 字段：`id`、`name`、`host`、`port`、`username`、`group_name`、`remark`、`created_at`、`updated_at`，以及 `host_key: HostKeyView | null`。其中 `host_key` 只是展示信息，不是完整公钥。所有写入和详情响应使用相同安全 DTO。
+`ServerView` 字段：`id`、`name`、`host`、`port`、`username`、`auth_type`、`credential_configured`、`group_name`、`remark`、`created_at`、`updated_at`，以及 `host_key: HostKeyView | null`。`credential_configured` 仅表示所选模式的本地凭据对象/密文存在，不代表文件可读、口令可解密或远端认证成功。`host_key` 只是展示信息，不是完整公钥。所有写入和详情响应使用相同安全 DTO；绝不返回密码、Passphrase、私钥内容（包括其原生加密字节）、数据库密文/nonce、主密钥或容器物理路径。
 
 | 方法与路径 | 请求 | 成功 data |
 |---|---|---|
 | `GET /api/servers` | 可选 query `search`（名称包含查询）、`group_name`（精确分组匹配）；未给筛选项即全部 | `{"items":[ServerView]}`，按名称、ID 升序 |
-| `POST /api/servers` | 上述写入字段 | `ServerView`，HTTP 201 |
+| `POST /api/servers` | JSON 密码创建或 multipart 私钥创建，见上文 | `ServerView`，HTTP 201 |
 | `GET /api/servers/{id}` | 无 | `ServerView` |
-| `PUT /api/servers/{id}` | 上述编辑字段，替换完整非密码资料 | `ServerView` |
+| `PUT /api/servers/{id}` | JSON 普通/密码编辑或 multipart 私钥新增/替换，见上文 | `ServerView`，HTTP 200 |
 | `DELETE /api/servers/{id}` | `{}` | `{}`；不存在返回 `SERVER_NOT_FOUND`，有活动或预占名额返回 `SERVER_HAS_ACTIVE_SESSIONS` |
 | `POST /api/servers/{id}/test` | `{}`；仅测试已保存配置 | `{"host":"快照目标","port":22,"username":"快照用户名","authenticated":true}` |
 | `POST /api/servers/{id}/host-key/confirm` | 只能包含必填 `probe_id: string` | 更新后的 `HostKeyView` |
@@ -756,7 +786,8 @@ reason: "first_trust" | "key_changed"
 
 确认凭证关联当前登录会话、服务器、连接目标、配置版本、原信任和探测公钥。有效期/容量使用 `ssh.host_key_probe_ttl` / `ssh.host_key_probe_limit`。非法、过期、已用或已失效凭证统一 `INVALID_PROBE`；配置在探测期间变化返回 `SERVER_CONFIG_CHANGED`，需重新探测。确定回滚返回 `STORAGE_ERROR`，原凭证在原有效期内可重试；提交不确定按架构版本失效与重载规则返回 `SERVER_UNAVAILABLE`，不得盲目重试旧确认。确认成功但响应丢失后，重新测试并按当前信任继续，不重复保存原 probe。
 
-<a id="api-sessions"></a>
+
+
 ## 11.4 Session API 与绑定凭证
 
 `SessionView` 为当前内存 Session 快照：
@@ -814,7 +845,7 @@ HTTP 接管准备与 WebSocket 提交是两个请求；不得把 API 成功当�
 
 | code | HTTP | 含义及处理 |
 |---|---:|---|
-| `INVALID_REQUEST` | 400 | HTTP JSON、字段或查询参数非法 |
+| `INVALID_REQUEST` | 400 | HTTP JSON/multipart 字段或查询参数非法 |
 | `INVALID_MESSAGE` | — | WS 消息格式、类型或发送状态非法 |
 | `MESSAGE_TOO_LARGE` | 413 | HTTP/WS 完整消息超限；拒绝继续读取 |
 | `INVALID_SIZE` | 400 | 初始或后续终端尺寸非法 |
@@ -852,6 +883,8 @@ HTTP 接管准备与 WebSocket 提交是两个请求；不得把 API 成功当�
 | `SLOW_CLIENT` | — | WS 发送压力或客户端处理速度超过限制 |
 | `SERVER_SHUTTING_DOWN` | 503 | 应用停止接入，不能发布新资源 |
 | `INTERNAL_ERROR` | 500 | 未分类系统错误，日志记录上下文但响应不泄露内部数据 |
+
+私钥认证新增的本地故障必须与 `SSH_AUTH_FAILED` 区分：上传接收名额满、解析/KDF 名额满均应立即拒绝（HTTP 429），不能排无界队列；单个私钥对象缺失/损坏属于关联服务器凭据不可用；私钥卷/目录不可用属于存储能力故障，暂停私钥写入与回收。以上新增场景的最终错误码名称和具体 HTTP 映射由 6-K.0 设计定稿后注册到本表；不得提前把本地文件故障映射成远端认证失败，也不得把单个凭据故障塞进 DB `State.unavailable`。
 
 <a id="close-reasons"></a>
 ## 11.7 SSH Session 关闭原因
@@ -893,7 +926,10 @@ HTTP 接管准备与 WebSocket 提交是两个请求；不得把 API 成功当�
 | `host` | TEXT | 规范化后的连接 Host |
 | `port` | INTEGER，CHECK 1～65535 | SSH 端口 |
 | `username` | TEXT | SSH 用户名 |
-| `password_encrypted` | BLOB | §5.3 的版本化 AES-GCM 数据，仅密文 |
+| `auth_type` | TEXT，CHECK `password`/`private_key` | 当前唯一 SSH 用户认证方式 |
+| `password_encrypted` | BLOB，可空 | password 模式的既有 v1 AES-GCM 密文；private_key 模式必须为空 |
+| `private_key_object_id` | TEXT，可空，引用私钥对象元数据 | private_key 模式必须引用一个对象；password 模式必须为空 |
+| `passphrase_encrypted` | BLOB，可空 | private_key 模式可空；新格式 AES-GCM 密文，AAD 绑定格式版本、用途和服务器 ID；无 Passphrase 用 NULL 表示 |
 | `group_name` | TEXT DEFAULT '' | 简单分组，空字符串为未分组 |
 | `remark` | TEXT DEFAULT '' | 用户备注 |
 | `trusted_host` | TEXT，可空 | 当前信任绑定的 Host |
@@ -904,7 +940,11 @@ HTTP 接管准备与 WebSocket 提交是两个请求；不得把 API 成功当�
 | `created_at` | INTEGER | 创建时间，UTC 毫秒 |
 | `updated_at` | INTEGER | 最近资料或信任更新的提交时间，UTC 毫秒 |
 
-约束：五个信任字段同时为空或同时非空；非空时 `trusted_host = host` 且 `trusted_port = port`，端口合法。`host_key_algorithm`、指纹必须从同一公钥派生，不接受前端值。Host/Port 修改及信任字段清除在同一事务提交。建立索引 `idx_servers_group_name_name(group_name, name)`；名称不设唯一约束。
+新增版本迁移，不修改已应用的 `001_initial.sql`。旧记录迁移为 `auth_type=password`，保留 `password_encrypted` 原字节。迁移必须显式处理旧 `password_encrypted BLOB NOT NULL` 的放宽/表重建；保留服务器 ID、Host Key 信任、索引、时间、sessions 外键及 `ON DELETE CASCADE`，验证迁移不误删 Session 元数据。禁止使用假密码或空密文满足 NOT NULL。
+
+数据库另需私钥对象元数据，用不透明随机对象 ID 定位专用目录中的原始文件，并持久化回收候选时间/状态、完整性摘要及安全删除所需状态；具体表名、字段、约束和索引由 6-K.0 的最终数据契约明确。私钥内容和客户端文件路径不入库；文件字节只在 `/var/lib/web-ssh/ssh-keys/`。
+
+必须通过 CHECK/事务保证认证互斥：`password` 模式有非空密码密文且私钥引用/Passphrase 均为空；`private_key` 模式有私钥对象引用、密码密文为空，Passphrase 可空。Host Key 五个信任字段仍同时为空或同时非空，非空时绑定当前 Host/Port。建立原有 `idx_servers_group_name_name(group_name, name)`；名称不设唯一约束。
 
 ## 12.3 sessions
 
@@ -957,7 +997,7 @@ HTTP 接管准备与 WebSocket 提交是两个请求；不得把 API 成功当�
 
 # 13. 后端模块边界
 
-后端目录、模块职责和内部操作统一见[架构模块](web-ssh-architecture-implementation-plan.md#modules)。采用 `config`、`auth`、`crypto`、`database`、`server`、`sshclient`、`session`、`websocket`、`httpapi`，不在本文重复定义目录或内部结构。
+后端目录、模块职责和内部操作统一见[架构模块](web-ssh-architecture-implementation-plan.md#modules)。采用 `config`、`auth`、`crypto`、`privatekey`、`database`、`server`、`sshclient`、`session`、`websocket`、`httpapi`，不在本文重复定义目录或内部结构。`privatekey` 专门负责私钥原始文件、对象元数据、短期租约及回收，不负责文件应用层加密。
 
 产品约束：Session Manager 持有 SSH 生命周期；HTTP 和 WebSocket 负责协议接入、校验和响应，不能将关闭浏览器的事件直接变成关闭 SSH。所有权、锁顺序、唯一 Reader/Writer、输出缓存和关闭流程均按架构与协议实现。
 
@@ -981,7 +1021,7 @@ HTTP 接管准备与 WebSocket 提交是两个请求；不得把 API 成功当�
 2. Go 后端构建。
 3. 将前端静态文件嵌入 Go 程序。
 4. 生成最终运行镜像。
-正式镜像构建和部署交给 ops 执行；项目交付 Dockerfile、Compose、配置和部署说明。可参考 `/Users/x/workspaces/deploy-agent/Dockerfile`，不复用无关业务逻辑。
+   正式镜像构建和部署交给 ops 执行；项目交付 Dockerfile、Compose、配置和部署说明。可参考 `/Users/x/workspaces/deploy-agent/Dockerfile`，不复用无关业务逻辑。
 
 建议目录：
 
@@ -991,7 +1031,8 @@ web-ssh/
 ├── Dockerfile
 ├── config.yaml
 ├── .env
-└── data/
+├── data/
+└── ssh-keys/  # 私钥认证启用后独立挂载；宿主 UID/GID 与权限按本章要求准备
 ```
 
 示例 Compose：
@@ -1007,6 +1048,8 @@ services:
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - ./data:/data
+      # 私钥原始文件专用持久化卷；宿主目录需预先设置 UID/GID 10001:10001 与受限权限
+      - ./ssh-keys:/var/lib/web-ssh/ssh-keys
     environment:
       TZ: Asia/Shanghai
       APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY}
@@ -1026,10 +1069,12 @@ networks:
 - 配置合理的代理读取超时时间。
 - 不需要把 Go 服务直接暴露到公网。
 - SQLite 数据目录必须使用持久化 Volume。
-- 加密密钥必须独立备份。
+- 私钥原始文件目录 `/var/lib/web-ssh/ssh-keys/` 必须使用独立持久化 Volume；宿主目录由部署方预建并配置 UID/GID 10001:10001、目录 0700/文件 0600 及父目录/ACL 访问边界。不能仅凭镜像目录权限推断 bind mount 安全。
+- 加密主密钥必须独立备份；私钥卷也必须作为敏感明文私钥数据保护。
 - 外部访问来源配置为实际 HTTPS Origin；NPM 转发不改变 Cookie Secure 策略。
 - 应用 `server.shutdown_timeout` 必须小于 Compose 停止宽限期；容器将 SIGTERM 传给 Go 主进程。
 - 本地验证与 ops 的 Docker/NPM 验收分别记录，没有实际执行不得标记通过。
+- 首版备份采用受控停机：停止服务访问和进程、关闭数据库后，生成自包含恢复集，包含一致 SQLite 数据库、该数据库引用的全部私钥文件、文件清单及完整性校验信息、匹配的主密钥及其独立保管信息、程序和数据结构版本。备份会终止现有 SSH Session。首版不宣称支持在线一致性备份；备份保留份数和天数由部署运维策略决定。恢复必须使用同一恢复集，不得把历史数据库与当前生产私钥目录任意拼配。
 
 ---
 
@@ -1051,15 +1096,18 @@ networks:
 日志不能记录：
 
 - Web 管理密码。
-- SSH 明文密码。
-- SSH 认证凭据。
+- SSH 明文密码、Passphrase。
+- SSH 私钥原始字节/内容、Signer、私钥存储物理路径、上传文件名中的敏感路径信息。
+- SSH 认证凭据及其数据库密文、nonce。
 - 完整终端输入、完整终端输出及不必要的敏感业务数据。
 - Cookie、登录令牌、绑定凭证、probe_id、SSH 密文、nonce 或主密钥。
 
 错误信息需要区分：
 
 - SSH 连接超时。
-- SSH 认证失败。
+- SSH 远端认证失败。
+- 本地私钥文件缺失/损坏或私钥存储卷不可用（与远端拒绝认证区分）。
+- Passphrase 密文格式错误或无法解密（数据库启动故障按 §5.3 处理）。
 - Host Key 不匹配。
 - 目标服务器拒绝 PTY。
 - WebSocket 异常。
@@ -1088,7 +1136,8 @@ networks:
 
 - [ ] 浏览器能够正常登录。
 - [ ] 能够添加和管理多台 SSH 服务器。
-- [ ] SSH 密码加密保存。
+- [ ] SSH 密码加密保存，旧密码 v1 数据兼容。
+- [ ] 支持密码/上传私钥两种互斥认证；私钥原始字节保存，Passphrase 独立加密且不回传。
 - [ ] SSH Host Key 能够校验。
 - [ ] 可以打开真实 SSH 终端。
 - [ ] 支持多个终端标签。
@@ -1111,7 +1160,11 @@ networks:
 - [ ] 默认使用白色主题。
 - [ ] 支持白色和深色主题切换。
 - [ ] 手机浏览器能够基本使用。
-- [ ] Docker 单容器部署成功。
+- [ ] Docker 单容器部署成功，私钥专用卷权限和持久化正确。
+- [ ] 私钥上传限额、全局并发准入、解析/KDF 资源预算及安全错误符合契约。
+- [ ] 私钥文件缺失/损坏只影响关联服务器凭据；数据库 Passphrase 解密失败按启动策略阻止启动。
+- [ ] 孤儿回收满足可配置 24 小时默认宽限、引用/租约/事务/备份保护及固定周期预算。
+- [ ] 受控停机备份生成自包含恢复集并通过恢复验收；备份会终止现有 SSH Session。
 - [ ] NPM 反向代理和 WebSocket 正常工作。
 - [ ] 网关重启后能够正确清理失效 Session。
 
